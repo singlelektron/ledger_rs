@@ -20,6 +20,7 @@ The first domain models are implemented and tested:
 - Checked addition and subtraction with explicit errors
 - Accounts with names and currencies
 - Income, expense, and expense-refund transactions
+- Time-zone-aware transaction occurrence times using IANA time zones
 - Validation for account names, transaction descriptions, and transaction
   amounts
 
@@ -30,6 +31,7 @@ interface. `main.rs` still contains only the initial executable entry point.
 
 - Record income, expenses, refunds, and transfers accurately
 - Manage accounts, categories, currencies, and budgets
+- Preserve when transactions occurred, including their original time zones
 - Calculate balances and generate reports
 - Provide CLI, TUI, and Web interfaces
 - Remain maintainable through clear layering, tests, and documentation
@@ -124,6 +126,47 @@ pub enum TransactionKind {
 Transaction amounts must be greater than zero. Their economic direction is
 determined by `TransactionKind`, not by storing a negative input amount.
 
+Every transaction also stores an `occurred_at: Zoned` value. It represents the
+precise instant when the transaction occurred together with its original IANA
+time zone:
+
+```rust
+use jiff::Zoned;
+use ledger_rs::domain::{
+    account::AccountId,
+    money::{Currency, Money},
+    transaction::{Transaction, TransactionId, TransactionKind},
+};
+
+let occurred_at: Zoned =
+    "2026-08-10T18:30:00+08:00[Asia/Shanghai]"
+        .parse()
+        .unwrap();
+
+let transaction = Transaction::new(
+    TransactionId::new(1),
+    AccountId::new(1),
+    TransactionKind::Expense,
+    Money::from_minor_units(10_000, Currency::Cny),
+    occurred_at,
+    String::from("Dinner"),
+)
+.unwrap();
+
+assert_eq!(
+    transaction.occurred_at().time_zone().iana_name(),
+    Some("Asia/Shanghai"),
+);
+```
+
+The domain constructor receives an already valid `Zoned` value. Parsing local
+date-time strings, resolving time-zone names, and handling daylight-saving
+time ambiguity will belong to the application or interface layer.
+
+Transaction lists are not sorted by the domain entity. Ordering and filtering
+collections by `occurred_at` will be implemented later as application use
+cases.
+
 `ExpenseRefund` represents money that reverses part of an earlier expense. For
 example, when one person pays a restaurant bill and friends later reimburse
 their shares, those reimbursements reduce the original dining expense instead
@@ -145,7 +188,7 @@ The first complete version will:
 
 1. Represent currency-aware money safely with integers
 2. Create accounts with a single currency
-3. Record income, expense, and expense-refund transactions
+3. Record time-zone-aware income, expense, and expense-refund transactions
 4. Calculate an account balance from its transactions
 5. Store data in memory
 6. Expose the workflow through a simple CLI
@@ -157,6 +200,7 @@ It will not initially include:
 - Authentication and authorization
 - Exchange rates or automatic currency conversion
 - Cross-currency transfers
+- Automatic time-zone detection or daylight-saving-time input resolution
 - Budgets or advanced reports
 - Data synchronization
 
@@ -237,6 +281,8 @@ src/
 - Use distinct ID types for accounts and transactions
 - Give each account one currency
 - Support income, expense, and expense-refund transactions
+- Preserve each transaction's precise occurrence time and original IANA time
+  zone
 - Validate account names, descriptions, and transaction amounts
 
 ### Milestone 3: Application Service and In-Memory Repository - Next
@@ -246,11 +292,14 @@ src/
 - Reject transactions whose currency does not match the account currency
 - Calculate balances according to transaction kind
 - Calculate expense and income totals without combining different currencies
+- Query, filter, and order transactions by their occurrence times
 - Verify complete workflows with integration tests
 
 ### Milestone 4: CLI
 
 - Create accounts and record transactions from the command line
+- Parse local transaction times and IANA time-zone names
+- Reject invalid or ambiguous local times instead of silently guessing
 - Keep the CLI limited to parsing, basic input checks, and presentation
 - Keep business rules in the domain and application layers
 

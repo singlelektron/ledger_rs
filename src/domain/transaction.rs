@@ -1,3 +1,5 @@
+use jiff::Zoned;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransactionId(u64);
 
@@ -32,6 +34,7 @@ pub struct Transaction {
     account_id: AccountId,
     kind: TransactionKind,
     amount: Money,
+    occurred_at: Zoned,
     description: String,
 }
 
@@ -41,6 +44,7 @@ impl Transaction {
         account_id: AccountId,
         kind: TransactionKind,
         amount: Money,
+        occurred_at: Zoned,
         description: String,
     ) -> Result<Self, TransactionError> {
         if amount.minor_units() <= 0 {
@@ -57,6 +61,7 @@ impl Transaction {
             account_id,
             kind,
             amount,
+            occurred_at,
             description,
         })
     }
@@ -80,12 +85,20 @@ impl Transaction {
     pub fn description(&self) -> &str {
         &self.description
     }
+
+    pub fn occurred_at(&self) -> &Zoned {
+        &self.occurred_at
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::money::Currency;
+
+    fn sample_occurred_at() -> Zoned {
+        "2026-08-10T18:30:00+08:00[Asia/Shanghai]".parse().unwrap()
+    }
 
     #[test]
     fn transaction_id_preserves_its_value() {
@@ -100,6 +113,7 @@ mod tests {
             AccountId::new(1),
             TransactionKind::Income,
             Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
             "Salary".to_string(),
         )
         .unwrap();
@@ -121,6 +135,7 @@ mod tests {
             AccountId::new(1),
             TransactionKind::Expense,
             Money::from_minor_units(500, Currency::Cny),
+            sample_occurred_at(),
             "Groceries".to_string(),
         )
         .unwrap();
@@ -142,6 +157,7 @@ mod tests {
             AccountId::new(1),
             TransactionKind::ExpenseRefund,
             Money::from_minor_units(20_000, Currency::Cny),
+            sample_occurred_at(),
             String::from("Dinner reimbursement"),
         )
         .unwrap();
@@ -157,6 +173,7 @@ mod tests {
             AccountId::new(1),
             TransactionKind::Income,
             Money::from_minor_units(0, Currency::Cny),
+            sample_occurred_at(),
             "Test".to_string(),
         );
 
@@ -170,6 +187,7 @@ mod tests {
             AccountId::new(1),
             TransactionKind::Income,
             Money::from_minor_units(-100, Currency::Cny),
+            sample_occurred_at(),
             "Test".to_string(),
         );
 
@@ -183,6 +201,7 @@ mod tests {
             AccountId::new(1),
             TransactionKind::Income,
             Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
             "".to_string(),
         );
 
@@ -196,6 +215,7 @@ mod tests {
             AccountId::new(1),
             TransactionKind::Income,
             Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
             "   ".to_string(),
         );
 
@@ -209,10 +229,34 @@ mod tests {
             AccountId::new(1),
             TransactionKind::Income,
             Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
             "  Test  ".to_string(),
         )
         .unwrap();
 
         assert_eq!(transaction.description(), "Test");
+    }
+
+    #[test]
+    fn preserves_occurrence_time_and_time_zone() {
+        let occurred_at = sample_occurred_at();
+        let expected_timestamp = occurred_at.timestamp();
+
+        let transaction = Transaction::new(
+            TransactionId::new(1),
+            AccountId::new(1),
+            TransactionKind::Expense,
+            Money::from_minor_units(1_000, Currency::Cny),
+            occurred_at,
+            String::from("Dinner"),
+        )
+        .unwrap();
+
+        assert_eq!(transaction.occurred_at().timestamp(), expected_timestamp,);
+
+        assert_eq!(
+            transaction.occurred_at().time_zone().iana_name(),
+            Some("Asia/Shanghai"),
+        );
     }
 }
