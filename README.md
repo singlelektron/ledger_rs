@@ -14,7 +14,7 @@ business logic for accounts, transactions, balances, budgets, and reports.
 
 ## Current Status
 
-The first domain models are implemented and tested:
+The first domain models and in-memory repositories are implemented and tested:
 
 - Currency-aware `Money` values stored as integer minor units
 - Checked addition and subtraction with explicit errors
@@ -25,9 +25,12 @@ The first domain models are implemented and tested:
   amounts
 - Account balance calculation with explicit account, currency, and arithmetic
   overflow errors
+- In-memory account and transaction repositories with duplicate-ID validation
+  and account-based transaction queries
 
-The project does not yet provide persistence or a user interface. `main.rs`
-still contains only the initial executable entry point.
+The project now provides in-memory storage, but it does not yet provide durable
+file or database persistence or a user interface. `main.rs` still contains only
+the initial executable entry point.
 
 ## Goals
 
