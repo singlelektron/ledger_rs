@@ -16,20 +16,23 @@ pub enum AccountError {
     EmptyName,
 }
 
+use crate::domain::money::Currency;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     id: AccountId,
     name: String,
+    currency: Currency,
 }
 
 impl Account {
-    pub fn new(id: AccountId, name: String) -> Result<Self, AccountError> {
+    pub fn new(id: AccountId, name: String, currency: Currency) -> Result<Self, AccountError> {
         let name = name.trim().to_string();
         if name.is_empty() {
             return Err(AccountError::EmptyName);
         }
 
-        Ok(Account { id, name })
+        Ok(Account { id, name, currency })
     }
 
     pub fn id(&self) -> AccountId {
@@ -39,11 +42,15 @@ impl Account {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    pub fn currency(&self) -> Currency {
+        self.currency
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Account, AccountError, AccountId};
+    use super::*;
 
     #[test]
     fn account_id_preserves_its_value() {
@@ -54,29 +61,31 @@ mod tests {
 
     #[test]
     fn creates_account_with_valid_name() {
-        let account = Account::new(AccountId::new(1), String::from("Cash")).unwrap();
+        let account = Account::new(AccountId::new(1), String::from("Cash"), Currency::Cny).unwrap();
 
         assert_eq!(account.id(), AccountId::new(1));
         assert_eq!(account.name(), "Cash");
+        assert_eq!(account.currency(), Currency::Cny);
     }
 
     #[test]
     fn rejects_empty_name() {
-        let result = Account::new(AccountId::new(1), String::new());
+        let result = Account::new(AccountId::new(1), String::new(), Currency::Cny);
 
         assert_eq!(result, Err(AccountError::EmptyName));
     }
 
     #[test]
     fn rejects_whitespace_only_name() {
-        let result = Account::new(AccountId::new(1), String::from("   "));
+        let result = Account::new(AccountId::new(1), String::from("   "), Currency::Cny);
 
         assert_eq!(result, Err(AccountError::EmptyName));
     }
 
     #[test]
     fn trims_account_name() {
-        let account = Account::new(AccountId::new(1), String::from("  Cash  ")).unwrap();
+        let account =
+            Account::new(AccountId::new(1), String::from("  Cash  "), Currency::Cny).unwrap();
 
         assert_eq!(account.name(), "Cash");
     }

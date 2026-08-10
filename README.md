@@ -1,8 +1,8 @@
 # ledger_rs
 
-This is a repo for me to learn how to write a rust project.
+This is a repository for me to learn how to write a Rust project.
 
-The following are all AI-generated.
+The following documentation was generated with AI assistance.
 
 `ledger_rs` is a personal accounting system written in Rust. It is also a
 long-term learning project for practicing professional Rust software
@@ -12,13 +12,23 @@ The project will eventually provide CLI, TUI, and Web interfaces. These
 interfaces will handle input and presentation while sharing the same core
 business logic for accounts, transactions, balances, budgets, and reports.
 
-> Current status: the project has just started and currently contains only the
-> basic executable created by Cargo. Most features and directories described
-> below are plans, not completed functionality.
+## Current Status
+
+The first domain models are implemented and tested:
+
+- Currency-aware `Money` values stored as integer minor units
+- Checked addition and subtraction with explicit errors
+- Accounts with names and currencies
+- Income, expense, and expense-refund transactions
+- Validation for account names, transaction descriptions, and transaction
+  amounts
+
+The project does not yet provide persistence, balance calculation, or a user
+interface. `main.rs` still contains only the initial executable entry point.
 
 ## Goals
 
-- Record income, expenses, and transfers accurately
+- Record income, expenses, refunds, and transfers accurately
 - Manage accounts, categories, currencies, and budgets
 - Calculate balances and generate reports
 - Provide CLI, TUI, and Web interfaces
@@ -26,27 +36,131 @@ business logic for accounts, transactions, balances, budgets, and reports.
 - Use development as a way to learn Rust type design, ownership, error
   handling, traits, and asynchronous programming
 
-## Current Scope
+## Current Domain Model
 
-The first stage will implement one small, complete workflow:
+### Currency and Money
 
-1. Represent money safely with integers
-2. Create an account
-3. Record an income or expense transaction
+The currently supported currencies are:
+
+- CNY
+- USD
+- EUR
+- HKD
+- MYR
+
+`Money` stores an integer number of minor currency units together with its
+currency:
+
+```rust
+use ledger_rs::domain::money::{Currency, Money};
+
+let amount = Money::from_minor_units(1_250, Currency::Cny);
+
+assert_eq!(amount.minor_units(), 1_250);
+assert_eq!(amount.currency(), Currency::Cny);
+```
+
+For currencies with two decimal places, `1_250` minor units represents
+`12.50`. The domain model stores exact integer values and never uses `f32` or
+`f64` for financial arithmetic.
+
+Money values can only be added or subtracted when their currencies match:
+
+```rust
+use ledger_rs::domain::money::{Currency, Money};
+
+let left = Money::from_minor_units(1_000, Currency::Cny);
+let right = Money::from_minor_units(250, Currency::Cny);
+let total = left.add(&right).unwrap();
+
+assert_eq!(total, Money::from_minor_units(1_250, Currency::Cny));
+```
+
+Arithmetic returns a `MoneyError` when currencies differ or the underlying
+`i64` operation would overflow. Currency conversion and exchange rates are not
+implemented.
+
+### Accounts
+
+Each account has:
+
+- An `AccountId`
+- A non-empty name
+- One currency
+
+```rust
+use ledger_rs::domain::{
+    account::{Account, AccountId},
+    money::Currency,
+};
+
+let account = Account::new(
+    AccountId::new(1),
+    String::from("CNY Cash"),
+    Currency::Cny,
+)
+.unwrap();
+
+assert_eq!(account.name(), "CNY Cash");
+assert_eq!(account.currency(), Currency::Cny);
+```
+
+An account does not store a balance directly. Balances will be calculated from
+transactions so that the project does not maintain two competing sources of
+truth.
+
+### Transactions
+
+The current transaction types are:
+
+```rust
+pub enum TransactionKind {
+    Income,
+    Expense,
+    ExpenseRefund,
+}
+```
+
+Transaction amounts must be greater than zero. Their economic direction is
+determined by `TransactionKind`, not by storing a negative input amount.
+
+`ExpenseRefund` represents money that reverses part of an earlier expense. For
+example, when one person pays a restaurant bill and friends later reimburse
+their shares, those reimbursements reduce the original dining expense instead
+of being counted as income.
+
+The planned balance and reporting rules are:
+
+| Transaction kind | Account balance | Expense total | Income total |
+| --- | ---: | ---: | ---: |
+| `Income` | `+amount` | No change | `+amount` |
+| `Expense` | `-amount` | `+amount` | No change |
+| `ExpenseRefund` | `+amount` | `-amount` | No change |
+
+These calculations have not been implemented yet.
+
+## Scope of the First Complete Workflow
+
+The first complete version will:
+
+1. Represent currency-aware money safely with integers
+2. Create accounts with a single currency
+3. Record income, expense, and expense-refund transactions
 4. Calculate an account balance from its transactions
 5. Store data in memory
-6. Use these features through a simple CLI
+6. Expose the workflow through a simple CLI
 
-The first stage will not include:
+It will not initially include:
 
 - A database
 - TUI or Web interfaces
 - Authentication and authorization
-- Currency conversion
+- Exchange rates or automatic currency conversion
+- Cross-currency transfers
 - Budgets or advanced reports
 - Data synchronization
 
-Keeping the first stage small allows the core business rules to be tested
+Keeping the first version small allows the core business rules to be tested
 before interfaces and infrastructure add more complexity.
 
 ## Design Principles
@@ -76,22 +190,31 @@ CLI / TUI / Web
 Core business logic must not depend on a terminal, an HTTP framework, or a
 specific database.
 
-The project will begin as a single crate with multiple modules. This avoids
+The project currently uses a single crate with multiple modules. This avoids
 unnecessary cross-crate configuration during the early learning stage. Once
 the interfaces and persistence layer become substantial, the project can be
 split into crates such as `core`, `cli`, and `database`.
 
-## Planned Initial Structure
+## Project Structure
 
 ```text
 src/
 ├── main.rs
 ├── lib.rs
-├── domain/
-│   ├── mod.rs
-│   ├── money.rs
-│   ├── account.rs
-│   └── transaction.rs
+└── domain/
+    ├── mod.rs
+    ├── money.rs
+    ├── account.rs
+    └── transaction.rs
+```
+
+`lib.rs` exposes the reusable domain modules. `main.rs` is the executable entry
+point and will eventually contain only CLI setup and startup code.
+
+Planned modules will be introduced when they have real responsibilities:
+
+```text
+src/
 ├── application/
 │   ├── mod.rs
 │   └── ledger_service.rs
@@ -100,36 +223,30 @@ src/
     └── memory_repository.rs
 ```
 
-`lib.rs` exposes the reusable application and domain modules. `main.rs` is the
-entry point for the executable and will eventually contain only CLI setup and
-startup code.
-
-This is a near-term direction, not a list of files that must be generated
-immediately. Directories should be introduced as real requirements appear.
-
 ## Roadmap
 
-### Milestone 1: Money Value Type
+### Milestone 1: Money and Currency - Completed
 
-- Represent money as an integer number of the smallest currency unit, such as
-  cents
-- Never use `f32` or `f64` for financial calculations
-- Support construction, inspection, addition, and subtraction
-- Test zero, positive, negative, and arithmetic cases
+- Represent money as integer minor units
+- Keep currency as part of every `Money` value
+- Reject arithmetic between different currencies
+- Detect integer overflow during addition and subtraction
 
-### Milestone 2: Accounts and Transactions
+### Milestone 2: Accounts and Transactions - Completed
 
-- Design distinct ID types for accounts and transactions
-- Use an enum to distinguish income from expenses
-- Validate account names, transaction descriptions, and transaction amounts
-- Add unit tests for every important business rule
+- Use distinct ID types for accounts and transactions
+- Give each account one currency
+- Support income, expense, and expense-refund transactions
+- Validate account names, descriptions, and transaction amounts
 
-### Milestone 3: Application Service and In-Memory Repository
+### Milestone 3: Application Service and In-Memory Repository - Next
 
 - Define repository traits
-- Implement an in-memory repository using `Vec` or `HashMap`
-- Add application services for recording transactions and querying balances
-- Verify the complete workflow with integration tests
+- Implement repositories using `Vec` or `HashMap`
+- Reject transactions whose currency does not match the account currency
+- Calculate balances according to transaction kind
+- Calculate expense and income totals without combining different currencies
+- Verify complete workflows with integration tests
 
 ### Milestone 4: CLI
 
@@ -149,45 +266,7 @@ immediately. Directories should be introduced as real requirements appear.
 - Web API
 - Categories and budgets
 - Reports and data import/export
-- Multi-currency support
-
-## First Development Task
-
-The first task is to implement a `Money` value type. Start with this minimal
-interface:
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Money {
-    cents: i64,
-}
-
-impl Money {
-    pub fn from_cents(cents: i64) -> Self {
-        // To be implemented by the developer.
-        todo!()
-    }
-
-    pub fn cents(self) -> i64 {
-        // To be implemented by the developer.
-        todo!()
-    }
-}
-```
-
-Definition of done for the first version:
-
-- `Money::from_cents(1250).cents()` returns `1250`
-- Two `Money` values can be added
-- One `Money` value can be subtracted from another
-- The stored amount cannot be modified directly outside its module
-- At least four unit tests are present
-- Formatting, static analysis, and all tests pass
-
-The first version permits negative values because balances and arithmetic
-results may be negative. Transaction design will later require an income or
-expense input amount to be greater than zero. This keeps the general meaning
-of a money value separate from transaction-specific validation rules.
+- Exchange rates and cross-currency transfers
 
 ## Local Development
 
@@ -221,7 +300,8 @@ Work on one small behavior at a time:
 Commit messages should explain the change, for example:
 
 ```text
-feat: add money value type
+feat: add currency-aware money
+feat: add transaction model
 test: add transaction validation tests
 refactor: separate repository layer
 ```
