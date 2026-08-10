@@ -9,7 +9,7 @@ pub enum Currency {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoneyError {
-    CurrencyMismatch { left: Currency, right: Currency },
+    CurrencyMismatch { expected: Currency, found: Currency },
     ArithmeticOverflow,
 }
 
@@ -38,8 +38,8 @@ impl Money {
     pub fn add(&self, other: &Money) -> Result<Money, MoneyError> {
         if self.currency != other.currency {
             return Err(MoneyError::CurrencyMismatch {
-                left: self.currency,
-                right: other.currency,
+                expected: self.currency,
+                found: other.currency,
             });
         }
 
@@ -57,8 +57,8 @@ impl Money {
     pub fn sub(&self, other: &Money) -> Result<Money, MoneyError> {
         if self.currency != other.currency {
             return Err(MoneyError::CurrencyMismatch {
-                left: self.currency,
-                right: other.currency,
+                expected: self.currency,
+                found: other.currency,
             });
         }
 
@@ -137,8 +137,8 @@ mod tests {
         assert_eq!(
             left.add(&right),
             Err(MoneyError::CurrencyMismatch {
-                left: Currency::Cny,
-                right: Currency::Usd,
+                expected: Currency::Cny,
+                found: Currency::Usd,
             })
         );
     }
@@ -151,8 +151,8 @@ mod tests {
         assert_eq!(
             left.sub(&right),
             Err(MoneyError::CurrencyMismatch {
-                left: Currency::Cny,
-                right: Currency::Usd,
+                expected: Currency::Cny,
+                found: Currency::Usd,
             })
         );
     }

@@ -23,9 +23,11 @@ The first domain models are implemented and tested:
 - Time-zone-aware transaction occurrence times using IANA time zones
 - Validation for account names, transaction descriptions, and transaction
   amounts
+- Account balance calculation with explicit account, currency, and arithmetic
+  overflow errors
 
-The project does not yet provide persistence, balance calculation, or a user
-interface. `main.rs` still contains only the initial executable entry point.
+The project does not yet provide persistence or a user interface. `main.rs`
+still contains only the initial executable entry point.
 
 ## Goals
 
@@ -172,7 +174,8 @@ example, when one person pays a restaurant bill and friends later reimburse
 their shares, those reimbursements reduce the original dining expense instead
 of being counted as income.
 
-The planned balance and reporting rules are:
+Account balance calculation follows these rules. The reporting columns describe
+the intended behavior of future reporting features.
 
 | Transaction kind | Account balance | Expense total | Income total |
 | --- | ---: | ---: | ---: |
@@ -180,7 +183,8 @@ The planned balance and reporting rules are:
 | `Expense` | `-amount` | `+amount` | No change |
 | `ExpenseRefund` | `+amount` | `-amount` | No change |
 
-These calculations have not been implemented yet.
+Account balance calculation is implemented. Expense and income report totals
+have not been implemented yet.
 
 ## Scope of the First Complete Workflow
 
