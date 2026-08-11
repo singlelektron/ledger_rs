@@ -14,7 +14,7 @@ business logic for accounts, transactions, balances, budgets, and reports.
 
 ## Current Status
 
-The first domain models, application use case, and in-memory repositories are
+The first domain models, application use cases, and in-memory repositories are
 implemented and tested:
 
 - Currency-aware `Money` values stored as integer minor units
@@ -31,6 +31,9 @@ implemented and tested:
 - An application-level account balance query that loads an account and its
   transactions through repository traits before applying the domain balance
   rules
+- An application-level transaction-recording use case that rejects unknown
+  accounts and currency mismatches before saving through the transaction
+  repository
 
 The project now provides in-memory storage, but it does not yet provide durable
 file or database persistence or a user interface. `main.rs` still contains only
