@@ -28,6 +28,8 @@ implemented and tested:
   overflow errors
 - In-memory account and transaction repositories with duplicate-ID validation
   and account-based transaction queries
+- An application-level account-creation use case that applies domain name
+  validation and reports duplicate account IDs from the repository
 - An application-level account balance query that loads an account and its
   transactions through repository traits before applying the domain balance
   rules
