@@ -67,6 +67,9 @@ impl TransactionRepository for InMemoryTransactionRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::repository::{
+        AccountRepository, RepositoryError, TransactionRepository,
+    };
     use crate::domain::money::Currency;
     use crate::domain::transaction::TransactionId;
 
@@ -97,7 +100,10 @@ mod tests {
 
         repository.save(account.clone()).unwrap();
 
-        assert!(repository.save(account).is_err());
+        assert_eq!(
+            repository.save(account),
+            Err(RepositoryError::DuplicateAccountId(AccountId::new(1)))
+        );
     }
 
     #[test]
@@ -190,6 +196,11 @@ mod tests {
         )
         .unwrap();
         repository.save(transaction.clone()).unwrap();
-        assert!(repository.save(transaction).is_err());
+        assert_eq!(
+            repository.save(transaction),
+            Err(RepositoryError::DuplicateTransactionId(TransactionId::new(
+                1
+            )))
+        );
     }
 }
