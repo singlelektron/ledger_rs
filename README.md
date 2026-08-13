@@ -53,10 +53,14 @@ SQLite persistence layer are implemented and tested:
   categories, timestamps, and original IANA time-zone names
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
+- A `clap`-based CLI entry point with a tested `account create` command,
+  case-insensitive currency parsing, configurable database paths, and nonzero
+  exit status on application errors
 
 The project now provides both in-memory storage and file-backed SQLite account
-and transaction repositories. The project does not yet provide a user
-interface; `main.rs` still contains only the initial executable entry point.
+and transaction repositories. Its first CLI workflow can create an account in
+a persistent SQLite database. Commands for recording transactions, querying
+balances, and displaying category reports have not been added yet.
 
 ## Goals
 
@@ -307,13 +311,15 @@ src/
 │   ├── in_memory.rs
 │   ├── mod.rs
 │   └── sqlite.rs
+├── cli.rs
 ├── lib.rs
 └── main.rs
 ```
 
-`lib.rs` exposes the reusable domain, application, and infrastructure modules.
-`main.rs` is the executable entry point and will eventually contain only CLI
-setup and startup code.
+`lib.rs` exposes the reusable domain, application, infrastructure, and CLI
+modules. `cli.rs` defines command-line arguments and dispatches them to
+application use cases. `main.rs` remains limited to parsing arguments, printing
+results, and returning the process exit status.
 
 ## Roadmap
 
@@ -365,9 +371,11 @@ pre-release development stage there is no existing user database to preserve,
 so a development database should be deleted and recreated after an incompatible
 schema change.
 
-### Milestone 5: CLI
+### Milestone 5: CLI - In Progress
 
-- Create accounts and record transactions from the command line
+- Create accounts from the command line - Completed
+- Record transactions from the command line
+- Query account balances and category net outflow from the command line
 - Parse local transaction times and IANA time-zone names
 - Reject invalid or ambiguous local times instead of silently guessing
 - Keep the CLI limited to parsing, basic input checks, and presentation
@@ -385,11 +393,35 @@ schema change.
 
 Install a stable Rust toolchain that supports Rust 2024 edition.
 
-Run the application:
+Show the available commands:
 
 ```bash
-cargo run
+cargo run -- --help
 ```
+
+Create an account in the default `ledger.db` database:
+
+```bash
+cargo run -- account create \
+  --id 1 \
+  --name Cash \
+  --currency cny
+```
+
+Use a different SQLite database file:
+
+```bash
+cargo run -- \
+  --database data/ledger.db \
+  account create \
+  --id 1 \
+  --name Cash \
+  --currency cny
+```
+
+Currency input is case-insensitive. Supported values are `cny`, `usd`, `eur`,
+`hkd`, and `myr`. Account IDs are supplied explicitly during this first CLI
+stage.
 
 After changing Rust code, run:
 
