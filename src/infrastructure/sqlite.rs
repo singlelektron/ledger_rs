@@ -50,6 +50,47 @@ fn transaction_kind_from_code(code: &str) -> Result<TransactionKind, RepositoryE
     }
 }
 
+fn category_to_code(category: crate::domain::transaction::Category) -> &'static str {
+    match category {
+        crate::domain::transaction::Category::Food => "food",
+        crate::domain::transaction::Category::Transportation => "transportation",
+        crate::domain::transaction::Category::Entertainment => "entertainment",
+        crate::domain::transaction::Category::Necessary => "necessary",
+        crate::domain::transaction::Category::Health => "health",
+        crate::domain::transaction::Category::Education => "education",
+        crate::domain::transaction::Category::Shopping => "shopping",
+        crate::domain::transaction::Category::Travel => "travel",
+        crate::domain::transaction::Category::Housing => "housing",
+        crate::domain::transaction::Category::Salary => "salary",
+        crate::domain::transaction::Category::Sale => "sale",
+        crate::domain::transaction::Category::Family => "family",
+        crate::domain::transaction::Category::Investment => "investment",
+        crate::domain::transaction::Category::Other => "other",
+    }
+}
+
+fn category_from_code(code: &str) -> Result<crate::domain::transaction::Category, RepositoryError> {
+    match code {
+        "food" => Ok(crate::domain::transaction::Category::Food),
+        "transportation" => Ok(crate::domain::transaction::Category::Transportation),
+        "entertainment" => Ok(crate::domain::transaction::Category::Entertainment),
+        "necessary" => Ok(crate::domain::transaction::Category::Necessary),
+        "health" => Ok(crate::domain::transaction::Category::Health),
+        "education" => Ok(crate::domain::transaction::Category::Education),
+        "shopping" => Ok(crate::domain::transaction::Category::Shopping),
+        "travel" => Ok(crate::domain::transaction::Category::Travel),
+        "housing" => Ok(crate::domain::transaction::Category::Housing),
+        "salary" => Ok(crate::domain::transaction::Category::Salary),
+        "sale" => Ok(crate::domain::transaction::Category::Sale),
+        "family" => Ok(crate::domain::transaction::Category::Family),
+        "investment" => Ok(crate::domain::transaction::Category::Investment),
+        "other" => Ok(crate::domain::transaction::Category::Other),
+        other => Err(RepositoryError::InvalidStoredData(format!(
+            "unsupported category: {other}"
+        ))),
+    }
+}
+
 pub struct SqliteAccountRepository {
     connection: Rc<Connection>,
 }
@@ -152,8 +193,8 @@ impl TransactionRepository for SqliteTransactionRepository {
         self.connection
             .execute(
                 "
-            INSERT INTO transactions (id, account_id, kind, amount_minor, currency, occurred_at, description)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            INSERT INTO transactions (id, account_id, kind, amount_minor, currency, occurred_at, description, category)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             ",
                 params![
                     id,
@@ -163,6 +204,7 @@ impl TransactionRepository for SqliteTransactionRepository {
                     currency_to_code(transaction.amount().currency()),
                     transaction.occurred_at().to_string(),
                     transaction.description(),
+                    category_to_code(transaction.category()),
                 ],
             )
             .map_err(|error| match error {
@@ -187,7 +229,7 @@ impl TransactionRepository for SqliteTransactionRepository {
             .connection
             .prepare(
                 "
-                SELECT id, kind, amount_minor, currency, occurred_at, description
+                SELECT id, kind, amount_minor, currency, occurred_at, description, category
                 FROM transactions
                 WHERE account_id = ?1
                 ",
@@ -202,6 +244,7 @@ impl TransactionRepository for SqliteTransactionRepository {
                 let currency_code: String = row.get(3)?;
                 let occurred_at_str: String = row.get(4)?;
                 let description: String = row.get(5)?;
+                let category_code: String = row.get(6)?;
 
                 Ok((
                     id,
@@ -210,14 +253,22 @@ impl TransactionRepository for SqliteTransactionRepository {
                     currency_code,
                     occurred_at_str,
                     description,
+                    category_code,
                 ))
             })
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
 
         let mut transactions = Vec::new();
         for transaction_result in transactions_iter {
-            let (id, kind_code, amount_minor, currency_code, occurred_at_str, description) =
-                transaction_result.map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            let (
+                id,
+                kind_code,
+                amount_minor,
+                currency_code,
+                occurred_at_str,
+                description,
+                category_code,
+            ) = transaction_result.map_err(|error| RepositoryError::Storage(error.to_string()))?;
 
             let transaction_id = TransactionId::new(u64::try_from(id).map_err(|_| {
                 RepositoryError::InvalidStoredData(format!("invalid transaction id: {id}"))
@@ -230,6 +281,7 @@ impl TransactionRepository for SqliteTransactionRepository {
                     "invalid occurred_at: {occurred_at_str}, error: {error:?}"
                 ))
             })?;
+            let category = category_from_code(&category_code)?;
 
             let transaction = Transaction::new(
                 transaction_id,
@@ -238,6 +290,7 @@ impl TransactionRepository for SqliteTransactionRepository {
                 amount,
                 occurred_at,
                 description,
+                category,
             )
             .map_err(|error| {
                 RepositoryError::InvalidStoredData(format!("invalid transaction data: {error:?}"))
@@ -286,6 +339,7 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
             currency     TEXT NOT NULL,
             occurred_at  TEXT NOT NULL,
             description  TEXT NOT NULL,
+            category     TEXT NOT NULL,
 
             FOREIGN KEY (account_id)
                 REFERENCES accounts(id)
@@ -296,6 +350,8 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::transaction::Category;
+
     use super::*;
 
     #[test]
@@ -421,6 +477,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             sample_occurred_at(),
             "Salary".to_string(),
+            Category::Food,
         )
         .unwrap();
 
@@ -467,6 +524,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             sample_occurred_at(),
             "Salary".to_string(),
+            Category::Food,
         )
         .unwrap();
         let transaction2 = Transaction::new(
@@ -476,6 +534,7 @@ mod tests {
             Money::from_minor_units(200, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             "Groceries".to_string(),
+            Category::Food,
         )
         .unwrap();
         let transaction3 = Transaction::new(
@@ -485,6 +544,7 @@ mod tests {
             Money::from_minor_units(300, Currency::Cny),
             "2026-08-12T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             "Lunch".to_string(),
+            Category::Food,
         )
         .unwrap();
 
@@ -515,6 +575,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             sample_occurred_at(),
             "Salary".to_string(),
+            Category::Food,
         )
         .unwrap();
         let transaction2 = Transaction::new(
@@ -524,6 +585,7 @@ mod tests {
             Money::from_minor_units(200, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             "Groceries".to_string(),
+            Category::Food,
         )
         .unwrap();
 
@@ -554,6 +616,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             occurred_at,
             "Dinner".to_string(),
+            Category::Food,
         )
         .unwrap();
 
@@ -586,8 +649,8 @@ mod tests {
             .connection
             .execute(
                 "
-                INSERT INTO transactions (id, account_id, kind, amount_minor, currency, occurred_at, description)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                INSERT INTO transactions (id, account_id, kind, amount_minor, currency, occurred_at, description, category)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                 ",
                 params![
                     1_i64,
@@ -597,6 +660,7 @@ mod tests {
                     "CNY",
                     "not-a-valid-zoned-time",
                     "Salary",
+                    "food",
                 ],
             )
             .unwrap();
@@ -622,6 +686,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             sample_occurred_at(),
             "Salary".to_string(),
+            Category::Food,
         )
         .unwrap();
 
@@ -651,5 +716,33 @@ mod tests {
 
         let stored = account_repository.find_by_id(account_id).unwrap().unwrap();
         assert_eq!(stored.id(), account_id);
+    }
+
+    #[test]
+    fn category_test() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        let transaction = Transaction::new(
+            TransactionId::new(1),
+            account_id,
+            TransactionKind::Income,
+            Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
+            "Salary".to_string(),
+            Category::Salary,
+        )
+        .unwrap();
+
+        transaction_repository.save(transaction.clone()).unwrap();
+
+        let stored = transaction_repository
+            .find_by_account_id(account_id)
+            .unwrap();
+
+        assert_eq!(stored[0].category(), Category::Salary);
     }
 }

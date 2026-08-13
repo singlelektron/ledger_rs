@@ -20,6 +20,24 @@ pub enum TransactionKind {
     ExpenseRefund,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Food,
+    Transportation,
+    Entertainment,
+    Necessary,
+    Health,
+    Education,
+    Shopping,
+    Travel,
+    Housing,
+    Salary,
+    Sale,
+    Family,
+    Investment,
+    Other,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum TransactionError {
     InvalidAmount,
@@ -36,6 +54,7 @@ pub struct Transaction {
     amount: Money,
     occurred_at: Zoned,
     description: String,
+    category: Category,
 }
 
 impl Transaction {
@@ -46,6 +65,7 @@ impl Transaction {
         amount: Money,
         occurred_at: Zoned,
         description: String,
+        category: Category,
     ) -> Result<Self, TransactionError> {
         if amount.minor_units() <= 0 {
             return Err(TransactionError::InvalidAmount);
@@ -63,6 +83,7 @@ impl Transaction {
             amount,
             occurred_at,
             description,
+            category,
         })
     }
 
@@ -88,6 +109,10 @@ impl Transaction {
 
     pub fn occurred_at(&self) -> &Zoned {
         &self.occurred_at
+    }
+
+    pub fn category(&self) -> Category {
+        self.category
     }
 }
 
@@ -115,6 +140,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             sample_occurred_at(),
             "Salary".to_string(),
+            Category::Food,
         )
         .unwrap();
 
@@ -137,6 +163,7 @@ mod tests {
             Money::from_minor_units(500, Currency::Cny),
             sample_occurred_at(),
             "Groceries".to_string(),
+            Category::Food,
         )
         .unwrap();
 
@@ -159,11 +186,13 @@ mod tests {
             Money::from_minor_units(20_000, Currency::Cny),
             sample_occurred_at(),
             String::from("Dinner reimbursement"),
+            Category::Food,
         )
         .unwrap();
 
         assert_eq!(transaction.kind(), TransactionKind::ExpenseRefund);
         assert_eq!(transaction.amount().minor_units(), 20_000);
+        assert_eq!(transaction.category(), Category::Food);
     }
 
     #[test]
@@ -175,6 +204,7 @@ mod tests {
             Money::from_minor_units(0, Currency::Cny),
             sample_occurred_at(),
             "Test".to_string(),
+            Category::Food,
         );
 
         assert_eq!(result, Err(TransactionError::InvalidAmount));
@@ -189,6 +219,7 @@ mod tests {
             Money::from_minor_units(-100, Currency::Cny),
             sample_occurred_at(),
             "Test".to_string(),
+            Category::Food,
         );
 
         assert_eq!(result, Err(TransactionError::InvalidAmount));
@@ -203,6 +234,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             sample_occurred_at(),
             "".to_string(),
+            Category::Food,
         );
 
         assert_eq!(result, Err(TransactionError::EmptyDescription));
@@ -217,6 +249,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             sample_occurred_at(),
             "   ".to_string(),
+            Category::Food,
         );
 
         assert_eq!(result, Err(TransactionError::EmptyDescription));
@@ -231,6 +264,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             sample_occurred_at(),
             "  Test  ".to_string(),
+            Category::Food,
         )
         .unwrap();
 
@@ -249,6 +283,7 @@ mod tests {
             Money::from_minor_units(1_000, Currency::Cny),
             occurred_at,
             String::from("Dinner"),
+            Category::Food,
         )
         .unwrap();
 

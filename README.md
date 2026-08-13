@@ -21,6 +21,7 @@ SQLite persistence layer are implemented and tested:
 - Checked addition and subtraction with explicit errors
 - Accounts with names and currencies
 - Income, expense, and expense-refund transactions
+- Fixed transaction categories for classifying both expenses and income
 - Time-zone-aware transaction occurrence times using IANA time zones
 - Validation for account names, transaction descriptions, and transaction
   amounts
@@ -44,7 +45,7 @@ SQLite persistence layer are implemented and tested:
   repository, enforces account foreign keys, and queries transactions by
   account
 - SQLite transaction mapping that preserves amounts, transaction kinds,
-  timestamps, and original IANA time-zone names
+  categories, timestamps, and original IANA time-zone names
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
 
@@ -151,6 +152,14 @@ pub enum TransactionKind {
 Transaction amounts must be greater than zero. Their economic direction is
 determined by `TransactionKind`, not by storing a negative input amount.
 
+Every transaction also has one fixed `Category`. Categories describe the
+purpose or source of a transaction for future statistics, while
+`TransactionKind` determines how the transaction changes the account balance.
+The current categories cover common expenses and income, including food,
+transportation, housing, salary, sales, family, and investments. Categories
+are represented by an enum, so adding another category currently requires a
+code change.
+
 Every transaction also stores an `occurred_at: Zoned` value. It represents the
 precise instant when the transaction occurred together with its original IANA
 time zone:
@@ -160,7 +169,7 @@ use jiff::Zoned;
 use ledger_rs::domain::{
     account::AccountId,
     money::{Currency, Money},
-    transaction::{Transaction, TransactionId, TransactionKind},
+    transaction::{Category, Transaction, TransactionId, TransactionKind},
 };
 
 let occurred_at: Zoned =
@@ -175,6 +184,7 @@ let transaction = Transaction::new(
     Money::from_minor_units(10_000, Currency::Cny),
     occurred_at,
     String::from("Dinner"),
+    Category::Food,
 )
 .unwrap();
 
@@ -206,8 +216,8 @@ the intended behavior of future reporting features.
 | `Expense` | `-amount` | `+amount` | No change |
 | `ExpenseRefund` | `+amount` | `-amount` | No change |
 
-Account balance calculation is implemented. Expense and income report totals
-have not been implemented yet.
+Account balance calculation and category persistence are implemented. Expense,
+income, and category-based report totals have not been implemented yet.
 
 ## Scope of the First Complete Workflow
 
@@ -307,6 +317,7 @@ setup and startup code.
 - Use distinct ID types for accounts and transactions
 - Give each account one currency
 - Support income, expense, and expense-refund transactions
+- Assign one fixed expense or income category to every transaction
 - Preserve each transaction's precise occurrence time and original IANA time
   zone
 - Validate account names, descriptions, and transaction amounts
@@ -330,9 +341,15 @@ setup and startup code.
   repository trait
 - Preserve transaction timestamps and original IANA time zones across SQLite
   storage round trips
+- Preserve fixed transaction categories across SQLite storage round trips
 - Keep core business rules unchanged when switching storage implementations
 - Open file-backed repositories and preserve data after closing and reopening
   the SQLite connection
+
+Database schema migrations are not implemented yet. During the current
+pre-release development stage there is no existing user database to preserve,
+so a development database should be deleted and recreated after an incompatible
+schema change.
 
 ### Milestone 5: CLI
 
@@ -346,7 +363,7 @@ setup and startup code.
 
 - TUI
 - Web API
-- Categories and budgets
+- Budgets
 - Reports and data import/export
 - Exchange rates and cross-currency transfers
 

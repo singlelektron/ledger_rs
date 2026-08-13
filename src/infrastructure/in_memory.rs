@@ -71,7 +71,7 @@ mod tests {
         AccountRepository, RepositoryError, TransactionRepository,
     };
     use crate::domain::money::Currency;
-    use crate::domain::transaction::TransactionId;
+    use crate::domain::transaction::{Category, TransactionId};
 
     #[test]
     fn new_repository_is_empty() {
@@ -129,6 +129,7 @@ mod tests {
             crate::domain::money::Money::from_minor_units(1000, Currency::Cny),
             "2026-08-10T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             "Salary".to_string(),
+            Category::Food,
         )
         .unwrap();
         let transaction2 = Transaction::new(
@@ -138,6 +139,7 @@ mod tests {
             crate::domain::money::Money::from_minor_units(500, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             "Groceries".to_string(),
+            Category::Food,
         )
         .unwrap();
         repository.save(transaction1.clone()).unwrap();
@@ -161,6 +163,7 @@ mod tests {
             crate::domain::money::Money::from_minor_units(1000, Currency::Cny),
             "2026-08-10T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             "Salary".to_string(),
+            Category::Food,
         )
         .unwrap();
         let transaction2 = Transaction::new(
@@ -170,6 +173,7 @@ mod tests {
             crate::domain::money::Money::from_minor_units(500, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             "Groceries".to_string(),
+            Category::Food,
         )
         .unwrap();
         repository.save(transaction1.clone()).unwrap();
@@ -193,6 +197,7 @@ mod tests {
             crate::domain::money::Money::from_minor_units(1000, Currency::Cny),
             "2026-08-10T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             "Salary".to_string(),
+            Category::Food,
         )
         .unwrap();
         repository.save(transaction.clone()).unwrap();

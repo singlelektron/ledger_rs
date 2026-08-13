@@ -61,7 +61,7 @@ pub fn calculate_balance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::transaction::TransactionId;
+    use crate::domain::transaction::{Category, TransactionId};
     use jiff::Zoned;
 
     fn sample_account() -> Account {
@@ -85,6 +85,7 @@ mod tests {
                 Money::from_minor_units(1_000, Currency::Cny),
                 occurred_at.clone(),
                 "Salary".to_string(),
+                Category::Food,
             )
             .unwrap(),
             Transaction::new(
@@ -94,6 +95,7 @@ mod tests {
                 Money::from_minor_units(250, Currency::Cny),
                 occurred_at,
                 "Groceries".to_string(),
+                Category::Food,
             )
             .unwrap(),
         ];
@@ -116,6 +118,7 @@ mod tests {
                 Money::from_minor_units(1_000, Currency::Cny),
                 occurred_at.clone(),
                 "Salary".to_string(),
+                Category::Food,
             )
             .unwrap(),
             Transaction::new(
@@ -125,6 +128,7 @@ mod tests {
                 Money::from_minor_units(250, Currency::Cny),
                 occurred_at,
                 "Groceries".to_string(),
+                Category::Food,
             )
             .unwrap(),
         ];
@@ -151,6 +155,7 @@ mod tests {
                 Money::from_minor_units(1_000, Currency::Cny),
                 occurred_at.clone(),
                 "Salary".to_string(),
+                Category::Food,
             )
             .unwrap(),
             Transaction::new(
@@ -160,6 +165,7 @@ mod tests {
                 Money::from_minor_units(250, Currency::Usd),
                 occurred_at,
                 "Groceries".to_string(),
+                Category::Food,
             )
             .unwrap(),
         ];
@@ -198,6 +204,7 @@ mod tests {
                 Money::from_minor_units(250, Currency::Cny),
                 occurred_at,
                 "Refund".to_string(),
+                Category::Food,
             )
             .unwrap(),
         ];
@@ -220,6 +227,7 @@ mod tests {
                 Money::from_minor_units(i64::MAX, Currency::Cny),
                 occurred_at.clone(),
                 "Max income".to_string(),
+                Category::Food,
             )
             .unwrap(),
             Transaction::new(
@@ -229,6 +237,7 @@ mod tests {
                 Money::from_minor_units(1, Currency::Cny),
                 occurred_at,
                 "Overflow income".to_string(),
+                Category::Food,
             )
             .unwrap(),
         ];
@@ -252,6 +261,7 @@ mod tests {
                 Money::from_minor_units(i64::MAX, Currency::Cny),
                 occurred_at.clone(),
                 "Max expense".to_string(),
+                Category::Food,
             )
             .unwrap(),
             Transaction::new(
@@ -261,6 +271,7 @@ mod tests {
                 Money::from_minor_units(1, Currency::Cny),
                 occurred_at.clone(),
                 "Min balance".to_string(),
+                Category::Food,
             )
             .unwrap(),
             Transaction::new(
@@ -270,6 +281,7 @@ mod tests {
                 Money::from_minor_units(1, Currency::Cny),
                 occurred_at,
                 "Overflow expense".to_string(),
+                Category::Food,
             )
             .unwrap(),
         ];

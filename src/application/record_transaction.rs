@@ -45,7 +45,7 @@ mod tests {
 
     use crate::domain::account::{Account, AccountId};
     use crate::domain::money::{Currency, Money};
-    use crate::domain::transaction::{Transaction, TransactionId, TransactionKind};
+    use crate::domain::transaction::{Category, Transaction, TransactionId, TransactionKind};
     use crate::infrastructure::in_memory::{
         InMemoryAccountRepository, InMemoryTransactionRepository,
     };
@@ -65,6 +65,7 @@ mod tests {
             Money::from_minor_units(1000, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             String::from("Salary"),
+            Category::Food,
         )
         .unwrap();
 
@@ -75,6 +76,7 @@ mod tests {
             Money::from_minor_units(200, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             String::from("Groceries"),
+            Category::Food,
         )
         .unwrap();
 
@@ -107,6 +109,7 @@ mod tests {
             Money::from_minor_units(1000, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             String::from("Salary"),
+            Category::Food,
         )
         .unwrap();
 
@@ -134,6 +137,7 @@ mod tests {
             Money::from_minor_units(1000, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             String::from("Salary"),
+            Category::Food,
         )
         .unwrap();
 
@@ -171,6 +175,7 @@ mod tests {
             Money::from_minor_units(1000, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             String::from("Salary"),
+            Category::Food,
         )
         .unwrap();
         let transaction2 = Transaction::new(
@@ -180,6 +185,7 @@ mod tests {
             Money::from_minor_units(200, Currency::Cny),
             "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
             String::from("Groceries"),
+            Category::Food,
         )
         .unwrap();
         transaction_repository.save(transaction1).unwrap();
