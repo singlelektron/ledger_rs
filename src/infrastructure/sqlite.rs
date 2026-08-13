@@ -5,6 +5,7 @@ use crate::domain::transaction::{Transaction, TransactionId, TransactionKind};
 use jiff::Zoned;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
+use std::path::Path;
 use std::rc::Rc;
 
 fn currency_to_code(currency: Currency) -> &'static str {
@@ -246,6 +247,24 @@ impl TransactionRepository for SqliteTransactionRepository {
         }
         Ok(transactions)
     }
+}
+
+pub fn open_repositories(
+    path: impl AsRef<Path>,
+) -> Result<(SqliteAccountRepository, SqliteTransactionRepository), RepositoryError> {
+    let connection =
+        Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+    let connection = Rc::new(connection);
+
+    Ok((
+        SqliteAccountRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransactionRepository { connection },
+    ))
 }
 
 pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
@@ -612,5 +631,25 @@ mod tests {
                 "FOREIGN KEY constraint failed".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn opens_repositories() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("opens_repo_test.db");
+
+        let (mut account_repository, transaction_repository) = open_repositories(&db_path).unwrap();
+
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        drop(account_repository);
+        drop(transaction_repository);
+
+        let (account_repository, _transaction_repository) = open_repositories(&db_path).unwrap();
+
+        let stored = account_repository.find_by_id(account_id).unwrap().unwrap();
+        assert_eq!(stored.id(), account_id);
     }
 }

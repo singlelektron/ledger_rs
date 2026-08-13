@@ -15,7 +15,7 @@ business logic for accounts, transactions, balances, budgets, and reports.
 ## Current Status
 
 The first domain models, application use cases, in-memory repositories, and
-SQLite schema are implemented and tested:
+SQLite persistence layer are implemented and tested:
 
 - Currency-aware `Money` values stored as integer minor units
 - Checked addition and subtraction with explicit errors
@@ -45,11 +45,12 @@ SQLite schema are implemented and tested:
   account
 - SQLite transaction mapping that preserves amounts, transaction kinds,
   timestamps, and original IANA time-zone names
+- File-backed SQLite repositories that preserve stored accounts after the
+  repositories are closed and reopened
 
-The project now provides in-memory storage, the initial SQLite schema, and
-SQLite account and transaction repositories. A durable file-backed workflow is
-not yet implemented. The project also does not yet provide a user interface;
-`main.rs` still contains only the initial executable entry point.
+The project now provides both in-memory storage and file-backed SQLite account
+and transaction repositories. The project does not yet provide a user
+interface; `main.rs` still contains only the initial executable entry point.
 
 ## Goals
 
@@ -216,12 +217,11 @@ The first complete version will:
 2. Create accounts with a single currency
 3. Record time-zone-aware income, expense, and expense-refund transactions
 4. Calculate an account balance from its transactions
-5. Store data in memory
+5. Store data in memory or a persistent SQLite database
 6. Expose the workflow through a simple CLI
 
 It will not initially include:
 
-- A database
 - TUI or Web interfaces
 - Authentication and authorization
 - Exchange rates or automatic currency conversion
@@ -269,29 +269,29 @@ split into crates such as `core`, `cli`, and `database`.
 
 ```text
 src/
-├── main.rs
-├── lib.rs
-└── domain/
-    ├── mod.rs
-    ├── money.rs
-    ├── account.rs
-    └── transaction.rs
-```
-
-`lib.rs` exposes the reusable domain modules. `main.rs` is the executable entry
-point and will eventually contain only CLI setup and startup code.
-
-Planned modules will be introduced when they have real responsibilities:
-
-```text
-src/
 ├── application/
+│   ├── account_balance.rs
+│   ├── create_account.rs
 │   ├── mod.rs
-│   └── ledger_service.rs
-└── infrastructure/
-    ├── mod.rs
-    └── memory_repository.rs
+│   ├── record_transaction.rs
+│   └── repository.rs
+├── domain/
+│   ├── account.rs
+│   ├── balance.rs
+│   ├── mod.rs
+│   ├── money.rs
+│   └── transaction.rs
+├── infrastructure/
+│   ├── in_memory.rs
+│   ├── mod.rs
+│   └── sqlite.rs
+├── lib.rs
+└── main.rs
 ```
+
+`lib.rs` exposes the reusable domain, application, and infrastructure modules.
+`main.rs` is the executable entry point and will eventually contain only CLI
+setup and startup code.
 
 ## Roadmap
 
@@ -321,7 +321,7 @@ src/
   through application use cases
 - Verify these workflows with unit tests against in-memory repositories
 
-### Milestone 4: Persistence - In Progress
+### Milestone 4: Persistence - Completed
 
 - Use SQLite as the first database
 - Initialize the account and transaction schema with foreign-key enforcement
@@ -331,6 +331,8 @@ src/
 - Preserve transaction timestamps and original IANA time zones across SQLite
   storage round trips
 - Keep core business rules unchanged when switching storage implementations
+- Open file-backed repositories and preserve data after closing and reopening
+  the SQLite connection
 
 ### Milestone 5: CLI
 
