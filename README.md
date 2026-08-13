@@ -36,6 +36,9 @@ SQLite persistence layer are implemented and tested:
 - An application-level account balance query that loads an account and its
   transactions through repository traits before applying the domain balance
   rules
+- An application-level category net-outflow query that loads an account and
+  its transactions through repository traits before applying the domain report
+  rules
 - An application-level transaction-recording use case that rejects unknown
   accounts and currency mismatches before saving through the transaction
   repository
@@ -219,11 +222,12 @@ reporting features.
 | `Expense` | `-amount` | `+amount` | `+amount` | No change |
 | `ExpenseRefund` | `+amount` | `-amount` | `-amount` | No change |
 
-Account balance calculation, category persistence, and domain-level category
-net-outflow calculation are implemented. A positive category result represents
-net spending, while a negative result represents net money received through
-income or refunds. The application-level category query, presentation, and
-separate expense and income report totals have not been implemented yet.
+Account balance calculation, category persistence, domain-level category
+net-outflow calculation, and the application-level category query are
+implemented. A positive category result represents net spending, while a
+negative result represents net money received through income or refunds. CLI
+presentation and separate expense and income report totals have not been
+implemented yet.
 
 ## Scope of the First Complete Workflow
 
@@ -287,6 +291,7 @@ split into crates such as `core`, `cli`, and `database`.
 src/
 ├── application/
 │   ├── account_balance.rs
+│   ├── category_report.rs
 │   ├── create_account.rs
 │   ├── mod.rs
 │   ├── record_transaction.rs
@@ -294,6 +299,7 @@ src/
 ├── domain/
 │   ├── account.rs
 │   ├── balance.rs
+│   ├── category_report.rs
 │   ├── mod.rs
 │   ├── money.rs
 │   └── transaction.rs
@@ -336,8 +342,8 @@ setup and startup code.
 - Calculate balances according to transaction kind
 - Calculate signed net outflow by category, including expenses, refunds, and
   income
-- Create accounts, record validated transactions, and query account balances
-  through application use cases
+- Create accounts, record validated transactions, query account balances, and
+  query category net outflow through application use cases
 - Verify these workflows with unit tests against in-memory repositories
 
 ### Milestone 4: Persistence - Completed
