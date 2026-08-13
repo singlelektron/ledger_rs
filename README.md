@@ -27,6 +27,8 @@ SQLite persistence layer are implemented and tested:
   amounts
 - Account balance calculation with explicit account, currency, and arithmetic
   overflow errors
+- Domain-level category net-outflow calculation with explicit account,
+  currency, and arithmetic overflow errors
 - In-memory account and transaction repositories with duplicate-ID validation
   and account-based transaction queries
 - An application-level account-creation use case that applies domain name
@@ -207,17 +209,21 @@ example, when one person pays a restaurant bill and friends later reimburse
 their shares, those reimbursements reduce the original dining expense instead
 of being counted as income.
 
-Account balance calculation follows these rules. The reporting columns describe
-the intended behavior of future reporting features.
+Account balance and category net-outflow calculations follow these rules. The
+expense and income total columns describe the intended behavior of future
+reporting features.
 
-| Transaction kind | Account balance | Expense total | Income total |
-| --- | ---: | ---: | ---: |
-| `Income` | `+amount` | No change | `+amount` |
-| `Expense` | `-amount` | `+amount` | No change |
-| `ExpenseRefund` | `+amount` | `-amount` | No change |
+| Transaction kind | Account balance | Category net outflow | Expense total | Income total |
+| --- | ---: | ---: | ---: | ---: |
+| `Income` | `+amount` | `-amount` | No change | `+amount` |
+| `Expense` | `-amount` | `+amount` | `+amount` | No change |
+| `ExpenseRefund` | `+amount` | `-amount` | `-amount` | No change |
 
-Account balance calculation and category persistence are implemented. Expense,
-income, and category-based report totals have not been implemented yet.
+Account balance calculation, category persistence, and domain-level category
+net-outflow calculation are implemented. A positive category result represents
+net spending, while a negative result represents net money received through
+income or refunds. The application-level category query, presentation, and
+separate expense and income report totals have not been implemented yet.
 
 ## Scope of the First Complete Workflow
 
@@ -328,6 +334,8 @@ setup and startup code.
 - Implement repositories using `Vec` or `HashMap`
 - Reject transactions whose currency does not match the account currency
 - Calculate balances according to transaction kind
+- Calculate signed net outflow by category, including expenses, refunds, and
+  income
 - Create accounts, record validated transactions, and query account balances
   through application use cases
 - Verify these workflows with unit tests against in-memory repositories

@@ -20,7 +20,7 @@ pub enum TransactionKind {
     ExpenseRefund,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Category {
     Food,
     Transportation,
