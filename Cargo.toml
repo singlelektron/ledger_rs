@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 jiff = "0.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }

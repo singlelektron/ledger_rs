@@ -14,8 +14,8 @@ business logic for accounts, transactions, balances, budgets, and reports.
 
 ## Current Status
 
-The first domain models, application use cases, and in-memory repositories are
-implemented and tested:
+The first domain models, application use cases, in-memory repositories, and
+SQLite schema are implemented and tested:
 
 - Currency-aware `Money` values stored as integer minor units
 - Checked addition and subtraction with explicit errors
@@ -36,10 +36,13 @@ implemented and tested:
 - An application-level transaction-recording use case that rejects unknown
   accounts and currency mismatches before saving through the transaction
   repository
+- SQLite support through `rusqlite`, including repeatable schema initialization
+  for account and transaction tables with foreign-key enforcement enabled
 
-The project now provides in-memory storage, but it does not yet provide durable
-file or database persistence or a user interface. `main.rs` still contains only
-the initial executable entry point.
+The project now provides in-memory storage and the initial SQLite schema. The
+SQLite repository implementations and durable file-backed workflow are not yet
+implemented. The project also does not yet provide a user interface; `main.rs`
+still contains only the initial executable entry point.
 
 ## Goals
 
@@ -301,29 +304,30 @@ src/
   zone
 - Validate account names, descriptions, and transaction amounts
 
-### Milestone 3: Application Service and In-Memory Repository - Next
+### Milestone 3: Application Service and In-Memory Repository - Completed
 
 - Define repository traits
 - Implement repositories using `Vec` or `HashMap`
 - Reject transactions whose currency does not match the account currency
 - Calculate balances according to transaction kind
-- Calculate expense and income totals without combining different currencies
-- Query, filter, and order transactions by their occurrence times
-- Verify complete workflows with integration tests
+- Create accounts, record validated transactions, and query account balances
+  through application use cases
+- Verify these workflows with unit tests against in-memory repositories
 
-### Milestone 4: CLI
+### Milestone 4: Persistence - In Progress
+
+- Use SQLite as the first database
+- Initialize the account and transaction schema with foreign-key enforcement
+- Implement the existing repository traits in the infrastructure layer
+- Keep core business rules unchanged when switching storage implementations
+
+### Milestone 5: CLI
 
 - Create accounts and record transactions from the command line
 - Parse local transaction times and IANA time-zone names
 - Reject invalid or ambiguous local times instead of silently guessing
 - Keep the CLI limited to parsing, basic input checks, and presentation
 - Keep business rules in the domain and application layers
-
-### Milestone 5: Persistence
-
-- Use SQLite as the first database
-- Implement the existing repository traits in the infrastructure layer
-- Keep core business rules unchanged when switching storage implementations
 
 ### Later Milestones
 
