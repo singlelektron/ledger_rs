@@ -20,4 +20,7 @@ pub trait TransactionRepository {
 pub enum RepositoryError {
     DuplicateAccountId(AccountId),
     DuplicateTransactionId(TransactionId),
+    InvalidId(u64),
+    Storage(String),
+    InvalidStoredData(String),
 }

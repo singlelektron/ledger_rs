@@ -38,11 +38,14 @@ SQLite schema are implemented and tested:
   repository
 - SQLite support through `rusqlite`, including repeatable schema initialization
   for account and transaction tables with foreign-key enforcement enabled
+- A SQLite account repository that saves and queries accounts while reporting
+  duplicate IDs, unsupported ID ranges, and invalid stored currency values
 
-The project now provides in-memory storage and the initial SQLite schema. The
-SQLite repository implementations and durable file-backed workflow are not yet
-implemented. The project also does not yet provide a user interface; `main.rs`
-still contains only the initial executable entry point.
+The project now provides in-memory storage, the initial SQLite schema, and a
+SQLite account repository. The SQLite transaction repository and durable
+file-backed workflow are not yet implemented. The project also does not yet
+provide a user interface; `main.rs` still contains only the initial executable
+entry point.
 
 ## Goals
 
@@ -318,7 +321,9 @@ src/
 
 - Use SQLite as the first database
 - Initialize the account and transaction schema with foreign-key enforcement
-- Implement the existing repository traits in the infrastructure layer
+- Implement account storage and lookup through the existing repository trait
+- Implement transaction storage and account-based queries through the existing
+  repository trait
 - Keep core business rules unchanged when switching storage implementations
 
 ### Milestone 5: CLI
