@@ -1,8 +1,11 @@
-use crate::application::repository::{AccountRepository, RepositoryError};
+use crate::application::repository::{AccountRepository, RepositoryError, TransactionRepository};
 use crate::domain::account::{Account, AccountId};
-use crate::domain::money::Currency;
+use crate::domain::money::{Currency, Money};
+use crate::domain::transaction::{Transaction, TransactionId, TransactionKind};
+use jiff::Zoned;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
+use std::rc::Rc;
 
 fn currency_to_code(currency: Currency) -> &'static str {
     match currency {
@@ -27,8 +30,47 @@ fn currency_from_code(code: &str) -> Result<Currency, RepositoryError> {
     }
 }
 
+fn transaction_kind_to_code(kind: TransactionKind) -> &'static str {
+    match kind {
+        TransactionKind::Income => "income",
+        TransactionKind::Expense => "expense",
+        TransactionKind::ExpenseRefund => "expense_refund",
+    }
+}
+
+fn transaction_kind_from_code(code: &str) -> Result<TransactionKind, RepositoryError> {
+    match code {
+        "income" => Ok(TransactionKind::Income),
+        "expense" => Ok(TransactionKind::Expense),
+        "expense_refund" => Ok(TransactionKind::ExpenseRefund),
+        other => Err(RepositoryError::InvalidStoredData(format!(
+            "unsupported transaction kind: {other}"
+        ))),
+    }
+}
+
 pub struct SqliteAccountRepository {
-    connection: Connection,
+    connection: Rc<Connection>,
+}
+pub struct SqliteTransactionRepository {
+    connection: Rc<Connection>,
+}
+
+pub fn in_memory_repositories()
+-> Result<(SqliteAccountRepository, SqliteTransactionRepository), RepositoryError> {
+    let connection = Connection::open_in_memory()
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+    let connection = Rc::new(connection);
+
+    Ok((
+        SqliteAccountRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransactionRepository { connection },
+    ))
 }
 
 impl SqliteAccountRepository {
@@ -39,7 +81,9 @@ impl SqliteAccountRepository {
         initialize_schema(&connection)
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection: Rc::new(connection),
+        })
     }
 }
 
@@ -56,8 +100,8 @@ impl AccountRepository for SqliteAccountRepository {
                 params![id, account.name(), currency_to_code(account.currency()),],
             )
             .map_err(|error| match error {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                rusqlite::Error::SqliteFailure(error_code, _)
+                    if error_code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY =>
                 {
                     RepositoryError::DuplicateAccountId(account.id())
                 }
@@ -95,6 +139,112 @@ impl AccountRepository for SqliteAccountRepository {
                 Ok(Some(account))
             }
         }
+    }
+}
+
+impl TransactionRepository for SqliteTransactionRepository {
+    fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError> {
+        let id = i64::try_from(transaction.id().value())
+            .map_err(|_| RepositoryError::InvalidId(transaction.id().value()))?;
+        let account_id = i64::try_from(transaction.account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transaction.account_id().value()))?;
+        self.connection
+            .execute(
+                "
+            INSERT INTO transactions (id, account_id, kind, amount_minor, currency, occurred_at, description)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ",
+                params![
+                    id,
+                    account_id,
+                    transaction_kind_to_code(transaction.kind()),
+                    transaction.amount().minor_units(),
+                    currency_to_code(transaction.amount().currency()),
+                    transaction.occurred_at().to_string(),
+                    transaction.description(),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(error_code, _)
+                    if error_code.extended_code
+                        == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY =>
+                {
+                    RepositoryError::DuplicateTransactionId(transaction.id())
+                }
+                _ => RepositoryError::Storage(error.to_string()),
+            })?;
+        Ok(())
+    }
+
+    fn find_by_account_id(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<Transaction>, RepositoryError> {
+        let database_account_id = i64::try_from(account_id.value())
+            .map_err(|_| RepositoryError::InvalidId(account_id.value()))?;
+        let mut stmt = self
+            .connection
+            .prepare(
+                "
+                SELECT id, kind, amount_minor, currency, occurred_at, description
+                FROM transactions
+                WHERE account_id = ?1
+                ",
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+        let transactions_iter = stmt
+            .query_map(params![database_account_id], |row| {
+                let id: i64 = row.get(0)?;
+                let kind_code: String = row.get(1)?;
+                let amount_minor: i64 = row.get(2)?;
+                let currency_code: String = row.get(3)?;
+                let occurred_at_str: String = row.get(4)?;
+                let description: String = row.get(5)?;
+
+                Ok((
+                    id,
+                    kind_code,
+                    amount_minor,
+                    currency_code,
+                    occurred_at_str,
+                    description,
+                ))
+            })
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+        let mut transactions = Vec::new();
+        for transaction_result in transactions_iter {
+            let (id, kind_code, amount_minor, currency_code, occurred_at_str, description) =
+                transaction_result.map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+            let transaction_id = TransactionId::new(u64::try_from(id).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!("invalid transaction id: {id}"))
+            })?);
+            let kind = transaction_kind_from_code(&kind_code)?;
+            let currency = currency_from_code(&currency_code)?;
+            let amount = Money::from_minor_units(amount_minor, currency);
+            let occurred_at: Zoned = occurred_at_str.parse().map_err(|error| {
+                RepositoryError::InvalidStoredData(format!(
+                    "invalid occurred_at: {occurred_at_str}, error: {error:?}"
+                ))
+            })?;
+
+            let transaction = Transaction::new(
+                transaction_id,
+                account_id,
+                kind,
+                amount,
+                occurred_at,
+                description,
+            )
+            .map_err(|error| {
+                RepositoryError::InvalidStoredData(format!("invalid transaction data: {error:?}"))
+            })?;
+
+            transactions.push(transaction);
+        }
+        Ok(transactions)
     }
 }
 
@@ -229,6 +379,237 @@ mod tests {
             repository.find_by_id(AccountId::new(1)),
             Err(RepositoryError::InvalidStoredData(
                 "unsupported currency: GBP".to_string(),
+            ))
+        );
+    }
+
+    fn sample_occurred_at() -> Zoned {
+        "2026-08-10T18:30:00+08:00[Asia/Shanghai]".parse().unwrap()
+    }
+
+    #[test]
+    fn saves_and_finds_transaction() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        let transaction = Transaction::new(
+            TransactionId::new(1),
+            account_id,
+            TransactionKind::Income,
+            Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
+            "Salary".to_string(),
+        )
+        .unwrap();
+
+        transaction_repository.save(transaction.clone()).unwrap();
+
+        assert_eq!(
+            transaction_repository
+                .find_by_account_id(account_id)
+                .unwrap(),
+            vec![transaction]
+        );
+    }
+
+    #[test]
+    fn returns_empty_for_account_without_transactions() {
+        let (mut account_repository, transaction_repository) = in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        assert!(
+            transaction_repository
+                .find_by_account_id(account_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn returns_only_requested_accounts_transactions() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+        let account_id1 = AccountId::new(1);
+        let account_id2 = AccountId::new(2);
+        let account1 = Account::new(account_id1, "Cash".to_string(), Currency::Cny).unwrap();
+        let account2 = Account::new(account_id2, "Bank".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account1).unwrap();
+        account_repository.save(account2).unwrap();
+
+        let transaction1 = Transaction::new(
+            TransactionId::new(1),
+            account_id1,
+            TransactionKind::Income,
+            Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
+            "Salary".to_string(),
+        )
+        .unwrap();
+        let transaction2 = Transaction::new(
+            TransactionId::new(2),
+            account_id1,
+            TransactionKind::Expense,
+            Money::from_minor_units(200, Currency::Cny),
+            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
+            "Groceries".to_string(),
+        )
+        .unwrap();
+        let transaction3 = Transaction::new(
+            TransactionId::new(3),
+            account_id2,
+            TransactionKind::Expense,
+            Money::from_minor_units(300, Currency::Cny),
+            "2026-08-12T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
+            "Lunch".to_string(),
+        )
+        .unwrap();
+
+        transaction_repository.save(transaction1.clone()).unwrap();
+        transaction_repository.save(transaction2.clone()).unwrap();
+        transaction_repository.save(transaction3).unwrap();
+
+        let transactions = transaction_repository
+            .find_by_account_id(account_id1)
+            .unwrap();
+
+        assert_eq!(transactions.len(), 2);
+        assert!(transactions.contains(&transaction1));
+        assert!(transactions.contains(&transaction2));
+    }
+
+    #[test]
+    fn rejects_duplicate_transaction_id() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+        let transaction1 = Transaction::new(
+            TransactionId::new(1),
+            account_id,
+            TransactionKind::Income,
+            Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
+            "Salary".to_string(),
+        )
+        .unwrap();
+        let transaction2 = Transaction::new(
+            TransactionId::new(1),
+            account_id,
+            TransactionKind::Expense,
+            Money::from_minor_units(200, Currency::Cny),
+            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
+            "Groceries".to_string(),
+        )
+        .unwrap();
+
+        transaction_repository.save(transaction1).unwrap();
+
+        assert_eq!(
+            transaction_repository.save(transaction2),
+            Err(RepositoryError::DuplicateTransactionId(TransactionId::new(
+                1
+            )))
+        );
+    }
+
+    #[test]
+    fn preserves_timestamp_and_iana_time_zone() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        let occurred_at = sample_occurred_at();
+        let expected_timestamp = occurred_at.timestamp();
+        let transaction = Transaction::new(
+            TransactionId::new(1),
+            account_id,
+            TransactionKind::Expense,
+            Money::from_minor_units(1_000, Currency::Cny),
+            occurred_at,
+            "Dinner".to_string(),
+        )
+        .unwrap();
+
+        transaction_repository.save(transaction).unwrap();
+
+        let stored = transaction_repository
+            .find_by_account_id(account_id)
+            .unwrap();
+
+        assert_eq!(stored.len(), 1);
+
+        let stored = &stored[0];
+
+        assert_eq!(stored.occurred_at().timestamp(), expected_timestamp);
+
+        assert_eq!(
+            stored.occurred_at().time_zone().iana_name(),
+            Some("Asia/Shanghai")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_stored_occurrence_time() {
+        let (mut account_repository, transaction_repository) = in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        transaction_repository
+            .connection
+            .execute(
+                "
+                INSERT INTO transactions (id, account_id, kind, amount_minor, currency, occurred_at, description)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ",
+                params![
+                    1_i64,
+                    1_i64,
+                    "income",
+                    1_000_i64,
+                    "CNY",
+                    "not-a-valid-zoned-time",
+                    "Salary",
+                ],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            transaction_repository.find_by_account_id(account_id),
+            Err(RepositoryError::InvalidStoredData(message)) if message.contains("invalid occurred_at:")
+        ));
+    }
+
+    #[test]
+    fn rejects_transaction_for_unknown_account() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        let transaction = Transaction::new(
+            TransactionId::new(1),
+            AccountId::new(2),
+            TransactionKind::Income,
+            Money::from_minor_units(1_000, Currency::Cny),
+            sample_occurred_at(),
+            "Salary".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            transaction_repository.save(transaction),
+            Err(RepositoryError::Storage(
+                "FOREIGN KEY constraint failed".to_string()
             ))
         );
     }

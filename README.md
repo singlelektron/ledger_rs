@@ -40,12 +40,16 @@ SQLite schema are implemented and tested:
   for account and transaction tables with foreign-key enforcement enabled
 - A SQLite account repository that saves and queries accounts while reporting
   duplicate IDs, unsupported ID ranges, and invalid stored currency values
+- A SQLite transaction repository that shares its connection with the account
+  repository, enforces account foreign keys, and queries transactions by
+  account
+- SQLite transaction mapping that preserves amounts, transaction kinds,
+  timestamps, and original IANA time-zone names
 
-The project now provides in-memory storage, the initial SQLite schema, and a
-SQLite account repository. The SQLite transaction repository and durable
-file-backed workflow are not yet implemented. The project also does not yet
-provide a user interface; `main.rs` still contains only the initial executable
-entry point.
+The project now provides in-memory storage, the initial SQLite schema, and
+SQLite account and transaction repositories. A durable file-backed workflow is
+not yet implemented. The project also does not yet provide a user interface;
+`main.rs` still contains only the initial executable entry point.
 
 ## Goals
 
@@ -324,6 +328,8 @@ src/
 - Implement account storage and lookup through the existing repository trait
 - Implement transaction storage and account-based queries through the existing
   repository trait
+- Preserve transaction timestamps and original IANA time zones across SQLite
+  storage round trips
 - Keep core business rules unchanged when switching storage implementations
 
 ### Milestone 5: CLI
