@@ -175,6 +175,10 @@ mod tests {
         fn find_by_id(&self, _id: AccountId) -> Result<Option<Account>, RepositoryError> {
             Err(RepositoryError::Storage("database unavailable".to_string()))
         }
+
+        fn find_all(&self) -> Result<Vec<Account>, RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
     }
 
     #[test]

@@ -38,6 +38,10 @@ impl AccountRepository for InMemoryAccountRepository {
         let account = self.accounts.iter().find(|a| a.id() == id).cloned();
         Ok(account)
     }
+
+    fn find_all(&self) -> Result<Vec<Account>, RepositoryError> {
+        Ok(self.accounts.clone())
+    }
 }
 
 impl TransactionRepository for InMemoryTransactionRepository {
@@ -207,5 +211,15 @@ mod tests {
                 1
             )))
         );
+    }
+
+    #[test]
+    fn finds_all_accounts() {
+        let mut repository = InMemoryAccountRepository::new();
+        let account1 = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        let account2 = Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap();
+        repository.save(account1.clone()).unwrap();
+        repository.save(account2.clone()).unwrap();
+        assert_eq!(repository.find_all().unwrap().len(), 2);
     }
 }

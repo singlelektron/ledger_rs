@@ -29,10 +29,12 @@ SQLite persistence layer are implemented and tested:
   overflow errors
 - Domain-level category net-outflow calculation with explicit account,
   currency, and arithmetic overflow errors
-- In-memory account and transaction repositories with duplicate-ID validation
-  and account-based transaction queries
+- In-memory account and transaction repositories with duplicate-ID validation,
+  account listing, and account-based transaction queries
 - An application-level account-creation use case that applies domain name
   validation and reports duplicate account IDs from the repository
+- An application-level account-listing use case that preserves repository
+  errors and returns accounts in ascending ID order
 - An application-level account balance query that loads an account and its
   transactions through repository traits before applying the domain balance
   rules
@@ -47,8 +49,8 @@ SQLite persistence layer are implemented and tested:
   newest-first order
 - SQLite support through `rusqlite`, including repeatable schema initialization
   for account and transaction tables with foreign-key enforcement enabled
-- A SQLite account repository that saves and queries accounts while reporting
-  duplicate IDs, unsupported ID ranges, and invalid stored currency values
+- A SQLite account repository that saves, queries, and lists accounts while
+  reporting duplicate IDs, unsupported ID ranges, and invalid stored data
 - A SQLite transaction repository that shares its connection with the account
   repository, enforces account foreign keys, and queries transactions by
   account
@@ -69,7 +71,9 @@ and transaction repositories. Its CLI can create accounts and record
 time-zone-aware transactions in a persistent SQLite database, then calculate
 an account balance or display category net outflow from the stored
 transactions. It can also display a validated account's transaction history in
-stable newest-first order.
+stable newest-first order. The application layer can list all accounts in
+ascending ID order; CLI presentation for the account list has not been added
+yet.
 
 ## Goals
 
@@ -288,7 +292,7 @@ CLI / TUI / Web
 - `domain`: core business types and rules such as money, accounts, and
   transactions
 - `application`: use cases such as recording a transaction, querying a balance,
-  or listing an account's transaction history
+  listing accounts, or listing an account's transaction history
 - `infrastructure`: technical implementations such as in-memory, file, or
   database repositories
 - CLI, TUI, and Web: input parsing, application calls, and result presentation
@@ -309,6 +313,7 @@ src/
 │   ├── account_balance.rs
 │   ├── category_report.rs
 │   ├── create_account.rs
+│   ├── list_accounts.rs
 │   ├── list_transactions.rs
 │   ├── mod.rs
 │   ├── record_transaction.rs
@@ -408,6 +413,15 @@ schema change.
 - Preserve account and transaction repository errors - Completed
 - Return an empty list for an account with no transactions - Completed
 - Display an account's transaction history through the CLI - Completed
+
+### Milestone 7: Account Discovery - In Progress
+
+- Extend the account repository trait with an all-accounts query - Completed
+- Implement account listing for in-memory and SQLite repositories - Completed
+- Convert stored rows back into validated account domain values - Completed
+- Sort accounts by ID in the application layer - Completed
+- Preserve repository errors through the account-listing use case - Completed
+- Display all accounts through the CLI
 
 ### Later Milestones
 

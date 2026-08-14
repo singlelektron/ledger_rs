@@ -215,6 +215,12 @@ mod tests {
                 "account database unavailable".to_string(),
             ))
         }
+
+        fn find_all(&self) -> Result<Vec<Account>, RepositoryError> {
+            Err(RepositoryError::Storage(
+                "account database unavailable".to_string(),
+            ))
+        }
     }
 
     #[test]

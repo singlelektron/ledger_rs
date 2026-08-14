@@ -182,6 +182,46 @@ impl AccountRepository for SqliteAccountRepository {
             }
         }
     }
+
+    fn find_all(&self) -> Result<Vec<Account>, RepositoryError> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "
+                SELECT id, name, currency
+                FROM accounts
+                ",
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+        let accounts_iter = stmt
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let name: String = row.get(1)?;
+                let currency_code: String = row.get(2)?;
+
+                Ok((id, name, currency_code))
+            })
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+        let mut accounts = Vec::new();
+        for account_result in accounts_iter {
+            let (id, name, currency_code) =
+                account_result.map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+            let account_id = AccountId::new(u64::try_from(id).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!("invalid account id: {id}"))
+            })?);
+            let currency = currency_from_code(&currency_code)?;
+
+            let account = Account::new(account_id, name, currency).map_err(|error| {
+                RepositoryError::InvalidStoredData(format!("invalid account data: {error:?}"))
+            })?;
+
+            accounts.push(account);
+        }
+        Ok(accounts)
+    }
 }
 
 impl TransactionRepository for SqliteTransactionRepository {
@@ -744,5 +784,46 @@ mod tests {
             .unwrap();
 
         assert_eq!(stored[0].category(), Category::Salary);
+    }
+
+    #[test]
+    fn finds_all_accounts() {
+        let mut repository = SqliteAccountRepository::in_memory().unwrap();
+        let account1 = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        let account2 = Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap();
+        repository.save(account1.clone()).unwrap();
+        repository.save(account2.clone()).unwrap();
+        let accounts = repository.find_all().unwrap();
+        assert!(accounts.contains(&account1));
+        assert!(accounts.contains(&account2));
+    }
+
+    #[test]
+    fn returns_empty_for_no_accounts() {
+        let repository = SqliteAccountRepository::in_memory().unwrap();
+        assert_eq!(repository.find_all().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn returns_error_for_invalid_stored_currency() {
+        let repository = SqliteAccountRepository::in_memory().unwrap();
+
+        repository
+            .connection
+            .execute(
+                "
+                INSERT INTO accounts (id, name, currency)
+                VALUES (?1, ?2, ?3)
+                ",
+                rusqlite::params![1_i64, "Cash", "GBP"],
+            )
+            .unwrap();
+
+        assert_eq!(
+            repository.find_all(),
+            Err(RepositoryError::InvalidStoredData(
+                "unsupported currency: GBP".to_string(),
+            ))
+        );
     }
 }

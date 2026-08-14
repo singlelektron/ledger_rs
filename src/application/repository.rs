@@ -5,6 +5,8 @@ pub trait AccountRepository {
     fn save(&mut self, account: Account) -> Result<(), RepositoryError>;
 
     fn find_by_id(&self, id: AccountId) -> Result<Option<Account>, RepositoryError>;
+
+    fn find_all(&self) -> Result<Vec<Account>, RepositoryError>;
 }
 
 pub trait TransactionRepository {
