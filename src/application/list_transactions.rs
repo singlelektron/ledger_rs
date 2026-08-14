@@ -235,7 +235,7 @@ mod tests {
             ),)),
         );
     }
-    
+
     struct FailingTransactionRepository;
 
     impl TransactionRepository for FailingTransactionRepository {
