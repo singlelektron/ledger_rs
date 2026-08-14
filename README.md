@@ -53,15 +53,16 @@ SQLite persistence layer are implemented and tested:
   categories, timestamps, and original IANA time-zone names
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
-- A `clap`-based CLI entry point with `account create`, `transaction add`, and
-  `account balance` commands, case-insensitive enum parsing, configurable
-  database paths, and nonzero exit status on application errors
+- A `clap`-based CLI entry point with `account create`, `transaction add`,
+  `account balance`, and `report category` commands, case-insensitive enum
+  parsing, configurable database paths, and nonzero exit status on application
+  errors
 
 The project now provides both in-memory storage and file-backed SQLite account
 and transaction repositories. Its CLI can create accounts and record
 time-zone-aware transactions in a persistent SQLite database, then calculate
-an account balance from the stored transactions. A command for displaying
-category reports has not been added yet.
+an account balance or display category net outflow from the stored
+transactions.
 
 ## Goals
 
@@ -231,8 +232,8 @@ Account balance calculation, category persistence, domain-level category
 net-outflow calculation, and the application-level category query are
 implemented. A positive category result represents net spending, while a
 negative result represents net money received through income or refunds. CLI
-presentation and separate expense and income report totals have not been
-implemented yet.
+presentation for category net outflow is implemented. Separate expense and
+income report totals have not been implemented yet.
 
 ## Scope of the First Complete Workflow
 
@@ -377,7 +378,7 @@ schema change.
 - Create accounts from the command line - Completed
 - Record transactions from the command line - Completed
 - Query account balances from the command line - Completed
-- Query category net outflow from the command line
+- Query category net outflow from the command line - Completed
 - Parse fully specified timestamps with IANA time-zone names - Completed
 - Parse local transaction times with separately supplied IANA time-zone names
 - Reject invalid or ambiguous local times instead of silently guessing
@@ -454,6 +455,18 @@ cargo run -- account balance --id 1
 
 The displayed balance uses integer minor units and the account currency. For
 example, `800 (Cny)` represents `8.00 CNY`.
+
+Query signed net outflow grouped by transaction category:
+
+```bash
+cargo run -- report category --account-id 1
+```
+
+The report displays category rows in a stable order and uses integer minor
+units. A positive total represents net spending in that category. A negative
+total represents net money received through income or expense refunds. For
+example, an expense of `500` followed by a refund of `50` in the same category
+produces a category net outflow of `450`.
 
 After changing Rust code, run:
 

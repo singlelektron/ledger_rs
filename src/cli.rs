@@ -1,7 +1,7 @@
 use crate::{
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance},
-        category_report::GetCategoryReportError,
+        category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
@@ -36,6 +36,11 @@ pub enum Command {
     Transaction {
         #[command(subcommand)]
         command: TransactionCommand,
+    },
+
+    Report {
+        #[command(subcommand)]
+        command: ReportCommand,
     },
 }
 
@@ -84,6 +89,14 @@ pub enum TransactionCommand {
 
         #[arg(long, ignore_case = true)]
         category: CategoryArg,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReportCommand {
+    Category {
+        #[arg(long)]
+        account_id: u64,
     },
 }
 
@@ -297,6 +310,30 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 )?;
 
                 Ok(success_message)
+            }
+        },
+
+        Command::Report { command } => match command {
+            ReportCommand::Category { account_id } => {
+                let report = get_net_outflow_by_category(
+                    &account_repository,
+                    &transaction_repository,
+                    AccountId::new(account_id),
+                )?;
+
+                let mut report_lines: Vec<String> = Vec::new();
+                for (category, total) in report {
+                    report_lines.push(format!(
+                        "Category: {:?}, Total: {} ({:?})",
+                        category,
+                        total.minor_units(),
+                        total.currency()
+                    ));
+                }
+
+                report_lines.sort();
+
+                Ok(report_lines.join("\n"))
             }
         },
     }
@@ -883,5 +920,134 @@ mod tests {
                 GetAccountBalanceError::AccountNotFound(AccountId::new(99),),
             )),
         );
+    }
+
+    fn populate_database(database: PathBuf) {
+        let cli = Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Create {
+                    id: 1,
+                    name: "Cash".to_string(),
+                    currency: CurrencyArg::Cny,
+                },
+            },
+        };
+
+        let _ = run(cli).unwrap();
+
+        let cli = Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 1,
+                    kind: TransactionKindArg::Income,
+                    amount_minor: 1000,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Salary".to_string(),
+                    category: CategoryArg::Salary,
+                },
+            },
+        };
+
+        let _ = run(cli).unwrap();
+
+        let cli = Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 2,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 500,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Groceries".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let _ = run(cli).unwrap();
+
+        let cli = Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 3,
+                    account_id: 1,
+                    kind: TransactionKindArg::ExpenseRefund,
+                    amount_minor: 50,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Groceries".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let _ = run(cli).unwrap();
+    }
+
+    #[test]
+    fn reports_net_outflow_by_category() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Report {
+                command: ReportCommand::Category { account_id: 1 },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Category: Food, Total: 450 (Cny)\nCategory: Salary, Total: -1000 (Cny)"
+        );
+    }
+
+    #[test]
+    fn returns_error_when_report_account_is_unknown() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Report {
+                command: ReportCommand::Category { account_id: 2 },
+            },
+        };
+
+        let err = run(cli).unwrap_err();
+
+        assert_eq!(
+            err,
+            CliError::GetCategoryReport(GetCategoryReportError::AccountNotFound(AccountId::new(2)))
+        );
+    }
+
+    #[test]
+    fn parses_category_report_command() {
+        let cli =
+            Cli::try_parse_from(["ledger_rs", "report", "category", "--account-id", "1"]).unwrap();
+
+        match cli.command {
+            Command::Report {
+                command: ReportCommand::Category { account_id },
+            } => {
+                assert_eq!(account_id, 1);
+            }
+
+            _ => panic!("expected category report command"),
+        }
     }
 }
