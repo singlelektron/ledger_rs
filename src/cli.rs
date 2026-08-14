@@ -14,7 +14,7 @@ use crate::{
     infrastructure::sqlite::open_repositories,
 };
 use clap::{Parser, Subcommand, ValueEnum};
-use jiff::{Error, Zoned};
+use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -89,6 +89,9 @@ pub enum TransactionCommand {
 
         #[arg(long, ignore_case = true)]
         category: CategoryArg,
+
+        #[arg(long)]
+        time_zone: Option<String>,
     },
 }
 
@@ -227,6 +230,43 @@ impl From<GetAccountBalanceError> for CliError {
     }
 }
 
+fn parse_occurred_at(input: &str, time_zone: Option<&str>) -> Result<Zoned, CliError> {
+    match time_zone {
+        None => input
+            .parse::<Zoned>()
+            .map_err(|error| CliError::InvalidTime {
+                input: input.to_string(),
+                message: error.to_string(),
+            }),
+
+        Some(time_zone_name) => {
+            let error_input = format!("{input} [{time_zone_name}]");
+
+            let local_datetime =
+                input
+                    .parse::<DateTime>()
+                    .map_err(|error| CliError::InvalidTime {
+                        input: error_input.clone(),
+                        message: error.to_string(),
+                    })?;
+
+            let time_zone =
+                TimeZone::get(time_zone_name).map_err(|error| CliError::InvalidTime {
+                    input: error_input.clone(),
+                    message: error.to_string(),
+                })?;
+
+            time_zone
+                .to_ambiguous_zoned(local_datetime)
+                .unambiguous()
+                .map_err(|error| CliError::InvalidTime {
+                    input: error_input,
+                    message: error.to_string(),
+                })
+        }
+    }
+}
+
 pub fn run(cli: Cli) -> Result<String, CliError> {
     let (mut account_repository, mut transaction_repository) = open_repositories(&cli.database)?;
 
@@ -274,14 +314,9 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 occurred_at,
                 description,
                 category,
+                time_zone,
             } => {
-                let occurred_at: Zoned =
-                    occurred_at
-                        .parse()
-                        .map_err(|e: Error| CliError::InvalidTime {
-                            input: occurred_at,
-                            message: e.to_string(),
-                        })?;
+                let occurred_at: Zoned = parse_occurred_at(&occurred_at, time_zone.as_deref())?;
                 let transaction = Transaction::new(
                     transaction::TransactionId::new(id),
                     AccountId::new(account_id),
@@ -643,9 +678,10 @@ mod tests {
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
                     currency: CurrencyArg::Cny,
-                    occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    occurred_at: "2026-08-14T12:00:00".to_string(),
                     description: "Lunch".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: Some("Asia/Shanghai".to_string()),
                 },
             },
         };
@@ -667,6 +703,14 @@ mod tests {
         assert_eq!(stored[0].id(), TransactionId::new(1));
         assert_eq!(stored[0].category(), Category::Food);
         assert_eq!(stored[0].amount().minor_units(), 1_250);
+        assert_eq!(stored[0].amount().currency(), Currency::Cny);
+        assert_eq!(stored[0].description(), "Lunch");
+        assert_eq!(
+            stored[0].occurred_at(),
+            "2026-08-14T12:00:00+08:00[Asia/Shanghai]"
+                .parse::<Zoned>()
+                .unwrap()
+        );
     }
 
     #[test]
@@ -688,6 +732,7 @@ mod tests {
                     occurred_at: "invalid-date".to_string(),
                     description: "Lunch".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: None,
                 },
             },
         };
@@ -722,6 +767,7 @@ mod tests {
                     occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Lunch".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: None,
                 },
             },
         };
@@ -753,6 +799,7 @@ mod tests {
                     occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Lunch".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: None,
                 },
             },
         };
@@ -787,6 +834,7 @@ mod tests {
                     occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Lunch".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: None,
                 },
             },
         };
@@ -807,6 +855,7 @@ mod tests {
                     occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Lunch".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: None,
                 },
             },
         };
@@ -866,6 +915,7 @@ mod tests {
                     occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Salary".to_string(),
                     category: CategoryArg::Salary,
+                    time_zone: None,
                 },
             },
         };
@@ -884,6 +934,7 @@ mod tests {
                     occurred_at: "2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Groceries".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: None,
                 },
             },
         };
@@ -948,6 +999,7 @@ mod tests {
                     occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Salary".to_string(),
                     category: CategoryArg::Salary,
+                    time_zone: None,
                 },
             },
         };
@@ -966,6 +1018,7 @@ mod tests {
                     occurred_at: "2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Groceries".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: None,
                 },
             },
         };
@@ -984,6 +1037,7 @@ mod tests {
                     occurred_at: "2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string(),
                     description: "Groceries".to_string(),
                     category: CategoryArg::Food,
+                    time_zone: None,
                 },
             },
         };
@@ -1049,5 +1103,74 @@ mod tests {
 
             _ => panic!("expected category report command"),
         }
+    }
+
+    #[test]
+    fn unknown_time_zone_returns_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1_250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-14T12:00:00".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: Some("Unknown/Zone".to_string()),
+                },
+            },
+        };
+
+        let error = run(cli).unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::InvalidTime {
+                input: "2026-08-14T12:00:00 [Unknown/Zone]".to_string(),
+                message: "failed to find time zone `Unknown/Zone` in time zone database"
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_nonexistent_local_time() {
+        let error = parse_occurred_at("2024-03-10T02:30:00", Some("America/New_York")).unwrap_err();
+
+        match error {
+            CliError::InvalidTime { input, message } => {
+                assert_eq!(input, "2024-03-10T02:30:00 [America/New_York]");
+                assert!(message.contains("ambiguous"));
+            }
+
+            other => panic!("expected invalid time error, got {other:?}"),
+        }
+
+        let error = parse_occurred_at("2024-11-03T01:30:00", Some("America/New_York")).unwrap_err();
+
+        match error {
+            CliError::InvalidTime { input, message } => {
+                assert_eq!(input, "2024-11-03T01:30:00 [America/New_York]");
+                assert!(message.contains("ambiguous"));
+            }
+
+            other => panic!("expected invalid time error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_unambiguous_local_time() {
+        let occurred_at = parse_occurred_at("2026-08-14T12:00:00", Some("Asia/Shanghai")).unwrap();
+
+        assert_eq!(
+            occurred_at.to_string(),
+            "2026-08-14T12:00:00+08:00[Asia/Shanghai]"
+        );
     }
 }

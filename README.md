@@ -57,6 +57,9 @@ SQLite persistence layer are implemented and tested:
   `account balance`, and `report category` commands, case-insensitive enum
   parsing, configurable database paths, and nonzero exit status on application
   errors
+- Transaction time input using either a complete zoned timestamp or a local
+  date-time with a separately supplied IANA time-zone name, with invalid and
+  daylight-saving-time-ambiguous local times rejected
 
 The project now provides both in-memory storage and file-backed SQLite account
 and transaction repositories. Its CLI can create accounts and record
@@ -205,9 +208,10 @@ assert_eq!(
 );
 ```
 
-The domain constructor receives an already valid `Zoned` value. Parsing local
-date-time strings, resolving time-zone names, and handling daylight-saving
-time ambiguity will belong to the application or interface layer.
+The domain constructor receives an already valid `Zoned` value. The CLI
+interface parses local date-time strings, resolves separately supplied IANA
+time-zone names, and rejects daylight-saving-time gaps and folds instead of
+silently choosing a timestamp.
 
 Transaction lists are not sorted by the domain entity. Ordering and filtering
 collections by `occurred_at` will be implemented later as application use
@@ -373,17 +377,20 @@ pre-release development stage there is no existing user database to preserve,
 so a development database should be deleted and recreated after an incompatible
 schema change.
 
-### Milestone 5: CLI - In Progress
+### Milestone 5: CLI - Completed
 
 - Create accounts from the command line - Completed
 - Record transactions from the command line - Completed
 - Query account balances from the command line - Completed
 - Query category net outflow from the command line - Completed
 - Parse fully specified timestamps with IANA time-zone names - Completed
-- Parse local transaction times with separately supplied IANA time-zone names
-- Reject invalid or ambiguous local times instead of silently guessing
-- Keep the CLI limited to parsing, basic input checks, and presentation
-- Keep business rules in the domain and application layers
+- Parse local transaction times with separately supplied IANA time-zone names -
+  Completed
+- Reject invalid or ambiguous local times instead of silently guessing -
+  Completed
+- Keep the CLI limited to parsing, basic input checks, and presentation -
+  Completed
+- Keep business rules in the domain and application layers - Completed
 
 ### Later Milestones
 
@@ -443,9 +450,30 @@ cargo run -- transaction add \
 
 Amounts are entered as integer minor units, so `1250` represents `12.50` for a
 currency with two decimal places. Transaction kinds, currencies, and
-categories are case-insensitive. The occurrence time currently requires a
+categories are case-insensitive. The occurrence time may be supplied as a
 complete zoned timestamp containing both its UTC offset and IANA time-zone
 name.
+
+Alternatively, supply a local date-time and its IANA time-zone name as separate
+arguments:
+
+```bash
+cargo run -- transaction add \
+  --id 2 \
+  --account-id 1 \
+  --kind expense \
+  --amount-minor 500 \
+  --currency cny \
+  --occurred-at '2026-08-14T12:00:00' \
+  --time-zone Asia/Shanghai \
+  --description Groceries \
+  --category food
+```
+
+When `--time-zone` is present, `--occurred-at` must be a local date-time without
+a UTC offset or embedded time-zone name. Unknown IANA time zones, nonexistent
+local times during a daylight-saving-time gap, and ambiguous local times during
+a daylight-saving-time fold are rejected instead of being adjusted or guessed.
 
 Query the balance calculated from an account's stored transactions:
 
