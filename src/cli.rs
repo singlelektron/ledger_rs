@@ -3,6 +3,7 @@ use crate::{
         account_balance::{GetAccountBalanceError, get_account_balance},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
+        list_accounts::{ListAccountsError, list_accounts},
         list_transactions::{ListTransactionsError, list_account_transactions},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
@@ -62,6 +63,8 @@ pub enum AccountCommand {
         #[arg(long)]
         id: u64,
     },
+
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -200,6 +203,7 @@ pub enum CliError {
     GetAccountBalance(GetAccountBalanceError),
 
     ListTransactions(ListTransactionsError),
+    ListAccounts(ListAccountsError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -241,6 +245,12 @@ impl From<GetAccountBalanceError> for CliError {
 impl From<ListTransactionsError> for CliError {
     fn from(error: ListTransactionsError) -> Self {
         Self::ListTransactions(error)
+    }
+}
+
+impl From<ListAccountsError> for CliError {
+    fn from(error: ListAccountsError) -> Self {
+        Self::ListAccounts(error)
     }
 }
 
@@ -315,6 +325,26 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     balance.minor_units(),
                     balance.currency(),
                 ))
+            }
+
+            AccountCommand::List => {
+                let accounts = list_accounts(&account_repository)?;
+
+                if accounts.is_empty() {
+                    return Ok("No accounts found".to_string());
+                }
+
+                let mut output_lines: Vec<String> = Vec::new();
+                for account in accounts {
+                    output_lines.push(format!(
+                        "Account {}: {} ({:?})",
+                        account.id().value(),
+                        account.name(),
+                        account.currency(),
+                    ));
+                }
+
+                Ok(output_lines.join("\n"))
             }
         },
 
@@ -1293,5 +1323,59 @@ mod tests {
             result,
             CliError::ListTransactions(ListTransactionsError::AccountNotFound(AccountId::new(999)))
         );
+    }
+
+    #[test]
+    fn parses_list_accounts_command() {
+        let cli = Cli::try_parse_from(["ledger_rs", "account", "list"]).unwrap();
+
+        match cli.command {
+            Command::Account {
+                command: AccountCommand::List,
+            } => {}
+
+            _ => panic!("expected list accounts command"),
+        }
+    }
+
+    #[test]
+    fn lists_all_accounts() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        run(create_account_cli(database.clone(), 2, "Bank")).unwrap();
+        run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+
+        let cli = Cli {
+            database,
+            command: Command::Account {
+                command: AccountCommand::List,
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Account 1: Cash (Cny)\n\
+             Account 2: Bank (Cny)"
+        );
+    }
+
+    #[test]
+    fn empty_list_accounts_returns_message() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        let cli = Cli {
+            database,
+            command: Command::Account {
+                command: AccountCommand::List,
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(result, "No accounts found");
     }
 }

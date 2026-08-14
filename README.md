@@ -58,10 +58,10 @@ SQLite persistence layer are implemented and tested:
   categories, timestamps, and original IANA time-zone names
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
-- A `clap`-based CLI entry point with `account create`, `transaction add`,
-  `transaction list`, `account balance`, and `report category` commands,
-  case-insensitive enum parsing, configurable database paths, and nonzero exit
-  status on application errors
+- A `clap`-based CLI entry point with `account create`, `account list`,
+  `transaction add`, `transaction list`, `account balance`, and
+  `report category` commands, case-insensitive enum parsing, configurable
+  database paths, and nonzero exit status on application errors
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
@@ -71,9 +71,7 @@ and transaction repositories. Its CLI can create accounts and record
 time-zone-aware transactions in a persistent SQLite database, then calculate
 an account balance or display category net outflow from the stored
 transactions. It can also display a validated account's transaction history in
-stable newest-first order. The application layer can list all accounts in
-ascending ID order; CLI presentation for the account list has not been added
-yet.
+stable newest-first order and list all accounts in ascending ID order.
 
 ## Goals
 
@@ -414,14 +412,14 @@ schema change.
 - Return an empty list for an account with no transactions - Completed
 - Display an account's transaction history through the CLI - Completed
 
-### Milestone 7: Account Discovery - In Progress
+### Milestone 7: Account Discovery - Completed
 
 - Extend the account repository trait with an all-accounts query - Completed
 - Implement account listing for in-memory and SQLite repositories - Completed
 - Convert stored rows back into validated account domain values - Completed
 - Sort accounts by ID in the application layer - Completed
 - Preserve repository errors through the account-listing use case - Completed
-- Display all accounts through the CLI
+- Display all accounts through the CLI - Completed
 
 ### Later Milestones
 
@@ -465,6 +463,15 @@ cargo run -- \
 Currency input is case-insensitive. Supported values are `cny`, `usd`, `eur`,
 `hkd`, and `myr`. Account IDs are supplied explicitly during this first CLI
 stage.
+
+List all stored accounts:
+
+```bash
+cargo run -- account list
+```
+
+Accounts are displayed in ascending ID order. An empty database returns an
+explicit message instead of empty output.
 
 Record a transaction for an existing account:
 
