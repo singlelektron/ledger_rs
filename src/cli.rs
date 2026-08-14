@@ -3,6 +3,7 @@ use crate::{
         account_balance::{GetAccountBalanceError, get_account_balance},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
+        list_transactions::{ListTransactionsError, list_account_transactions},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
     },
@@ -92,6 +93,11 @@ pub enum TransactionCommand {
 
         #[arg(long)]
         time_zone: Option<String>,
+    },
+
+    List {
+        #[arg(long)]
+        account_id: u64,
     },
 }
 
@@ -192,6 +198,8 @@ pub enum CliError {
     GetCategoryReport(GetCategoryReportError),
 
     GetAccountBalance(GetAccountBalanceError),
+
+    ListTransactions(ListTransactionsError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -227,6 +235,12 @@ impl From<GetCategoryReportError> for CliError {
 impl From<GetAccountBalanceError> for CliError {
     fn from(error: GetAccountBalanceError) -> Self {
         Self::GetAccountBalance(error)
+    }
+}
+
+impl From<ListTransactionsError> for CliError {
+    fn from(error: ListTransactionsError) -> Self {
+        Self::ListTransactions(error)
     }
 }
 
@@ -345,6 +359,34 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 )?;
 
                 Ok(success_message)
+            }
+
+            TransactionCommand::List { account_id } => {
+                let transactions = list_account_transactions(
+                    &account_repository,
+                    &transaction_repository,
+                    AccountId::new(account_id),
+                )?;
+
+                if transactions.is_empty() {
+                    return Ok(format!("No transactions found for account {}", account_id));
+                }
+
+                let mut output_lines: Vec<String> = Vec::new();
+                for transaction in transactions {
+                    output_lines.push(format!(
+                        "Transaction {} | {:?} | {} | {}({:?}) | {} | {:?}",
+                        transaction.id().value(),
+                        transaction.kind(),
+                        transaction.occurred_at(),
+                        transaction.amount().minor_units(),
+                        transaction.amount().currency(),
+                        transaction.description(),
+                        transaction.category(),
+                    ));
+                }
+
+                Ok(output_lines.join("\n"))
             }
         },
 
@@ -1171,6 +1213,85 @@ mod tests {
         assert_eq!(
             occurred_at.to_string(),
             "2026-08-14T12:00:00+08:00[Asia/Shanghai]"
+        );
+    }
+
+    #[test]
+    fn parses_list_command() {
+        let cli =
+            Cli::try_parse_from(["ledger_rs", "transaction", "list", "--account-id", "1"]).unwrap();
+
+        match cli.command {
+            Command::Transaction {
+                command: TransactionCommand::List { account_id },
+            } => {
+                assert_eq!(account_id, 1);
+            }
+
+            _ => panic!("expected list command"),
+        }
+    }
+
+    #[test]
+    fn lists_transactions_for_account() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List { account_id: 1 },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Transaction 3 | ExpenseRefund | 2026-08-16T12:00:00+08:00[Asia/Shanghai] | 50(Cny) | Groceries | Food\n\
+             Transaction 2 | Expense | 2026-08-15T12:00:00+08:00[Asia/Shanghai] | 500(Cny) | Groceries | Food\n\
+             Transaction 1 | Income | 2026-08-14T12:00:00+08:00[Asia/Shanghai] | 1000(Cny) | Salary | Salary"
+        );
+    }
+
+    #[test]
+    fn returns_message_for_empty_transaction_list() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List { account_id: 1 },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(result, "No transactions found for account 1");
+    }
+
+    #[test]
+    fn returns_error_for_list_command_with_unknown_account() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List { account_id: 999 },
+            },
+        };
+
+        let result = run(cli).unwrap_err();
+
+        assert_eq!(
+            result,
+            CliError::ListTransactions(ListTransactionsError::AccountNotFound(AccountId::new(999)))
         );
     }
 }

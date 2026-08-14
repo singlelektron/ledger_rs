@@ -57,9 +57,9 @@ SQLite persistence layer are implemented and tested:
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
 - A `clap`-based CLI entry point with `account create`, `transaction add`,
-  `account balance`, and `report category` commands, case-insensitive enum
-  parsing, configurable database paths, and nonzero exit status on application
-  errors
+  `transaction list`, `account balance`, and `report category` commands,
+  case-insensitive enum parsing, configurable database paths, and nonzero exit
+  status on application errors
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
@@ -68,8 +68,8 @@ The project now provides both in-memory storage and file-backed SQLite account
 and transaction repositories. Its CLI can create accounts and record
 time-zone-aware transactions in a persistent SQLite database, then calculate
 an account balance or display category net outflow from the stored
-transactions. The application layer can also query a validated account's
-transaction history; CLI presentation for this history has not been added yet.
+transactions. It can also display a validated account's transaction history in
+stable newest-first order.
 
 ## Goals
 
@@ -399,7 +399,7 @@ schema change.
   Completed
 - Keep business rules in the domain and application layers - Completed
 
-### Milestone 6: Transaction History - In Progress
+### Milestone 6: Transaction History - Completed
 
 - Validate that the requested account exists - Completed
 - Load transactions through the repository trait - Completed
@@ -407,8 +407,7 @@ schema change.
   Completed
 - Preserve account and transaction repository errors - Completed
 - Return an empty list for an account with no transactions - Completed
-- Display an account's transaction history through the CLI
-- Add filtering and pagination when concrete requirements are defined
+- Display an account's transaction history through the CLI - Completed
 
 ### Later Milestones
 
@@ -416,6 +415,7 @@ schema change.
 - Web API
 - Budgets
 - Reports and data import/export
+- Transaction filtering and pagination
 - Exchange rates and cross-currency transfers
 
 ## Local Development
@@ -492,6 +492,17 @@ When `--time-zone` is present, `--occurred-at` must be a local date-time without
 a UTC offset or embedded time-zone name. Unknown IANA time zones, nonexistent
 local times during a daylight-saving-time gap, and ambiguous local times during
 a daylight-saving-time fold are rejected instead of being adjusted or guessed.
+
+List an account's stored transactions:
+
+```bash
+cargo run -- transaction list --account-id 1
+```
+
+Transactions are displayed from newest to oldest. If multiple transactions
+have the same occurrence time, the higher transaction ID is displayed first so
+the output remains deterministic. An existing account with no transactions
+returns an explicit message instead of an empty output.
 
 Query the balance calculated from an account's stored transactions:
 
