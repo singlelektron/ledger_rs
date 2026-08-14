@@ -42,6 +42,9 @@ SQLite persistence layer are implemented and tested:
 - An application-level transaction-recording use case that rejects unknown
   accounts and currency mismatches before saving through the transaction
   repository
+- An application-level transaction-history query that rejects unknown
+  accounts, preserves repository errors, and returns transactions in stable
+  newest-first order
 - SQLite support through `rusqlite`, including repeatable schema initialization
   for account and transaction tables with foreign-key enforcement enabled
 - A SQLite account repository that saves and queries accounts while reporting
@@ -65,7 +68,8 @@ The project now provides both in-memory storage and file-backed SQLite account
 and transaction repositories. Its CLI can create accounts and record
 time-zone-aware transactions in a persistent SQLite database, then calculate
 an account balance or display category net outflow from the stored
-transactions.
+transactions. The application layer can also query a validated account's
+transaction history; CLI presentation for this history has not been added yet.
 
 ## Goals
 
@@ -213,9 +217,10 @@ interface parses local date-time strings, resolves separately supplied IANA
 time-zone names, and rejects daylight-saving-time gaps and folds instead of
 silently choosing a timestamp.
 
-Transaction lists are not sorted by the domain entity. Ordering and filtering
-collections by `occurred_at` will be implemented later as application use
-cases.
+Transaction lists are not sorted by the domain entity. The application-level
+transaction-history query orders them by `occurred_at` from newest to oldest
+and uses descending transaction ID as a deterministic tie-breaker. Filtering
+and pagination will be added later as separate application concerns.
 
 `ExpenseRefund` represents money that reverses part of an earlier expense. For
 example, when one person pays a restaurant bill and friends later reimburse
@@ -282,7 +287,8 @@ CLI / TUI / Web
 
 - `domain`: core business types and rules such as money, accounts, and
   transactions
-- `application`: use cases such as recording an expense or querying a balance
+- `application`: use cases such as recording a transaction, querying a balance,
+  or listing an account's transaction history
 - `infrastructure`: technical implementations such as in-memory, file, or
   database repositories
 - CLI, TUI, and Web: input parsing, application calls, and result presentation
@@ -303,6 +309,7 @@ src/
 │   ├── account_balance.rs
 │   ├── category_report.rs
 │   ├── create_account.rs
+│   ├── list_transactions.rs
 │   ├── mod.rs
 │   ├── record_transaction.rs
 │   └── repository.rs
@@ -391,6 +398,17 @@ schema change.
 - Keep the CLI limited to parsing, basic input checks, and presentation -
   Completed
 - Keep business rules in the domain and application layers - Completed
+
+### Milestone 6: Transaction History - In Progress
+
+- Validate that the requested account exists - Completed
+- Load transactions through the repository trait - Completed
+- Sort transactions newest first with transaction ID as a stable tie-breaker -
+  Completed
+- Preserve account and transaction repository errors - Completed
+- Return an empty list for an account with no transactions - Completed
+- Display an account's transaction history through the CLI
+- Add filtering and pagination when concrete requirements are defined
 
 ### Later Milestones
 
