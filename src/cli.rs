@@ -1,9 +1,19 @@
-use crate::application::create_account::{CreateAccountError, create_account};
-use crate::application::repository::RepositoryError;
-use crate::domain::account::AccountId;
-use crate::domain::money::Currency;
-use crate::infrastructure::sqlite::open_repositories;
+use crate::{
+    application::{
+        category_report::GetCategoryReportError,
+        create_account::{CreateAccountError, create_account},
+        record_transaction::{RecordTransactionError, record_transaction},
+        repository::RepositoryError,
+    },
+    domain::{
+        account::AccountId,
+        money::{Currency, Money},
+        transaction::{self, Category, Transaction, TransactionError, TransactionKind},
+    },
+    infrastructure::sqlite::open_repositories,
+};
 use clap::{Parser, Subcommand, ValueEnum};
+use jiff::{Error, Zoned};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -21,6 +31,11 @@ pub enum Command {
         #[command(subcommand)]
         command: AccountCommand,
     },
+
+    Transaction {
+        #[command(subcommand)]
+        command: TransactionCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -37,6 +52,35 @@ pub enum AccountCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum TransactionCommand {
+    Add {
+        #[arg(long)]
+        id: u64,
+
+        #[arg(long)]
+        account_id: u64,
+
+        #[arg(long, ignore_case = true)]
+        kind: TransactionKindArg,
+
+        #[arg(long)]
+        amount_minor: i64,
+
+        #[arg(long, ignore_case = true)]
+        currency: CurrencyArg,
+
+        #[arg(long)]
+        occurred_at: String,
+
+        #[arg(long)]
+        description: String,
+
+        #[arg(long, ignore_case = true)]
+        category: CategoryArg,
+    },
+}
+
 #[derive(Debug, Clone, ValueEnum)]
 pub enum CurrencyArg {
     Cny,
@@ -44,6 +88,31 @@ pub enum CurrencyArg {
     Eur,
     Hkd,
     Myr,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum TransactionKindArg {
+    Income,
+    Expense,
+    ExpenseRefund,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum CategoryArg {
+    Food,
+    Transportation,
+    Entertainment,
+    Necessary,
+    Health,
+    Education,
+    Shopping,
+    Travel,
+    Housing,
+    Salary,
+    Sale,
+    Family,
+    Investment,
+    Other,
 }
 
 impl From<CurrencyArg> for Currency {
@@ -58,10 +127,47 @@ impl From<CurrencyArg> for Currency {
     }
 }
 
+impl From<TransactionKindArg> for TransactionKind {
+    fn from(arg: TransactionKindArg) -> Self {
+        match arg {
+            TransactionKindArg::Income => TransactionKind::Income,
+            TransactionKindArg::Expense => TransactionKind::Expense,
+            TransactionKindArg::ExpenseRefund => TransactionKind::ExpenseRefund,
+        }
+    }
+}
+
+impl From<CategoryArg> for Category {
+    fn from(arg: CategoryArg) -> Self {
+        match arg {
+            CategoryArg::Food => Category::Food,
+            CategoryArg::Transportation => Category::Transportation,
+            CategoryArg::Entertainment => Category::Entertainment,
+            CategoryArg::Necessary => Category::Necessary,
+            CategoryArg::Health => Category::Health,
+            CategoryArg::Education => Category::Education,
+            CategoryArg::Shopping => Category::Shopping,
+            CategoryArg::Travel => Category::Travel,
+            CategoryArg::Housing => Category::Housing,
+            CategoryArg::Salary => Category::Salary,
+            CategoryArg::Sale => Category::Sale,
+            CategoryArg::Family => Category::Family,
+            CategoryArg::Investment => Category::Investment,
+            CategoryArg::Other => Category::Other,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliError {
     Repository(RepositoryError),
     CreateAccount(CreateAccountError),
+
+    InvalidTime { input: String, message: String },
+
+    Transaction(TransactionError),
+    RecordTransaction(RecordTransactionError),
+    GetCategoryReport(GetCategoryReportError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -76,8 +182,26 @@ impl From<CreateAccountError> for CliError {
     }
 }
 
+impl From<TransactionError> for CliError {
+    fn from(error: TransactionError) -> Self {
+        Self::Transaction(error)
+    }
+}
+
+impl From<RecordTransactionError> for CliError {
+    fn from(error: RecordTransactionError) -> Self {
+        Self::RecordTransaction(error)
+    }
+}
+
+impl From<GetCategoryReportError> for CliError {
+    fn from(error: GetCategoryReportError) -> Self {
+        Self::GetCategoryReport(error)
+    }
+}
+
 pub fn run(cli: Cli) -> Result<String, CliError> {
-    let (mut account_repository, _transaction_repository) = open_repositories(&cli.database)?;
+    let (mut account_repository, mut transaction_repository) = open_repositories(&cli.database)?;
 
     match cli.command {
         Command::Account { command } => match command {
@@ -95,6 +219,55 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     account.name(),
                     account.currency(),
                 ))
+            }
+        },
+
+        Command::Transaction { command } => match command {
+            TransactionCommand::Add {
+                id,
+                account_id,
+                kind,
+                amount_minor,
+                currency,
+                occurred_at,
+                description,
+                category,
+            } => {
+                let occurred_at: Zoned =
+                    occurred_at
+                        .parse()
+                        .map_err(|e: Error| CliError::InvalidTime {
+                            input: occurred_at,
+                            message: e.to_string(),
+                        })?;
+                let transaction = Transaction::new(
+                    transaction::TransactionId::new(id),
+                    AccountId::new(account_id),
+                    TransactionKind::from(kind),
+                    Money::from_minor_units(amount_minor, Currency::from(currency)),
+                    occurred_at.clone(),
+                    description,
+                    Category::from(category),
+                )?;
+
+                let success_message = format!(
+                    "Recorded transaction {} for account {}: {}({:?}) {} {:?} at {}",
+                    transaction.id().value(),
+                    account_id,
+                    transaction.amount().minor_units(),
+                    transaction.amount().currency(),
+                    transaction.description(),
+                    transaction.category(),
+                    occurred_at,
+                );
+
+                record_transaction(
+                    &account_repository,
+                    &mut transaction_repository,
+                    transaction,
+                )?;
+
+                Ok(success_message)
             }
         },
     }
@@ -144,6 +317,8 @@ mod tests {
                 assert_eq!(name, "Cash");
                 assert!(matches!(currency, CurrencyArg::Cny));
             }
+
+            _ => panic!("expected account command"),
         }
     }
 
@@ -168,6 +343,8 @@ mod tests {
             } => {
                 assert!(matches!(currency, CurrencyArg::Cny));
             }
+
+            _ => panic!("expected account command"),
         }
     }
 
@@ -191,8 +368,10 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 
-    use crate::application::repository::AccountRepository;
+    use crate::application::repository::RepositoryError::DuplicateTransactionId;
+    use crate::application::repository::{AccountRepository, TransactionRepository};
     use crate::domain::account::AccountId;
+    use crate::domain::transaction::TransactionId;
     use crate::infrastructure::sqlite::open_repositories;
 
     #[test]
@@ -249,6 +428,330 @@ mod tests {
             Err(CliError::CreateAccount(CreateAccountError::Account(
                 AccountError::EmptyName,
             ),)),
+        );
+    }
+
+    #[test]
+    fn parses_transaction_add_command() {
+        let cli = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "add",
+            "--id",
+            "1",
+            "--account-id",
+            "2",
+            "--kind",
+            "expense",
+            "--amount-minor",
+            "1250",
+            "--currency",
+            "cny",
+            "--occurred-at",
+            "2026-08-14T12:00:00+08:00[Asia/Shanghai]",
+            "--description",
+            "Lunch",
+            "--category",
+            "food",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Transaction {
+                command:
+                    TransactionCommand::Add {
+                        id,
+                        account_id,
+                        amount_minor,
+                        description,
+                        ..
+                    },
+            } => {
+                assert_eq!(id, 1);
+                assert_eq!(account_id, 2);
+                assert_eq!(amount_minor, 1250);
+                assert_eq!(description, "Lunch");
+            }
+
+            _ => panic!("expected transaction add command"),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_transaction_kind() {
+        let error = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "add",
+            "--id",
+            "1",
+            "--account-id",
+            "2",
+            "--kind",
+            "unknown",
+            "--amount-minor",
+            "1250",
+            "--currency",
+            "cny",
+            "--occurred-at",
+            "2026-08-14T12:00:00+08:00[Asia/Shanghai]",
+            "--description",
+            "Lunch",
+            "--category",
+            "food",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn rejects_unknown_category() {
+        let error = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "add",
+            "--id",
+            "1",
+            "--account-id",
+            "2",
+            "--kind",
+            "expense",
+            "--amount-minor",
+            "1250",
+            "--currency",
+            "cny",
+            "--occurred-at",
+            "2026-08-14T12:00:00+08:00[Asia/Shanghai]",
+            "--description",
+            "Lunch",
+            "--category",
+            "unknown",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn rejects_non_integer_amount() {
+        let error = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "add",
+            "--id",
+            "1",
+            "--account-id",
+            "2",
+            "--kind",
+            "expense",
+            "--amount-minor",
+            "1250.5", // This is not an integer
+            "--currency",
+            "cny",
+            "--occurred-at",
+            "2026-08-14T12:00:00+08:00[Asia/Shanghai]",
+            "--description",
+            "Lunch",
+            "--category",
+            "food",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn creates_transaction_in_sqlite_database() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+
+        let cli = Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1_250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let result = run(cli);
+
+        assert_eq!(
+            result,
+            Ok("Recorded transaction 1 for account 1: 1250(Cny) Lunch Food at 2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),),
+        );
+
+        let (_account_repository, transaction_repository) = open_repositories(&database).unwrap();
+
+        let stored = transaction_repository
+            .find_by_account_id(AccountId::new(1))
+            .unwrap();
+
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].id(), TransactionId::new(1));
+        assert_eq!(stored[0].category(), Category::Food);
+        assert_eq!(stored[0].amount().minor_units(), 1_250);
+    }
+
+    #[test]
+    fn returns_error_for_invalid_occurred_at() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1_250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "invalid-date".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let error = run(cli).unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::InvalidTime {
+                input: "invalid-date".to_string(),
+                message: "failed to parse four digit integer as year: invalid digit, expected 0-9 but got i".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn returns_error_for_unknown_account() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 2,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1_250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let error = run(cli).unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::RecordTransaction(RecordTransactionError::AccountNotFound(AccountId::new(2)))
+        );
+    }
+
+    #[test]
+    fn returns_error_for_currency_mismatch() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1_250,
+                    currency: CurrencyArg::Usd,
+                    occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let error = run(cli).unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::RecordTransaction(RecordTransactionError::CurrencyMismatch {
+                expected: Currency::Cny,
+                found: Currency::Usd
+            })
+        );
+    }
+
+    #[test]
+    fn returns_error_for_duplicate_transaction_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1_250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let _ = run(cli);
+
+        let database = temp_dir.path().join("ledger.db");
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1_250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let error = run(cli).unwrap_err();
+
+        assert_eq!(
+            error,
+            CliError::RecordTransaction(RecordTransactionError::Repository(
+                DuplicateTransactionId(TransactionId::new(1))
+            ))
         );
     }
 }

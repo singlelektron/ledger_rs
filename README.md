@@ -53,14 +53,14 @@ SQLite persistence layer are implemented and tested:
   categories, timestamps, and original IANA time-zone names
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
-- A `clap`-based CLI entry point with a tested `account create` command,
-  case-insensitive currency parsing, configurable database paths, and nonzero
-  exit status on application errors
+- A `clap`-based CLI entry point with tested `account create` and `transaction
+  add` commands, case-insensitive enum parsing, configurable database paths,
+  and nonzero exit status on application errors
 
 The project now provides both in-memory storage and file-backed SQLite account
-and transaction repositories. Its first CLI workflow can create an account in
-a persistent SQLite database. Commands for recording transactions, querying
-balances, and displaying category reports have not been added yet.
+and transaction repositories. Its CLI can create accounts and record
+time-zone-aware transactions in a persistent SQLite database. Commands for
+querying balances and displaying category reports have not been added yet.
 
 ## Goals
 
@@ -374,9 +374,10 @@ schema change.
 ### Milestone 5: CLI - In Progress
 
 - Create accounts from the command line - Completed
-- Record transactions from the command line
+- Record transactions from the command line - Completed
 - Query account balances and category net outflow from the command line
-- Parse local transaction times and IANA time-zone names
+- Parse fully specified timestamps with IANA time-zone names - Completed
+- Parse local transaction times with separately supplied IANA time-zone names
 - Reject invalid or ambiguous local times instead of silently guessing
 - Keep the CLI limited to parsing, basic input checks, and presentation
 - Keep business rules in the domain and application layers
@@ -422,6 +423,26 @@ cargo run -- \
 Currency input is case-insensitive. Supported values are `cny`, `usd`, `eur`,
 `hkd`, and `myr`. Account IDs are supplied explicitly during this first CLI
 stage.
+
+Record a transaction for an existing account:
+
+```bash
+cargo run -- transaction add \
+  --id 1 \
+  --account-id 1 \
+  --kind expense \
+  --amount-minor 1250 \
+  --currency cny \
+  --occurred-at '2026-08-14T12:00:00+08:00[Asia/Shanghai]' \
+  --description Lunch \
+  --category food
+```
+
+Amounts are entered as integer minor units, so `1250` represents `12.50` for a
+currency with two decimal places. Transaction kinds, currencies, and
+categories are case-insensitive. The occurrence time currently requires a
+complete zoned timestamp containing both its UTC offset and IANA time-zone
+name.
 
 After changing Rust code, run:
 
