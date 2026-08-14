@@ -53,14 +53,15 @@ SQLite persistence layer are implemented and tested:
   categories, timestamps, and original IANA time-zone names
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
-- A `clap`-based CLI entry point with tested `account create` and `transaction
-  add` commands, case-insensitive enum parsing, configurable database paths,
-  and nonzero exit status on application errors
+- A `clap`-based CLI entry point with `account create`, `transaction add`, and
+  `account balance` commands, case-insensitive enum parsing, configurable
+  database paths, and nonzero exit status on application errors
 
 The project now provides both in-memory storage and file-backed SQLite account
 and transaction repositories. Its CLI can create accounts and record
-time-zone-aware transactions in a persistent SQLite database. Commands for
-querying balances and displaying category reports have not been added yet.
+time-zone-aware transactions in a persistent SQLite database, then calculate
+an account balance from the stored transactions. A command for displaying
+category reports has not been added yet.
 
 ## Goals
 
@@ -375,7 +376,8 @@ schema change.
 
 - Create accounts from the command line - Completed
 - Record transactions from the command line - Completed
-- Query account balances and category net outflow from the command line
+- Query account balances from the command line - Completed
+- Query category net outflow from the command line
 - Parse fully specified timestamps with IANA time-zone names - Completed
 - Parse local transaction times with separately supplied IANA time-zone names
 - Reject invalid or ambiguous local times instead of silently guessing
@@ -443,6 +445,15 @@ currency with two decimal places. Transaction kinds, currencies, and
 categories are case-insensitive. The occurrence time currently requires a
 complete zoned timestamp containing both its UTC offset and IANA time-zone
 name.
+
+Query the balance calculated from an account's stored transactions:
+
+```bash
+cargo run -- account balance --id 1
+```
+
+The displayed balance uses integer minor units and the account currency. For
+example, `800 (Cny)` represents `8.00 CNY`.
 
 After changing Rust code, run:
 

@@ -1,5 +1,6 @@
 use crate::{
     application::{
+        account_balance::{GetAccountBalanceError, get_account_balance},
         category_report::GetCategoryReportError,
         create_account::{CreateAccountError, create_account},
         record_transaction::{RecordTransactionError, record_transaction},
@@ -49,6 +50,11 @@ pub enum AccountCommand {
 
         #[arg(long, ignore_case = true)]
         currency: CurrencyArg,
+    },
+
+    Balance {
+        #[arg(long)]
+        id: u64,
     },
 }
 
@@ -168,6 +174,8 @@ pub enum CliError {
     Transaction(TransactionError),
     RecordTransaction(RecordTransactionError),
     GetCategoryReport(GetCategoryReportError),
+
+    GetAccountBalance(GetAccountBalanceError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -200,6 +208,12 @@ impl From<GetCategoryReportError> for CliError {
     }
 }
 
+impl From<GetAccountBalanceError> for CliError {
+    fn from(error: GetAccountBalanceError) -> Self {
+        Self::GetAccountBalance(error)
+    }
+}
+
 pub fn run(cli: Cli) -> Result<String, CliError> {
     let (mut account_repository, mut transaction_repository) = open_repositories(&cli.database)?;
 
@@ -218,6 +232,21 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     account.id().value(),
                     account.name(),
                     account.currency(),
+                ))
+            }
+
+            AccountCommand::Balance { id } => {
+                let balance = get_account_balance(
+                    &account_repository,
+                    &transaction_repository,
+                    AccountId::new(id),
+                )?;
+
+                Ok(format!(
+                    "Account {} balance: {} ({:?})",
+                    id,
+                    balance.minor_units(),
+                    balance.currency(),
                 ))
             }
         },
@@ -752,6 +781,107 @@ mod tests {
             CliError::RecordTransaction(RecordTransactionError::Repository(
                 DuplicateTransactionId(TransactionId::new(1))
             ))
+        );
+    }
+
+    #[test]
+    fn parses_account_balance_command() {
+        let cli = Cli::try_parse_from(["ledger_rs", "account", "balance", "--id", "1"]).unwrap();
+
+        match cli.command {
+            Command::Account {
+                command: AccountCommand::Balance { id },
+            } => {
+                assert_eq!(id, 1);
+            }
+
+            _ => panic!("expected account balance command"),
+        }
+    }
+
+    #[test]
+    fn calculates_balance_from_income_and_expense_transactions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        let cli = Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Create {
+                    id: 1,
+                    name: "Cash".to_string(),
+                    currency: CurrencyArg::Cny,
+                },
+            },
+        };
+
+        let _ = run(cli).unwrap();
+
+        let cli = Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 1,
+                    account_id: 1,
+                    kind: TransactionKindArg::Income,
+                    amount_minor: 1_000,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Salary".to_string(),
+                    category: CategoryArg::Salary,
+                },
+            },
+        };
+
+        let _ = run(cli).unwrap();
+
+        let cli = Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 2,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 500,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Groceries".to_string(),
+                    category: CategoryArg::Food,
+                },
+            },
+        };
+
+        let _ = run(cli).unwrap();
+
+        let cli = Cli {
+            database,
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 1 },
+            },
+        };
+
+        let balance = run(cli).unwrap();
+
+        assert_eq!(balance, "Account 1 balance: 500 (Cny)");
+    }
+
+    #[test]
+    fn returns_error_when_balance_account_is_unknown() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+
+        let cli = Cli {
+            database,
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 99 },
+            },
+        };
+
+        assert_eq!(
+            run(cli),
+            Err(CliError::GetAccountBalance(
+                GetAccountBalanceError::AccountNotFound(AccountId::new(99),),
+            )),
         );
     }
 }
