@@ -29,6 +29,8 @@ SQLite persistence layer are implemented and tested:
   overflow errors
 - Domain-level category net-outflow calculation with explicit account,
   currency, and arithmetic overflow errors
+- A domain-level summary report containing income total, net expense total,
+  balance change, and net outflow grouped by category
 - In-memory account and transaction repositories with duplicate-ID validation,
   account listing, and account-based transaction queries
 - An application-level account-creation use case that applies domain name
@@ -41,6 +43,10 @@ SQLite persistence layer are implemented and tested:
 - An application-level category net-outflow query that loads an account and
   its transactions through repository traits before applying the domain report
   rules
+- An application-level ranged-summary query that validates zoned time
+  boundaries, loads account transactions through repository traits, applies
+  left-closed and right-open filtering, and preserves repository and domain
+  errors
 - An application-level transaction-recording use case that rejects unknown
   accounts and currency mismatches before saving through the transaction
   repository
@@ -248,8 +254,16 @@ Account balance calculation, category persistence, domain-level category
 net-outflow calculation, and the application-level category query are
 implemented. A positive category result represents net spending, while a
 negative result represents net money received through income or refunds. CLI
-presentation for category net outflow is implemented. Separate expense and
-income report totals have not been implemented yet.
+presentation for category net outflow is implemented.
+
+The domain summary report also calculates total income, net expenses after
+expense refunds, and net balance change for any supplied transaction set. Net
+balance change is calculated as `income total - net expense total`. Its
+application use case accepts `Zoned` boundaries, selects transactions using
+`from <= occurred_at < to`, and then calculates both the cash-flow totals and
+category breakdown from the same selected transactions. This supports monthly,
+yearly, and custom reporting periods without separate calculation rules. CLI
+presentation for ranged summaries has not been implemented yet.
 
 ## Scope of the First Complete Workflow
 
@@ -319,6 +333,7 @@ src/
 │   ├── list_accounts.rs
 │   ├── list_transactions.rs
 │   ├── mod.rs
+│   ├── ranged_summary.rs
 │   ├── record_transaction.rs
 │   └── repository.rs
 ├── domain/
@@ -327,6 +342,7 @@ src/
 │   ├── category_report.rs
 │   ├── mod.rs
 │   ├── money.rs
+│   ├── summary.rs
 │   └── transaction.rs
 ├── infrastructure/
 │   ├── in_memory.rs
@@ -448,12 +464,27 @@ schema change.
 - Display filtered transaction history through the CLI - Completed
 - Test matching, combined, nonmatching, invalid, and omitted filters - Completed
 
+### Milestone 9: Ranged Summary - In Progress
+
+- Calculate income total, net expense total, and net balance change in the
+  domain layer - Completed
+- Reuse category net-outflow calculation in the combined summary - Completed
+- Keep summary calculation independent of calendar period and interface -
+  Completed
+- Load accounts and transactions through repository traits - Completed
+- Select transactions using inclusive `from` and exclusive `to` boundaries -
+  Completed
+- Reject equal or reversed time ranges - Completed
+- Preserve account, repository, and domain summary errors - Completed
+- Test range boundaries and repository error paths - Completed
+- Parse a reporting range and display the summary through the CLI - Pending
+
 ### Later Milestones
 
 - TUI
 - Web API
 - Budgets
-- Reports and data import/export
+- Additional reports and data import/export
 - Additional transaction filters and pagination
 - Exchange rates and cross-currency transfers
 
