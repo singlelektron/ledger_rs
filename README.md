@@ -46,7 +46,7 @@ SQLite persistence layer are implemented and tested:
   repository
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
-  newest-first order, with optional filtering by transaction category
+  newest-first order, with optional filtering by transaction category and kind
 - SQLite support through `rusqlite`, including repeatable schema initialization
   for account and transaction tables with foreign-key enforcement enabled
 - A SQLite account repository that saves, queries, and lists accounts while
@@ -71,8 +71,8 @@ and transaction repositories. Its CLI can create accounts and record
 time-zone-aware transactions in a persistent SQLite database, then calculate
 an account balance or display category net outflow from the stored
 transactions. It can also display a validated account's transaction history in
-stable newest-first order, optionally filter that history by category, and list
-all accounts in ascending ID order.
+stable newest-first order, optionally filter that history by category and
+transaction kind, and list all accounts in ascending ID order.
 
 ## Goals
 
@@ -222,8 +222,9 @@ silently choosing a timestamp.
 
 Transaction lists are not sorted by the domain entity. The application-level
 transaction-history query orders them by `occurred_at` from newest to oldest
-and uses descending transaction ID as a deterministic tie-breaker. Filtering
-and pagination will be added later as separate application concerns.
+and uses descending transaction ID as a deterministic tie-breaker. Optional
+category and transaction-kind filters are applied in the application layer;
+pagination will be added later as a separate application concern.
 
 `ExpenseRefund` represents money that reverses part of an earlier expense. For
 example, when one person pays a restaurant bill and friends later reimburse
@@ -422,15 +423,18 @@ schema change.
 - Preserve repository errors through the account-listing use case - Completed
 - Display all accounts through the CLI - Completed
 
-### Milestone 8: Transaction Category Filtering - Completed
+### Milestone 8: Transaction Filtering - Completed
 
 - Represent optional transaction-history filters in the application layer -
   Completed
 - Filter an account's transactions by category - Completed
+- Filter an account's transactions by transaction kind - Completed
+- Combine category and transaction-kind filters using AND semantics - Completed
 - Preserve newest-first ordering after filtering - Completed
-- Parse an optional, case-insensitive `--category` value in the CLI - Completed
+- Parse optional, case-insensitive `--category` and `--kind` values in the CLI -
+  Completed
 - Display filtered transaction history through the CLI - Completed
-- Test matching, nonmatching, invalid, and omitted category filters - Completed
+- Test matching, combined, nonmatching, invalid, and omitted filters - Completed
 
 ### Later Milestones
 
@@ -542,9 +546,25 @@ Filter the transaction history by category:
 cargo run -- transaction list --account-id 1 --category food
 ```
 
-Category input is case-insensitive. When `--category` is omitted, transactions
-from every category are displayed. When no transaction matches the selected
-category, the command returns the same explicit empty-list message.
+Filter it by transaction kind:
+
+```bash
+cargo run -- transaction list --account-id 1 --kind expense
+```
+
+The filters can be combined. A transaction must satisfy both filters when both
+are supplied:
+
+```bash
+cargo run -- transaction list \
+  --account-id 1 \
+  --category food \
+  --kind expense
+```
+
+Category and transaction-kind input is case-insensitive. When a filter is
+omitted, it does not restrict the results. When no transaction matches the
+selected filters, the command returns the same explicit empty-list message.
 
 Query the balance calculated from an account's stored transactions:
 

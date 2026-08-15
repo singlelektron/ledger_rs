@@ -104,6 +104,9 @@ pub enum TransactionCommand {
 
         #[arg(long, ignore_case = true)]
         category: Option<CategoryArg>,
+
+        #[arg(long, ignore_case = true)]
+        kind: Option<TransactionKindArg>,
     },
 }
 
@@ -124,7 +127,7 @@ pub enum CurrencyArg {
     Myr,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, ValueEnum, PartialEq)]
 pub enum TransactionKindArg {
     Income,
     Expense,
@@ -397,6 +400,7 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
             TransactionCommand::List {
                 account_id,
                 category,
+                kind,
             } => {
                 let transactions = list_account_transactions(
                     &account_repository,
@@ -404,6 +408,7 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     AccountId::new(account_id),
                     TransactionFilter {
                         category: category.map(Category::from),
+                        kind: kind.map(TransactionKind::from),
                     },
                 )?;
 
@@ -457,6 +462,7 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn create_account_cli(database: PathBuf, id: u64, name: &str) -> Cli {
@@ -1266,10 +1272,12 @@ mod tests {
                     TransactionCommand::List {
                         account_id,
                         category,
+                        kind,
                     },
             } => {
                 assert_eq!(account_id, 1);
                 assert_eq!(category, None);
+                assert_eq!(kind, None);
             }
 
             _ => panic!("expected list command"),
@@ -1289,6 +1297,7 @@ mod tests {
                 command: TransactionCommand::List {
                     account_id: 1,
                     category: None,
+                    kind: None,
                 },
             },
         };
@@ -1316,6 +1325,7 @@ mod tests {
                 command: TransactionCommand::List {
                     account_id: 1,
                     category: None,
+                    kind: None,
                 },
             },
         };
@@ -1336,6 +1346,7 @@ mod tests {
                 command: TransactionCommand::List {
                     account_id: 999,
                     category: None,
+                    kind: None,
                 },
             },
         };
@@ -1419,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_category_in_list_command() {
+    fn parses_category_and_kind_in_list_command() {
         let result = Cli::try_parse_from([
             "ledger_rs",
             "transaction",
@@ -1428,6 +1439,8 @@ mod tests {
             "1",
             "--category",
             "Food",
+            "--kind",
+            "Expense",
         ])
         .unwrap();
 
@@ -1437,10 +1450,12 @@ mod tests {
                     TransactionCommand::List {
                         account_id,
                         category,
+                        kind,
                     },
             } => {
                 assert_eq!(account_id, 1);
                 assert_eq!(category, Some(CategoryArg::Food));
+                assert_eq!(kind, Some(TransactionKindArg::Expense));
             }
 
             _ => panic!("expected list command"),
@@ -1459,6 +1474,7 @@ mod tests {
                 command: TransactionCommand::List {
                     account_id: 1,
                     category: Some(CategoryArg::Food),
+                    kind: None,
                 },
             },
         };
@@ -1470,5 +1486,46 @@ mod tests {
             "Transaction 3 | ExpenseRefund | 2026-08-16T12:00:00+08:00[Asia/Shanghai] | 50(Cny) | Groceries | Food\n\
              Transaction 2 | Expense | 2026-08-15T12:00:00+08:00[Asia/Shanghai] | 500(Cny) | Groceries | Food"
         );
+    }
+
+    #[test]
+    fn lists_transactions_for_account_with_category_and_kind_filter() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: Some(CategoryArg::Food),
+                    kind: Some(TransactionKindArg::Expense),
+                },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Transaction 2 | Expense | 2026-08-15T12:00:00+08:00[Asia/Shanghai] | 500(Cny) | Groceries | Food"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_kind_in_list_command() {
+        let error = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "list",
+            "--account-id",
+            "1",
+            "--kind",
+            "unknown",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 }
