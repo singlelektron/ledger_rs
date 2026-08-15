@@ -1,6 +1,9 @@
 use crate::{
     application::repository::{AccountRepository, RepositoryError, TransactionRepository},
-    domain::{account::AccountId, transaction::Transaction},
+    domain::{
+        account::AccountId,
+        transaction::{Category, Transaction},
+    },
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -15,15 +18,25 @@ impl From<RepositoryError> for ListTransactionsError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TransactionFilter {
+    pub category: Option<Category>,
+}
+
 pub fn list_account_transactions(
     account_repository: &impl AccountRepository,
     transaction_repository: &impl TransactionRepository,
     account_id: AccountId,
+    filter: TransactionFilter,
 ) -> Result<Vec<Transaction>, ListTransactionsError> {
     let account = account_repository.find_by_id(account_id)?;
     let account = account.ok_or(ListTransactionsError::AccountNotFound(account_id))?;
 
     let mut transactions = transaction_repository.find_by_account_id(account.id())?;
+
+    if let Some(category) = filter.category {
+        transactions.retain(|transaction| transaction.category() == category);
+    }
 
     transactions.sort_by(|a, b| {
         b.occurred_at()
@@ -107,9 +120,13 @@ mod tests {
         let transaction_repository =
             build_sample_transactions(&mut transaction_repository, account_id);
 
-        let transactions =
-            list_account_transactions(&account_repository, transaction_repository, account_id)
-                .unwrap();
+        let transactions = list_account_transactions(
+            &account_repository,
+            transaction_repository,
+            account_id,
+            TransactionFilter::default(),
+        )
+        .unwrap();
 
         assert_eq!(
             transactions,
@@ -169,8 +186,12 @@ mod tests {
         let transaction_repository =
             build_sample_transactions(&mut transaction_repository, AccountId::new(1));
 
-        let result =
-            list_account_transactions(&account_repository, transaction_repository, account_id);
+        let result = list_account_transactions(
+            &account_repository,
+            transaction_repository,
+            account_id,
+            TransactionFilter::default(),
+        );
         assert_eq!(
             result,
             Err(ListTransactionsError::AccountNotFound(account_id))
@@ -197,6 +218,7 @@ mod tests {
             &account_repository,
             transaction_repository,
             AccountId::new(2),
+            TransactionFilter::default(),
         )
         .unwrap();
 
@@ -232,6 +254,7 @@ mod tests {
             &account_repository,
             &transaction_repository,
             AccountId::new(1),
+            TransactionFilter::default(),
         );
 
         assert_eq!(
@@ -270,8 +293,12 @@ mod tests {
 
         let transaction_repository = FailingTransactionRepository;
 
-        let result =
-            list_account_transactions(&account_repository, &transaction_repository, account_id);
+        let result = list_account_transactions(
+            &account_repository,
+            &transaction_repository,
+            account_id,
+            TransactionFilter::default(),
+        );
 
         assert_eq!(
             result,
@@ -279,5 +306,91 @@ mod tests {
                 "transaction database unavailable".to_string(),
             ),)),
         );
+    }
+
+    #[test]
+    fn filters_transactions_by_category() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        let transaction_repository =
+            build_sample_transactions(&mut transaction_repository, account_id);
+
+        let filter = TransactionFilter {
+            category: Some(Category::Food),
+        };
+
+        let result = list_account_transactions(
+            &account_repository,
+            transaction_repository,
+            account_id,
+            filter,
+        );
+
+        assert_eq!(
+            result,
+            Ok(vec![
+                Transaction::new(
+                    TransactionId::new(4),
+                    account_id,
+                    TransactionKind::Expense,
+                    Money::from_minor_units(500, crate::domain::money::Currency::Cny),
+                    "2026-08-15T12:00:40+08:00[Asia/Shanghai]".parse().unwrap(),
+                    String::from("Dinner"),
+                    Category::Food,
+                )
+                .unwrap(),
+                Transaction::new(
+                    TransactionId::new(3),
+                    account_id,
+                    TransactionKind::Expense,
+                    Money::from_minor_units(500, crate::domain::money::Currency::Cny),
+                    "2026-08-15T12:00:40+08:00[Asia/Shanghai]".parse().unwrap(),
+                    String::from("Dinner"),
+                    Category::Food,
+                )
+                .unwrap(),
+                Transaction::new(
+                    TransactionId::new(1),
+                    account_id,
+                    TransactionKind::Expense,
+                    Money::from_minor_units(1_000, crate::domain::money::Currency::Cny),
+                    "2026-08-14T12:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    String::from("Lunch"),
+                    Category::Food,
+                )
+                .unwrap(),
+            ])
+        );
+    }
+
+    #[test]
+    fn returns_empty_list_when_no_transactions_match_filter() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        let transaction_repository =
+            build_sample_transactions(&mut transaction_repository, account_id);
+
+        let filter = TransactionFilter {
+            category: Some(Category::Entertainment),
+        };
+
+        let result = list_account_transactions(
+            &account_repository,
+            transaction_repository,
+            account_id,
+            filter,
+        );
+
+        assert_eq!(result, Ok(vec![]));
     }
 }

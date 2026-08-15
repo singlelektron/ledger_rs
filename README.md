@@ -46,7 +46,7 @@ SQLite persistence layer are implemented and tested:
   repository
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
-  newest-first order
+  newest-first order, with optional filtering by transaction category
 - SQLite support through `rusqlite`, including repeatable schema initialization
   for account and transaction tables with foreign-key enforcement enabled
 - A SQLite account repository that saves, queries, and lists accounts while
@@ -71,7 +71,8 @@ and transaction repositories. Its CLI can create accounts and record
 time-zone-aware transactions in a persistent SQLite database, then calculate
 an account balance or display category net outflow from the stored
 transactions. It can also display a validated account's transaction history in
-stable newest-first order and list all accounts in ascending ID order.
+stable newest-first order, optionally filter that history by category, and list
+all accounts in ascending ID order.
 
 ## Goals
 
@@ -421,13 +422,23 @@ schema change.
 - Preserve repository errors through the account-listing use case - Completed
 - Display all accounts through the CLI - Completed
 
+### Milestone 8: Transaction Category Filtering - Completed
+
+- Represent optional transaction-history filters in the application layer -
+  Completed
+- Filter an account's transactions by category - Completed
+- Preserve newest-first ordering after filtering - Completed
+- Parse an optional, case-insensitive `--category` value in the CLI - Completed
+- Display filtered transaction history through the CLI - Completed
+- Test matching, nonmatching, invalid, and omitted category filters - Completed
+
 ### Later Milestones
 
 - TUI
 - Web API
 - Budgets
 - Reports and data import/export
-- Transaction filtering and pagination
+- Additional transaction filters and pagination
 - Exchange rates and cross-currency transfers
 
 ## Local Development
@@ -524,6 +535,16 @@ Transactions are displayed from newest to oldest. If multiple transactions
 have the same occurrence time, the higher transaction ID is displayed first so
 the output remains deterministic. An existing account with no transactions
 returns an explicit message instead of an empty output.
+
+Filter the transaction history by category:
+
+```bash
+cargo run -- transaction list --account-id 1 --category food
+```
+
+Category input is case-insensitive. When `--category` is omitted, transactions
+from every category are displayed. When no transaction matches the selected
+category, the command returns the same explicit empty-list message.
 
 Query the balance calculated from an account's stored transactions:
 

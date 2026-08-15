@@ -4,7 +4,7 @@ use crate::{
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
-        list_transactions::{ListTransactionsError, list_account_transactions},
+        list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
     },
@@ -101,6 +101,9 @@ pub enum TransactionCommand {
     List {
         #[arg(long)]
         account_id: u64,
+
+        #[arg(long, ignore_case = true)]
+        category: Option<CategoryArg>,
     },
 }
 
@@ -128,7 +131,7 @@ pub enum TransactionKindArg {
     ExpenseRefund,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, ValueEnum, PartialEq)]
 pub enum CategoryArg {
     Food,
     Transportation,
@@ -391,11 +394,17 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 Ok(success_message)
             }
 
-            TransactionCommand::List { account_id } => {
+            TransactionCommand::List {
+                account_id,
+                category,
+            } => {
                 let transactions = list_account_transactions(
                     &account_repository,
                     &transaction_repository,
                     AccountId::new(account_id),
+                    TransactionFilter {
+                        category: category.map(Category::from),
+                    },
                 )?;
 
                 if transactions.is_empty() {
@@ -1253,9 +1262,14 @@ mod tests {
 
         match cli.command {
             Command::Transaction {
-                command: TransactionCommand::List { account_id },
+                command:
+                    TransactionCommand::List {
+                        account_id,
+                        category,
+                    },
             } => {
                 assert_eq!(account_id, 1);
+                assert_eq!(category, None);
             }
 
             _ => panic!("expected list command"),
@@ -1272,7 +1286,10 @@ mod tests {
         let cli = Cli {
             database,
             command: Command::Transaction {
-                command: TransactionCommand::List { account_id: 1 },
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                },
             },
         };
 
@@ -1296,7 +1313,10 @@ mod tests {
         let cli = Cli {
             database,
             command: Command::Transaction {
-                command: TransactionCommand::List { account_id: 1 },
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                },
             },
         };
 
@@ -1313,7 +1333,10 @@ mod tests {
         let cli = Cli {
             database,
             command: Command::Transaction {
-                command: TransactionCommand::List { account_id: 999 },
+                command: TransactionCommand::List {
+                    account_id: 999,
+                    category: None,
+                },
             },
         };
 
@@ -1377,5 +1400,75 @@ mod tests {
         let result = run(cli).unwrap();
 
         assert_eq!(result, "No accounts found");
+    }
+
+    #[test]
+    fn rejects_unknown_category_in_list_command() {
+        let error = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "list",
+            "--account-id",
+            "1",
+            "--category",
+            "unknown",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn parse_category_in_list_command() {
+        let result = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "list",
+            "--account-id",
+            "1",
+            "--category",
+            "Food",
+        ])
+        .unwrap();
+
+        match result.command {
+            Command::Transaction {
+                command:
+                    TransactionCommand::List {
+                        account_id,
+                        category,
+                    },
+            } => {
+                assert_eq!(account_id, 1);
+                assert_eq!(category, Some(CategoryArg::Food));
+            }
+
+            _ => panic!("expected list command"),
+        }
+    }
+
+    #[test]
+    fn lists_transactions_for_account_with_category_filter() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: Some(CategoryArg::Food),
+                },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Transaction 3 | ExpenseRefund | 2026-08-16T12:00:00+08:00[Asia/Shanghai] | 50(Cny) | Groceries | Food\n\
+             Transaction 2 | Expense | 2026-08-15T12:00:00+08:00[Asia/Shanghai] | 500(Cny) | Groceries | Food"
+        );
     }
 }
