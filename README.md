@@ -67,8 +67,9 @@ SQLite persistence layer are implemented and tested:
   repositories are closed and reopened
 - A `clap`-based CLI entry point with `account create`, `account list`,
   `transaction add`, `transaction list`, `account balance`, and
-  `report category` commands, case-insensitive enum parsing, configurable
-  database paths, and nonzero exit status on application errors
+  `report category` and `report summary` commands, case-insensitive enum
+  parsing, configurable database paths, and nonzero exit status on application
+  errors
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
@@ -79,7 +80,8 @@ time-zone-aware transactions in a persistent SQLite database, then calculate
 an account balance or display category net outflow from the stored
 transactions. It can also display a validated account's transaction history in
 stable newest-first order, optionally filter that history by category and
-transaction kind or time range, and list all accounts in ascending ID order.
+transaction kind or time range, list all accounts in ascending ID order, and
+display a cash-flow and category summary for a requested zoned time range.
 
 ## Goals
 
@@ -263,7 +265,7 @@ application use case accepts `Zoned` boundaries, selects transactions using
 `from <= occurred_at < to`, and then calculates both the cash-flow totals and
 category breakdown from the same selected transactions. This supports monthly,
 yearly, and custom reporting periods without separate calculation rules. CLI
-presentation for ranged summaries has not been implemented yet.
+presentation for ranged summaries is implemented with stable category ordering.
 
 ## Scope of the First Complete Workflow
 
@@ -464,7 +466,7 @@ schema change.
 - Display filtered transaction history through the CLI - Completed
 - Test matching, combined, nonmatching, invalid, and omitted filters - Completed
 
-### Milestone 9: Ranged Summary - In Progress
+### Milestone 9: Ranged Summary - Completed
 
 - Calculate income total, net expense total, and net balance change in the
   domain layer - Completed
@@ -477,7 +479,8 @@ schema change.
 - Reject equal or reversed time ranges - Completed
 - Preserve account, repository, and domain summary errors - Completed
 - Test range boundaries and repository error paths - Completed
-- Parse a reporting range and display the summary through the CLI - Pending
+- Parse a reporting range and display the summary through the CLI - Completed
+- Display category rows in stable order - Completed
 
 ### Later Milestones
 
@@ -657,6 +660,35 @@ units. A positive total represents net spending in that category. A negative
 total represents net money received through income or expense refunds. For
 example, an expense of `500` followed by a refund of `50` in the same category
 produces a category net outflow of `450`.
+
+Display income, net expenses, net balance change, and category net outflow for
+a zoned time range:
+
+```bash
+cargo run -- report summary \
+  --account-id 1 \
+  --from '2026-08-01T00:00:00+08:00[Asia/Shanghai]' \
+  --to '2026-09-01T00:00:00+08:00[Asia/Shanghai]'
+```
+
+The summary uses the same `from <= occurred_at < to` rule as transaction
+filtering. Its three total rows are followed by category rows in stable order.
+Positive category values represent net outflow, while negative values represent
+net money received.
+
+The boundaries can also be supplied as local date-times with one shared IANA
+time-zone name:
+
+```bash
+cargo run -- report summary \
+  --account-id 1 \
+  --from '2026-08-01T00:00:00' \
+  --to '2026-09-01T00:00:00' \
+  --time-zone Asia/Shanghai
+```
+
+Both boundaries are required. Equal or reversed boundaries, unknown time zones,
+and ambiguous or nonexistent local times are rejected.
 
 After changing Rust code, run:
 

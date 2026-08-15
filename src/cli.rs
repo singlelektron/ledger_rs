@@ -5,6 +5,7 @@ use crate::{
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
         list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
+        ranged_summary::{GetRangedSummaryError, get_ranged_summary},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
     },
@@ -102,7 +103,7 @@ pub enum TransactionCommand {
     ArgGroup::new("time-bound")
         .args(["from", "to"])
         .multiple(true)
-))]
+    ))]
     List {
         #[arg(long)]
         account_id: u64,
@@ -129,6 +130,20 @@ pub enum ReportCommand {
     Category {
         #[arg(long)]
         account_id: u64,
+    },
+
+    Summary {
+        #[arg(long)]
+        account_id: u64,
+
+        #[arg(long)]
+        from: String,
+
+        #[arg(long)]
+        to: String,
+
+        #[arg(long)]
+        time_zone: Option<String>,
     },
 }
 
@@ -224,6 +239,8 @@ pub enum CliError {
 
     ListTransactions(ListTransactionsError),
     ListAccounts(ListAccountsError),
+
+    GetRangedSummary(GetRangedSummaryError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -271,6 +288,12 @@ impl From<ListTransactionsError> for CliError {
 impl From<ListAccountsError> for CliError {
     fn from(error: ListAccountsError) -> Self {
         Self::ListAccounts(error)
+    }
+}
+
+impl From<GetRangedSummaryError> for CliError {
+    fn from(error: GetRangedSummaryError) -> Self {
+        Self::GetRangedSummary(error)
     }
 }
 
@@ -476,6 +499,57 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 }
 
                 report_lines.sort();
+
+                Ok(report_lines.join("\n"))
+            }
+
+            ReportCommand::Summary {
+                account_id,
+                from,
+                to,
+                time_zone,
+            } => {
+                let from = parse_occurred_at(&from, time_zone.as_deref())?;
+                let to = parse_occurred_at(&to, time_zone.as_deref())?;
+
+                let summary = get_ranged_summary(
+                    &account_repository,
+                    &transaction_repository,
+                    AccountId::new(account_id),
+                    from,
+                    to,
+                )?;
+
+                let mut report_lines: Vec<String> = Vec::new();
+                report_lines.push(format!(
+                    "Income Total: {} ({:?})",
+                    summary.income_total().minor_units(),
+                    summary.income_total().currency()
+                ));
+                report_lines.push(format!(
+                    "Net Expense Total: {} ({:?})",
+                    summary.net_expense_total().minor_units(),
+                    summary.net_expense_total().currency()
+                ));
+                report_lines.push(format!(
+                    "Net Change: {} ({:?})",
+                    summary.net_change().minor_units(),
+                    summary.net_change().currency()
+                ));
+
+                let mut category_lines = Vec::new();
+
+                for (category, total) in summary.net_outflow_by_category() {
+                    category_lines.push(format!(
+                        "Category: {:?}, Net Outflow: {} ({:?})",
+                        category,
+                        total.minor_units(),
+                        total.currency()
+                    ));
+                }
+
+                category_lines.sort();
+                report_lines.extend(category_lines);
 
                 Ok(report_lines.join("\n"))
             }
@@ -1723,5 +1797,70 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn parse_ranged_summary_command() {
+        let cli = Cli::try_parse_from([
+            "ledger_rs",
+            "report",
+            "summary",
+            "--account-id",
+            "1",
+            "--from",
+            "2026-08-14T12:00:00+08:00[Asia/Shanghai]",
+            "--to",
+            "2026-08-16T12:00:00+08:00[Asia/Shanghai]",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Report {
+                command:
+                    ReportCommand::Summary {
+                        account_id,
+                        from,
+                        to,
+                        time_zone,
+                    },
+            } => {
+                assert_eq!(account_id, 1);
+                assert_eq!(from, "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string());
+                assert_eq!(to, "2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string());
+                assert_eq!(time_zone, None);
+            }
+
+            _ => panic!("expected ranged summary command"),
+        }
+    }
+
+    #[test]
+    fn returns_ranged_summary() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Report {
+                command: ReportCommand::Summary {
+                    account_id: 1,
+                    from: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    to: "2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string(),
+                    time_zone: None,
+                },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Income Total: 1000 (Cny)\n\
+            Net Expense Total: 500 (Cny)\n\
+            Net Change: 500 (Cny)\n\
+            Category: Food, Net Outflow: 500 (Cny)\n\
+            Category: Salary, Net Outflow: -1000 (Cny)"
+        );
     }
 }
