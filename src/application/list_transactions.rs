@@ -1,3 +1,5 @@
+use jiff::Zoned;
+
 use crate::{
     application::repository::{AccountRepository, RepositoryError, TransactionRepository},
     domain::{
@@ -10,6 +12,7 @@ use crate::{
 pub enum ListTransactionsError {
     AccountNotFound(AccountId),
     Repository(RepositoryError),
+    TimeRangeError { from: Zoned, to: Zoned },
 }
 
 impl From<RepositoryError> for ListTransactionsError {
@@ -18,10 +21,12 @@ impl From<RepositoryError> for ListTransactionsError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TransactionFilter {
     pub category: Option<Category>,
     pub kind: Option<TransactionKind>,
+    pub from: Option<Zoned>,
+    pub to: Option<Zoned>,
 }
 
 pub fn list_account_transactions(
@@ -40,6 +45,23 @@ pub fn list_account_transactions(
     }
     if let Some(kind) = filter.kind {
         transactions.retain(|transaction| transaction.kind() == kind);
+    }
+
+    if let (Some(from), Some(to)) = (&filter.from, &filter.to)
+        && from >= to
+    {
+        return Err(ListTransactionsError::TimeRangeError {
+            from: from.clone(),
+            to: to.clone(),
+        });
+    }
+
+    if let Some(from) = filter.from {
+        transactions.retain(|transaction| transaction.occurred_at() >= from);
+    }
+
+    if let Some(to) = filter.to {
+        transactions.retain(|transaction| transaction.occurred_at() < to);
     }
 
     transactions.sort_by(|a, b| {
@@ -327,6 +349,8 @@ mod tests {
         let filter = TransactionFilter {
             category: Some(Category::Food),
             kind: None,
+            from: None,
+            to: None,
         };
 
         let result = list_account_transactions(
@@ -388,6 +412,8 @@ mod tests {
         let filter = TransactionFilter {
             category: None,
             kind: Some(TransactionKind::Expense),
+            from: None,
+            to: None,
         };
 
         let result = list_account_transactions(
@@ -449,6 +475,8 @@ mod tests {
         let filter = TransactionFilter {
             category: Some(Category::Entertainment),
             kind: Some(TransactionKind::Expense),
+            from: None,
+            to: None,
         };
 
         let result = list_account_transactions(
@@ -459,5 +487,83 @@ mod tests {
         );
 
         assert_eq!(result, Ok(vec![]));
+    }
+
+    #[test]
+    fn returns_error_when_from_date_is_after_to_date() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        let transaction_repository =
+            build_sample_transactions(&mut transaction_repository, account_id);
+
+        let filter = TransactionFilter {
+            category: None,
+            kind: Some(TransactionKind::Expense),
+            from: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".parse().unwrap()),
+            to: Some("2026-08-14T12:00:00+08:00[Asia/Shanghai]".parse().unwrap()),
+        };
+
+        let result = list_account_transactions(
+            &account_repository,
+            transaction_repository,
+            account_id,
+            filter,
+        );
+
+        assert_eq!(
+            result,
+            Err(ListTransactionsError::TimeRangeError {
+                from: "2026-08-15T12:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                to: "2026-08-14T12:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn filters_transactions_by_time_range() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+
+        let account_id = AccountId::new(1);
+        let account = Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap();
+        account_repository.save(account).unwrap();
+
+        let transaction_repository =
+            build_sample_transactions(&mut transaction_repository, account_id);
+
+        let filter = TransactionFilter {
+            category: None,
+            kind: Some(TransactionKind::Expense),
+            from: Some("2026-08-14T12:00:00+08:00[Asia/Shanghai]".parse().unwrap()),
+            to: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".parse().unwrap()),
+        };
+
+        let result = list_account_transactions(
+            &account_repository,
+            transaction_repository,
+            account_id,
+            filter,
+        );
+
+        assert_eq!(
+            result,
+            Ok(vec![
+                Transaction::new(
+                    TransactionId::new(1),
+                    account_id,
+                    TransactionKind::Expense,
+                    Money::from_minor_units(1_000, crate::domain::money::Currency::Cny),
+                    "2026-08-14T12:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    String::from("Lunch"),
+                    Category::Food,
+                )
+                .unwrap(),
+            ])
+        );
     }
 }

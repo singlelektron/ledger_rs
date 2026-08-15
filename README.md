@@ -46,7 +46,8 @@ SQLite persistence layer are implemented and tested:
   repository
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
-  newest-first order, with optional filtering by transaction category and kind
+  newest-first order, with optional filtering by transaction category, kind,
+  and occurrence-time range
 - SQLite support through `rusqlite`, including repeatable schema initialization
   for account and transaction tables with foreign-key enforcement enabled
 - A SQLite account repository that saves, queries, and lists accounts while
@@ -72,7 +73,7 @@ time-zone-aware transactions in a persistent SQLite database, then calculate
 an account balance or display category net outflow from the stored
 transactions. It can also display a validated account's transaction history in
 stable newest-first order, optionally filter that history by category and
-transaction kind, and list all accounts in ascending ID order.
+transaction kind or time range, and list all accounts in ascending ID order.
 
 ## Goals
 
@@ -223,8 +224,10 @@ silently choosing a timestamp.
 Transaction lists are not sorted by the domain entity. The application-level
 transaction-history query orders them by `occurred_at` from newest to oldest
 and uses descending transaction ID as a deterministic tie-breaker. Optional
-category and transaction-kind filters are applied in the application layer;
-pagination will be added later as a separate application concern.
+category, transaction-kind, and occurrence-time filters are applied in the
+application layer. Time ranges are left-closed and right-open, so `from` is
+included while `to` is excluded. Pagination will be added later as a separate
+application concern.
 
 `ExpenseRefund` represents money that reverses part of an earlier expense. For
 example, when one person pays a restaurant bill and friends later reimburse
@@ -429,8 +432,17 @@ schema change.
   Completed
 - Filter an account's transactions by category - Completed
 - Filter an account's transactions by transaction kind - Completed
-- Combine category and transaction-kind filters using AND semantics - Completed
+- Filter an account's transactions by an optional occurrence-time range -
+  Completed
+- Use inclusive `from` and exclusive `to` time boundaries - Completed
+- Reject time ranges whose `from` boundary is not earlier than `to` - Completed
+- Combine category, transaction-kind, and time-range filters using AND
+  semantics - Completed
 - Preserve newest-first ordering after filtering - Completed
+- Parse optional `--from`, `--to`, and `--time-zone` values in the CLI -
+  Completed
+- Require `--time-zone` to be accompanied by at least one time boundary -
+  Completed
 - Parse optional, case-insensitive `--category` and `--kind` values in the CLI -
   Completed
 - Display filtered transaction history through the CLI - Completed
@@ -565,6 +577,34 @@ cargo run -- transaction list \
 Category and transaction-kind input is case-insensitive. When a filter is
 omitted, it does not restrict the results. When no transaction matches the
 selected filters, the command returns the same explicit empty-list message.
+
+Filter transactions by a zoned occurrence-time range:
+
+```bash
+cargo run -- transaction list \
+  --account-id 1 \
+  --from '2026-08-01T00:00:00+08:00[Asia/Shanghai]' \
+  --to '2026-09-01T00:00:00+08:00[Asia/Shanghai]'
+```
+
+The time range uses `from <= occurred_at < to`. This left-closed,
+right-open rule makes adjacent periods nonoverlapping. For example, an August
+query can end at the instant when September begins without including a
+September transaction. A range with `from >= to` is rejected.
+
+Local date-times can instead share a separately supplied IANA time-zone name:
+
+```bash
+cargo run -- transaction list \
+  --account-id 1 \
+  --from '2026-08-01T00:00:00' \
+  --to '2026-09-01T00:00:00' \
+  --time-zone Asia/Shanghai
+```
+
+Either boundary may be omitted. `--time-zone` is accepted only when at least
+one of `--from` or `--to` is present. As with transaction creation, unknown
+time zones and ambiguous or nonexistent local times are rejected.
 
 Query the balance calculated from an account's stored transactions:
 

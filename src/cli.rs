@@ -15,7 +15,7 @@ use crate::{
     },
     infrastructure::sqlite::open_repositories,
 };
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 use std::path::PathBuf;
 
@@ -98,6 +98,11 @@ pub enum TransactionCommand {
         time_zone: Option<String>,
     },
 
+    #[command(group(
+    ArgGroup::new("time-bound")
+        .args(["from", "to"])
+        .multiple(true)
+))]
     List {
         #[arg(long)]
         account_id: u64,
@@ -107,6 +112,15 @@ pub enum TransactionCommand {
 
         #[arg(long, ignore_case = true)]
         kind: Option<TransactionKindArg>,
+
+        #[arg(long)]
+        from: Option<String>,
+
+        #[arg(long)]
+        to: Option<String>,
+
+        #[arg(long, requires = "time-bound")]
+        time_zone: Option<String>,
     },
 }
 
@@ -401,6 +415,9 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 account_id,
                 category,
                 kind,
+                from,
+                to,
+                time_zone,
             } => {
                 let transactions = list_account_transactions(
                     &account_repository,
@@ -409,6 +426,12 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     TransactionFilter {
                         category: category.map(Category::from),
                         kind: kind.map(TransactionKind::from),
+                        from: from
+                            .map(|s| parse_occurred_at(&s, time_zone.as_deref()))
+                            .transpose()?,
+                        to: to
+                            .map(|s| parse_occurred_at(&s, time_zone.as_deref()))
+                            .transpose()?,
                     },
                 )?;
 
@@ -1273,11 +1296,17 @@ mod tests {
                         account_id,
                         category,
                         kind,
+                        from,
+                        to,
+                        time_zone,
                     },
             } => {
                 assert_eq!(account_id, 1);
                 assert_eq!(category, None);
                 assert_eq!(kind, None);
+                assert_eq!(from, None);
+                assert_eq!(to, None);
+                assert_eq!(time_zone, None);
             }
 
             _ => panic!("expected list command"),
@@ -1298,6 +1327,9 @@ mod tests {
                     account_id: 1,
                     category: None,
                     kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
                 },
             },
         };
@@ -1326,6 +1358,9 @@ mod tests {
                     account_id: 1,
                     category: None,
                     kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
                 },
             },
         };
@@ -1347,6 +1382,9 @@ mod tests {
                     account_id: 999,
                     category: None,
                     kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
                 },
             },
         };
@@ -1441,6 +1479,10 @@ mod tests {
             "Food",
             "--kind",
             "Expense",
+            "--from",
+            "2026-08-14T12:00:00+08:00[Asia/Shanghai]",
+            "--to",
+            "2026-08-16T12:00:00+08:00[Asia/Shanghai]",
         ])
         .unwrap();
 
@@ -1451,11 +1493,22 @@ mod tests {
                         account_id,
                         category,
                         kind,
+                        from,
+                        to,
+                        time_zone: _,
                     },
             } => {
                 assert_eq!(account_id, 1);
                 assert_eq!(category, Some(CategoryArg::Food));
                 assert_eq!(kind, Some(TransactionKindArg::Expense));
+                assert_eq!(
+                    from,
+                    Some("2026-08-14T12:00:00+08:00[Asia/Shanghai]".to_string())
+                );
+                assert_eq!(
+                    to,
+                    Some("2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string())
+                );
             }
 
             _ => panic!("expected list command"),
@@ -1475,6 +1528,9 @@ mod tests {
                     account_id: 1,
                     category: Some(CategoryArg::Food),
                     kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
                 },
             },
         };
@@ -1501,6 +1557,9 @@ mod tests {
                     account_id: 1,
                     category: Some(CategoryArg::Food),
                     kind: Some(TransactionKindArg::Expense),
+                    from: None,
+                    to: None,
+                    time_zone: None,
                 },
             },
         };
@@ -1527,5 +1586,142 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn parses_time_zone_in_list_command() {
+        let result = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "list",
+            "--account-id",
+            "1",
+            "--from",
+            "2026-08-01T00:00:00",
+            "--time-zone",
+            "Asia/Shanghai",
+        ])
+        .unwrap();
+
+        match result.command {
+            Command::Transaction {
+                command:
+                    TransactionCommand::List {
+                        account_id,
+                        category: _,
+                        kind: _,
+                        from: _,
+                        to: _,
+                        time_zone,
+                    },
+            } => {
+                assert_eq!(account_id, 1);
+                assert_eq!(time_zone, Some("Asia/Shanghai".to_string()));
+            }
+
+            _ => panic!("expected list command"),
+        }
+    }
+
+    #[test]
+    fn lists_transactions_for_account_by_from_to() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                    kind: None,
+                    from: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string()),
+                    to: Some("2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string()),
+                    time_zone: None,
+                },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Transaction 2 | Expense | 2026-08-15T12:00:00+08:00[Asia/Shanghai] | 500(Cny) | Groceries | Food"
+        );
+    }
+
+    #[test]
+    fn lists_transactions_for_account_by_from() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                    kind: None,
+                    from: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string()),
+                    to: None,
+                    time_zone: None,
+                },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Transaction 3 | ExpenseRefund | 2026-08-16T12:00:00+08:00[Asia/Shanghai] | 50(Cny) | Groceries | Food\n\
+             Transaction 2 | Expense | 2026-08-15T12:00:00+08:00[Asia/Shanghai] | 500(Cny) | Groceries | Food"
+        );
+    }
+
+    #[test]
+    fn lists_transactions_for_account_by_to() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let cli = Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: Some("2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string()),
+                    time_zone: None,
+                },
+            },
+        };
+
+        let result = run(cli).unwrap();
+
+        assert_eq!(
+            result,
+            "Transaction 2 | Expense | 2026-08-15T12:00:00+08:00[Asia/Shanghai] | 500(Cny) | Groceries | Food\n\
+             Transaction 1 | Income | 2026-08-14T12:00:00+08:00[Asia/Shanghai] | 1000(Cny) | Salary | Salary"
+        );
+    }
+
+    #[test]
+    fn rejects_timezone_without_from_to() {
+        let error = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "list",
+            "--account-id",
+            "1",
+            "--time-zone",
+            "Asia/Shanghai",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 }
