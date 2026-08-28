@@ -1,6 +1,7 @@
 use crate::{
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
+        budget_report::{BudgetReportError, get_budget_statuses},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
@@ -99,6 +100,16 @@ pub enum BudgetCommand {
     Delete {
         #[arg(long)]
         id: u64,
+    },
+    Status {
+        #[arg(long)]
+        account_id: u64,
+        #[arg(long)]
+        year: i32,
+        #[arg(long)]
+        month: u8,
+        #[arg(long)]
+        time_zone: String,
     },
 }
 
@@ -433,6 +444,7 @@ pub enum CliError {
     ManageTransaction(ManageTransactionError),
     ManageTransfer(ManageTransferError),
     ManageBudget(ManageBudgetError),
+    BudgetReport(BudgetReportError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -522,6 +534,12 @@ impl From<ManageTransferError> for CliError {
 impl From<ManageBudgetError> for CliError {
     fn from(error: ManageBudgetError) -> Self {
         Self::ManageBudget(error)
+    }
+}
+
+impl From<BudgetReportError> for CliError {
+    fn from(error: BudgetReportError) -> Self {
+        Self::BudgetReport(error)
     }
 }
 
@@ -1090,6 +1108,40 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
             BudgetCommand::Delete { id } => {
                 delete_budget(&mut budget_repository, BudgetId::new(id))?;
                 Ok(format!("Deleted budget {id}"))
+            }
+            BudgetCommand::Status {
+                account_id,
+                year,
+                month,
+                time_zone,
+            } => {
+                let statuses = get_budget_statuses(
+                    &account_repository,
+                    &transaction_repository,
+                    &budget_repository,
+                    AccountId::new(account_id),
+                    BudgetMonth::new(year, month)?,
+                    &time_zone,
+                )?;
+                if statuses.is_empty() {
+                    return Ok(format!(
+                        "No budgets found for account {account_id} in {year:04}-{month:02}"
+                    ));
+                }
+                Ok(statuses
+                    .into_iter()
+                    .map(|status| {
+                        format!(
+                            "{:?} | limit {} | used {} | remaining {} | overrun {}",
+                            status.budget.category(),
+                            status.budget.limit().minor_units(),
+                            status.used.minor_units(),
+                            status.remaining.minor_units(),
+                            status.overrun
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
             }
         },
     }
@@ -2742,6 +2794,23 @@ mod tests {
         })
         .unwrap();
         assert!(shown.contains("2000(Cny)"));
+
+        let status = run(Cli {
+            database: database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Status {
+                    account_id: 1,
+                    year: 2026,
+                    month: 8,
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            status,
+            "Food | limit 2000 | used 0 | remaining 2000 | overrun false"
+        );
 
         assert_eq!(
             run(Cli {

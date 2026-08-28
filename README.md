@@ -63,6 +63,8 @@ SQLite persistence layer are implemented and tested:
   activity queries
 - Monthly category budgets with repository-assigned IDs, positive limits in the
   account currency, unique account/category/month scopes, and CLI management
+- Time-zone-aware monthly budget execution reports with signed usage,
+  remaining amount, and explicit overrun status
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -594,6 +596,19 @@ cargo run -- budget delete --id 1
 Setting the same account, category, and month again updates the existing budget
 without changing its ID. The limit uses the account currency, so no separate
 currency argument is accepted. Accounts with budgets cannot be deleted.
+
+Report budget execution in an explicit IANA time zone:
+
+```bash
+cargo run -- budget status \
+  --account-id 1 \
+  --year 2026 \
+  --month 8 \
+  --time-zone Asia/Shanghai
+```
+
+Usage is `Expense - ExpenseRefund`; income and transfers are ignored. Refunds
+may make usage negative and remaining funds greater than the original limit.
 
 Record a transaction for an existing account:
 
