@@ -12,7 +12,7 @@ use crate::{
     domain::{
         account::AccountId,
         money::{Currency, Money},
-        transaction::{self, Category, Transaction, TransactionError, TransactionKind},
+        transaction::{Category, NewTransaction, TransactionError, TransactionKind},
     },
     infrastructure::sqlite::open_repositories,
 };
@@ -50,7 +50,7 @@ pub enum Command {
 #[derive(Debug, Subcommand)]
 pub enum AccountCommand {
     Create {
-        #[arg(long)]
+        #[arg(skip)]
         id: u64,
 
         #[arg(long)]
@@ -71,7 +71,7 @@ pub enum AccountCommand {
 #[derive(Debug, Subcommand)]
 pub enum TransactionCommand {
     Add {
-        #[arg(long)]
+        #[arg(skip)]
         id: u64,
 
         #[arg(long)]
@@ -339,13 +339,13 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
 
     match cli.command {
         Command::Account { command } => match command {
-            AccountCommand::Create { id, name, currency } => {
-                let account = create_account(
-                    &mut account_repository,
-                    AccountId::new(id),
-                    name,
-                    Currency::from(currency),
-                )?;
+            AccountCommand::Create {
+                id: _,
+                name,
+                currency,
+            } => {
+                let account =
+                    create_account(&mut account_repository, name, Currency::from(currency))?;
 
                 Ok(format!(
                     "Created account {}: {} ({:?})",
@@ -393,7 +393,7 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
 
         Command::Transaction { command } => match command {
             TransactionCommand::Add {
-                id,
+                id: _,
                 account_id,
                 kind,
                 amount_minor,
@@ -404,14 +404,19 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 time_zone,
             } => {
                 let occurred_at: Zoned = parse_occurred_at(&occurred_at, time_zone.as_deref())?;
-                let transaction = Transaction::new(
-                    transaction::TransactionId::new(id),
+                let transaction = NewTransaction::new(
                     AccountId::new(account_id),
                     TransactionKind::from(kind),
                     Money::from_minor_units(amount_minor, Currency::from(currency)),
                     occurred_at.clone(),
                     description,
                     Category::from(category),
+                )?;
+
+                let transaction = record_transaction(
+                    &account_repository,
+                    &mut transaction_repository,
+                    transaction,
                 )?;
 
                 let success_message = format!(
@@ -424,12 +429,6 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     transaction.category(),
                     occurred_at,
                 );
-
-                record_transaction(
-                    &account_repository,
-                    &mut transaction_repository,
-                    transaction,
-                )?;
 
                 Ok(success_message)
             }
@@ -583,8 +582,6 @@ mod tests {
             "test.db",
             "account",
             "create",
-            "--id",
-            "1",
             "--name",
             "Cash",
             "--currency",
@@ -596,9 +593,8 @@ mod tests {
 
         match cli.command {
             Command::Account {
-                command: AccountCommand::Create { id, name, currency },
+                command: AccountCommand::Create { name, currency, .. },
             } => {
-                assert_eq!(id, 1);
                 assert_eq!(name, "Cash");
                 assert!(matches!(currency, CurrencyArg::Cny));
             }
@@ -613,8 +609,6 @@ mod tests {
             "ledger_rs",
             "account",
             "create",
-            "--id",
-            "1",
             "--name",
             "Cash",
             "--currency",
@@ -641,8 +635,6 @@ mod tests {
             "ledger_rs",
             "account",
             "create",
-            "--id",
-            "1",
             "--name",
             "Cash",
             "--currency",
@@ -653,7 +645,6 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 
-    use crate::application::repository::RepositoryError::DuplicateTransactionId;
     use crate::application::repository::{AccountRepository, TransactionRepository};
     use crate::domain::account::AccountId;
     use crate::domain::transaction::TransactionId;
@@ -683,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_error_for_duplicate_account_id() {
+    fn allocates_distinct_account_ids() {
         let temp_dir = tempfile::tempdir().unwrap();
         let database = temp_dir.path().join("ledger.db");
 
@@ -691,12 +682,7 @@ mod tests {
 
         let result = run(create_account_cli(database, 1, "Bank"));
 
-        assert_eq!(
-            result,
-            Err(CliError::CreateAccount(CreateAccountError::Repository(
-                RepositoryError::DuplicateAccountId(AccountId::new(1),),
-            ),)),
-        );
+        assert_eq!(result, Ok("Created account 2: Bank (Cny)".to_string()));
     }
 
     use crate::domain::account::AccountError;
@@ -722,8 +708,6 @@ mod tests {
             "ledger_rs",
             "transaction",
             "add",
-            "--id",
-            "1",
             "--account-id",
             "2",
             "--kind",
@@ -745,14 +729,12 @@ mod tests {
             Command::Transaction {
                 command:
                     TransactionCommand::Add {
-                        id,
                         account_id,
                         amount_minor,
                         description,
                         ..
                     },
             } => {
-                assert_eq!(id, 1);
                 assert_eq!(account_id, 2);
                 assert_eq!(amount_minor, 1250);
                 assert_eq!(description, "Lunch");
@@ -768,8 +750,6 @@ mod tests {
             "ledger_rs",
             "transaction",
             "add",
-            "--id",
-            "1",
             "--account-id",
             "2",
             "--kind",
@@ -796,8 +776,6 @@ mod tests {
             "ledger_rs",
             "transaction",
             "add",
-            "--id",
-            "1",
             "--account-id",
             "2",
             "--kind",
@@ -824,8 +802,6 @@ mod tests {
             "ledger_rs",
             "transaction",
             "add",
-            "--id",
-            "1",
             "--account-id",
             "2",
             "--kind",
@@ -1000,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_error_for_duplicate_transaction_id() {
+    fn allocates_distinct_transaction_ids() {
         let temp_dir = tempfile::tempdir().unwrap();
         let database = temp_dir.path().join("ledger.db");
 
@@ -1023,7 +999,7 @@ mod tests {
             },
         };
 
-        let _ = run(cli);
+        let first = run(cli).unwrap();
 
         let database = temp_dir.path().join("ledger.db");
 
@@ -1044,14 +1020,10 @@ mod tests {
             },
         };
 
-        let error = run(cli).unwrap_err();
+        let second = run(cli).unwrap();
 
-        assert_eq!(
-            error,
-            CliError::RecordTransaction(RecordTransactionError::Repository(
-                DuplicateTransactionId(TransactionId::new(1))
-            ))
-        );
+        assert!(first.starts_with("Recorded transaction 1 "));
+        assert!(second.starts_with("Recorded transaction 2 "));
     }
 
     #[test]
@@ -1489,8 +1461,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let database = temp_dir.path().join("ledger.db");
 
-        run(create_account_cli(database.clone(), 2, "Bank")).unwrap();
         run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+        run(create_account_cli(database.clone(), 2, "Bank")).unwrap();
 
         let cli = Cli {
             database,

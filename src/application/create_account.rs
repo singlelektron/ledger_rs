@@ -1,6 +1,6 @@
 use crate::application::repository::{AccountRepository, RepositoryError};
 use crate::domain::account::AccountError;
-use crate::domain::account::{Account, AccountId};
+use crate::domain::account::{Account, NewAccount};
 use crate::domain::money::Currency;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -23,40 +23,30 @@ impl From<RepositoryError> for CreateAccountError {
 
 pub fn create_account(
     account_repository: &mut impl AccountRepository,
-    id: AccountId,
     name: String,
     currency: Currency,
 ) -> Result<Account, CreateAccountError> {
-    let account = Account::new(id, name, currency)?;
-
-    account_repository.save(account.clone())?;
-
-    Ok(account)
+    let account = NewAccount::new(name, currency)?;
+    Ok(account_repository.create(account)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::account::AccountId;
     use crate::domain::money::Currency;
     use crate::infrastructure::in_memory::InMemoryAccountRepository;
 
     #[test]
     fn creates_and_stores_valid_account() {
         let mut account_repository = InMemoryAccountRepository::new();
-        let account_id = AccountId::new(1);
         let account_name = String::from("Cash");
         let currency = Currency::Cny;
 
-        let result = create_account(
-            &mut account_repository,
-            account_id,
-            account_name.clone(),
-            currency,
-        );
+        let result = create_account(&mut account_repository, account_name.clone(), currency);
 
         assert!(result.is_ok());
         let created_account = result.unwrap();
+        let account_id = created_account.id();
 
         assert_eq!(
             account_repository.find_by_id(account_id).unwrap(),
@@ -67,52 +57,35 @@ mod tests {
     #[test]
     fn returns_account_error_for_empty_name() {
         let mut account_repository = InMemoryAccountRepository::new();
-        let account_id = AccountId::new(1);
         let account_name = String::from("");
         let currency = Currency::Cny;
 
-        let result = create_account(&mut account_repository, account_id, account_name, currency);
+        let result = create_account(&mut account_repository, account_name, currency);
 
         assert_eq!(
             result,
             Err(CreateAccountError::Account(AccountError::EmptyName))
         );
 
-        assert_eq!(account_repository.find_by_id(account_id).unwrap(), None);
+        assert!(account_repository.find_all().unwrap().is_empty());
     }
 
     #[test]
-    fn returns_repository_error_for_duplicate_account_id() {
+    fn assigns_distinct_ids_to_created_accounts() {
         let mut account_repository = InMemoryAccountRepository::new();
-        let account_id = AccountId::new(1);
         let account_name = String::from("Cash");
         let currency = Currency::Cny;
 
-        let original = create_account(
-            &mut account_repository,
-            account_id,
-            account_name.clone(),
-            currency,
-        )
-        .unwrap();
+        let original =
+            create_account(&mut account_repository, account_name.clone(), currency).unwrap();
 
         let result = create_account(
             &mut account_repository,
-            account_id,
             String::from("Another Cash"),
             Currency::Cny,
         );
 
-        assert_eq!(
-            result,
-            Err(CreateAccountError::Repository(
-                RepositoryError::DuplicateAccountId(account_id)
-            ))
-        );
-
-        assert_eq!(
-            account_repository.find_by_id(account_id).unwrap(),
-            Some(original)
-        );
+        let second = result.unwrap();
+        assert_ne!(original.id(), second.id());
     }
 }

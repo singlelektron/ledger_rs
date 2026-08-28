@@ -11,3 +11,7 @@ whose version is newer than the application supports is rejected.
 
 Every migration runs in a transaction. A failed migration must leave both the
 schema version and stored data unchanged.
+
+Account and transaction inserts omit their integer primary key and use SQLite's
+generated row ID. Explicit IDs remain an infrastructure-only capability for
+versioned backup restoration and legacy-data tests.

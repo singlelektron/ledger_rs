@@ -50,6 +50,8 @@ SQLite persistence layer are implemented and tested:
 - An application-level transaction-recording use case that rejects unknown
   accounts and currency mismatches before saving through the transaction
   repository
+- Repository-allocated account and transaction IDs, so interfaces do not need
+  to invent persistent identifiers
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -507,7 +509,6 @@ Create an account in the default `ledger.db` database:
 
 ```bash
 cargo run -- account create \
-  --id 1 \
   --name Cash \
   --currency cny
 ```
@@ -518,14 +519,12 @@ Use a different SQLite database file:
 cargo run -- \
   --database data/ledger.db \
   account create \
-  --id 1 \
   --name Cash \
   --currency cny
 ```
 
 Currency input is case-insensitive. Supported values are `cny`, `usd`, `eur`,
-`hkd`, and `myr`. Account IDs are supplied explicitly during this first CLI
-stage.
+`hkd`, and `myr`. The repository allocates and returns each account ID.
 
 List all stored accounts:
 
@@ -540,7 +539,6 @@ Record a transaction for an existing account:
 
 ```bash
 cargo run -- transaction add \
-  --id 1 \
   --account-id 1 \
   --kind expense \
   --amount-minor 1250 \
@@ -561,7 +559,6 @@ arguments:
 
 ```bash
 cargo run -- transaction add \
-  --id 2 \
   --account-id 1 \
   --kind expense \
   --amount-minor 500 \

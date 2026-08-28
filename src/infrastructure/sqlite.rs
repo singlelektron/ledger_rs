@@ -1,7 +1,7 @@
 use crate::application::repository::{AccountRepository, RepositoryError, TransactionRepository};
-use crate::domain::account::{Account, AccountId};
+use crate::domain::account::{Account, AccountId, NewAccount};
 use crate::domain::money::{Currency, Money};
-use crate::domain::transaction::{Transaction, TransactionId, TransactionKind};
+use crate::domain::transaction::{NewTransaction, Transaction, TransactionId, TransactionKind};
 use jiff::Zoned;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
@@ -132,6 +132,18 @@ impl SqliteAccountRepository {
 }
 
 impl AccountRepository for SqliteAccountRepository {
+    fn create(&mut self, account: NewAccount) -> Result<Account, RepositoryError> {
+        self.connection
+            .execute(
+                "INSERT INTO accounts (name, currency) VALUES (?1, ?2)",
+                params![account.name(), currency_to_code(account.currency())],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let id = u64::try_from(self.connection.last_insert_rowid())
+            .map_err(|_| RepositoryError::IdExhausted)?;
+        Ok(Account::from_new(AccountId::new(id), account))
+    }
+
     fn save(&mut self, account: Account) -> Result<(), RepositoryError> {
         let id = i64::try_from(account.id().value())
             .map_err(|_| RepositoryError::InvalidId(account.id().value()))?;
@@ -227,6 +239,32 @@ impl AccountRepository for SqliteAccountRepository {
 }
 
 impl TransactionRepository for SqliteTransactionRepository {
+    fn create(&mut self, transaction: NewTransaction) -> Result<Transaction, RepositoryError> {
+        let account_id = i64::try_from(transaction.account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transaction.account_id().value()))?;
+        self.connection
+            .execute(
+                "
+                INSERT INTO transactions
+                    (account_id, kind, amount_minor, currency, occurred_at, description, category)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ",
+                params![
+                    account_id,
+                    transaction_kind_to_code(transaction.kind()),
+                    transaction.amount().minor_units(),
+                    currency_to_code(transaction.amount().currency()),
+                    transaction.occurred_at().to_string(),
+                    transaction.description(),
+                    category_to_code(transaction.category()),
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let id = u64::try_from(self.connection.last_insert_rowid())
+            .map_err(|_| RepositoryError::IdExhausted)?;
+        Ok(Transaction::from_new(TransactionId::new(id), transaction))
+    }
+
     fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError> {
         let id = i64::try_from(transaction.id().value())
             .map_err(|_| RepositoryError::InvalidId(transaction.id().value()))?;
@@ -514,6 +552,21 @@ mod tests {
     }
 
     #[test]
+    fn creates_accounts_with_sqlite_allocated_ids() {
+        let mut repository = SqliteAccountRepository::in_memory().unwrap();
+
+        let first = repository
+            .create(NewAccount::new("Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let second = repository
+            .create(NewAccount::new("Bank".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+
+        assert_eq!(first.id(), AccountId::new(1));
+        assert_eq!(second.id(), AccountId::new(2));
+    }
+
+    #[test]
     fn returns_none_for_unknown_account() {
         let repository = SqliteAccountRepository::in_memory().unwrap();
 
@@ -603,6 +656,32 @@ mod tests {
                 .unwrap(),
             vec![transaction]
         );
+    }
+
+    #[test]
+    fn creates_transactions_with_sqlite_allocated_ids() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+        let account = account_repository
+            .create(NewAccount::new("Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let build = || {
+            NewTransaction::new(
+                account.id(),
+                TransactionKind::Income,
+                Money::from_minor_units(100, Currency::Cny),
+                sample_occurred_at(),
+                "Salary".to_string(),
+                Category::Salary,
+            )
+            .unwrap()
+        };
+
+        let first = transaction_repository.create(build()).unwrap();
+        let second = transaction_repository.create(build()).unwrap();
+
+        assert_eq!(first.id(), TransactionId::new(1));
+        assert_eq!(second.id(), TransactionId::new(2));
     }
 
     #[test]

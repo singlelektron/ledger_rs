@@ -1,7 +1,13 @@
-use crate::domain::account::{Account, AccountId};
-use crate::domain::transaction::{Transaction, TransactionId};
+use crate::domain::account::{Account, AccountId, NewAccount};
+use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
 
 pub trait AccountRepository {
+    fn create(&mut self, _account: NewAccount) -> Result<Account, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "account creation is not supported".to_string(),
+        ))
+    }
+
     fn save(&mut self, account: Account) -> Result<(), RepositoryError>;
 
     fn find_by_id(&self, id: AccountId) -> Result<Option<Account>, RepositoryError>;
@@ -10,6 +16,12 @@ pub trait AccountRepository {
 }
 
 pub trait TransactionRepository {
+    fn create(&mut self, _transaction: NewTransaction) -> Result<Transaction, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "transaction creation is not supported".to_string(),
+        ))
+    }
+
     fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError>;
 
     fn find_by_account_id(
@@ -23,6 +35,7 @@ pub enum RepositoryError {
     DuplicateAccountId(AccountId),
     DuplicateTransactionId(TransactionId),
     InvalidId(u64),
+    IdExhausted,
     Storage(String),
     InvalidStoredData(String),
 }

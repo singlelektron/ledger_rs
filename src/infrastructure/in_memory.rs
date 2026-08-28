@@ -1,6 +1,6 @@
 use crate::application::repository::{AccountRepository, RepositoryError, TransactionRepository};
-use crate::domain::account::{Account, AccountId};
-use crate::domain::transaction::Transaction;
+use crate::domain::account::{Account, AccountId, NewAccount};
+use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
 
 #[derive(Default)]
 pub struct InMemoryAccountRepository {
@@ -25,6 +25,20 @@ impl InMemoryTransactionRepository {
 }
 
 impl AccountRepository for InMemoryAccountRepository {
+    fn create(&mut self, account: NewAccount) -> Result<Account, RepositoryError> {
+        let next_id = self
+            .accounts
+            .iter()
+            .map(|account| account.id().value())
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(RepositoryError::IdExhausted)?;
+        let account = Account::from_new(AccountId::new(next_id), account);
+        self.accounts.push(account.clone());
+        Ok(account)
+    }
+
     fn save(&mut self, account: Account) -> Result<(), RepositoryError> {
         if self.accounts.iter().any(|a| a.id() == account.id()) {
             return Err(RepositoryError::DuplicateAccountId(account.id()));
@@ -45,6 +59,20 @@ impl AccountRepository for InMemoryAccountRepository {
 }
 
 impl TransactionRepository for InMemoryTransactionRepository {
+    fn create(&mut self, transaction: NewTransaction) -> Result<Transaction, RepositoryError> {
+        let next_id = self
+            .transactions
+            .iter()
+            .map(|transaction| transaction.id().value())
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(RepositoryError::IdExhausted)?;
+        let transaction = Transaction::from_new(TransactionId::new(next_id), transaction);
+        self.transactions.push(transaction.clone());
+        Ok(transaction)
+    }
+
     fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError> {
         if self.transactions.iter().any(|t| t.id() == transaction.id()) {
             return Err(RepositoryError::DuplicateTransactionId(transaction.id()));
@@ -95,6 +123,21 @@ mod tests {
             repository.find_by_id(AccountId::new(1)).unwrap(),
             Some(account)
         );
+    }
+
+    #[test]
+    fn creates_accounts_with_repository_allocated_ids() {
+        let mut repository = InMemoryAccountRepository::new();
+
+        let first = repository
+            .create(NewAccount::new("Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let second = repository
+            .create(NewAccount::new("Bank".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+
+        assert_eq!(first.id(), AccountId::new(1));
+        assert_eq!(second.id(), AccountId::new(2));
     }
 
     #[test]
@@ -155,6 +198,28 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn creates_transactions_with_repository_allocated_ids() {
+        let mut repository = InMemoryTransactionRepository::new();
+        let build = || {
+            NewTransaction::new(
+                AccountId::new(1),
+                crate::domain::transaction::TransactionKind::Income,
+                crate::domain::money::Money::from_minor_units(100, Currency::Cny),
+                "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                "Salary".to_string(),
+                Category::Salary,
+            )
+            .unwrap()
+        };
+
+        let first = repository.create(build()).unwrap();
+        let second = repository.create(build()).unwrap();
+
+        assert_eq!(first.id(), TransactionId::new(1));
+        assert_eq!(second.id(), TransactionId::new(2));
     }
 
     #[test]

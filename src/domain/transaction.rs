@@ -47,6 +47,69 @@ pub enum TransactionError {
 use crate::domain::{account::AccountId, money::Money};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTransaction {
+    account_id: AccountId,
+    kind: TransactionKind,
+    amount: Money,
+    occurred_at: Zoned,
+    description: String,
+    category: Category,
+}
+
+impl NewTransaction {
+    pub fn new(
+        account_id: AccountId,
+        kind: TransactionKind,
+        amount: Money,
+        occurred_at: Zoned,
+        description: String,
+        category: Category,
+    ) -> Result<Self, TransactionError> {
+        if amount.minor_units() <= 0 {
+            return Err(TransactionError::InvalidAmount);
+        }
+
+        let description = description.trim().to_string();
+        if description.is_empty() {
+            return Err(TransactionError::EmptyDescription);
+        }
+
+        Ok(Self {
+            account_id,
+            kind,
+            amount,
+            occurred_at,
+            description,
+            category,
+        })
+    }
+
+    pub fn account_id(&self) -> AccountId {
+        self.account_id
+    }
+
+    pub fn amount(&self) -> &Money {
+        &self.amount
+    }
+
+    pub fn kind(&self) -> TransactionKind {
+        self.kind
+    }
+
+    pub fn occurred_at(&self) -> &Zoned {
+        &self.occurred_at
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    pub fn category(&self) -> Category {
+        self.category
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
     id: TransactionId,
     account_id: AccountId,
@@ -67,24 +130,22 @@ impl Transaction {
         description: String,
         category: Category,
     ) -> Result<Self, TransactionError> {
-        if amount.minor_units() <= 0 {
-            return Err(TransactionError::InvalidAmount);
-        }
-
-        let description = description.trim().to_string();
-        if description.is_empty() {
-            return Err(TransactionError::EmptyDescription);
-        }
-
-        Ok(Transaction {
+        Ok(Self::from_new(
             id,
-            account_id,
-            kind,
-            amount,
-            occurred_at,
-            description,
-            category,
-        })
+            NewTransaction::new(account_id, kind, amount, occurred_at, description, category)?,
+        ))
+    }
+
+    pub fn from_new(id: TransactionId, transaction: NewTransaction) -> Self {
+        Self {
+            id,
+            account_id: transaction.account_id,
+            kind: transaction.kind,
+            amount: transaction.amount,
+            occurred_at: transaction.occurred_at,
+            description: transaction.description,
+            category: transaction.category,
+        }
     }
 
     pub fn id(&self) -> TransactionId {
