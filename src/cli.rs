@@ -225,9 +225,6 @@ pub enum TransferCommand {
 #[derive(Debug, Subcommand)]
 pub enum AccountCommand {
     Create {
-        #[arg(skip)]
-        id: u64,
-
         #[arg(long)]
         name: String,
 
@@ -264,9 +261,6 @@ pub enum AccountCommand {
 #[derive(Debug, Subcommand)]
 pub enum TransactionCommand {
     Add {
-        #[arg(skip)]
-        id: u64,
-
         #[arg(long)]
         account_id: u64,
 
@@ -701,11 +695,7 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
 
     match cli.command {
         Command::Account { command } => match command {
-            AccountCommand::Create {
-                id: _,
-                name,
-                currency,
-            } => {
+            AccountCommand::Create { name, currency } => {
                 let account =
                     create_account(&mut account_repository, name, Currency::from(currency))?;
 
@@ -787,7 +777,6 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
 
         Command::Transaction { command } => match command {
             TransactionCommand::Add {
-                id: _,
                 account_id,
                 kind,
                 amount_minor,
@@ -1367,12 +1356,11 @@ mod tests {
 
     use super::*;
 
-    fn create_account_cli(database: PathBuf, id: u64, name: &str) -> Cli {
+    fn create_account_cli(database: PathBuf, _legacy_id: u64, name: &str) -> Cli {
         Cli {
             database,
             command: Command::Account {
                 command: AccountCommand::Create {
-                    id,
                     name: name.to_string(),
                     currency: CurrencyArg::Cny,
                 },
@@ -1639,7 +1627,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1690,7 +1677,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1725,7 +1711,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 2,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1757,7 +1742,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1792,7 +1776,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1813,7 +1796,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1856,7 +1838,6 @@ mod tests {
             database: database.clone(),
             command: Command::Account {
                 command: AccountCommand::Create {
-                    id: 1,
                     name: "Cash".to_string(),
                     currency: CurrencyArg::Cny,
                 },
@@ -1869,7 +1850,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Income,
                     amount_minor: 1_000,
@@ -1888,7 +1868,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 2,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 500,
@@ -1940,7 +1919,6 @@ mod tests {
             database: database.clone(),
             command: Command::Account {
                 command: AccountCommand::Create {
-                    id: 1,
                     name: "Cash".to_string(),
                     currency: CurrencyArg::Cny,
                 },
@@ -1953,7 +1931,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Income,
                     amount_minor: 1000,
@@ -1972,7 +1949,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 2,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 500,
@@ -1991,7 +1967,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 3,
                     account_id: 1,
                     kind: TransactionKindArg::ExpenseRefund,
                     amount_minor: 50,
@@ -2076,7 +2051,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -2743,7 +2717,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 0,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 100,
@@ -3085,7 +3058,6 @@ mod tests {
             database: source_database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 0,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1250,
@@ -3156,7 +3128,6 @@ mod tests {
             database: source_database.clone(),
             command: Command::Account {
                 command: AccountCommand::Create {
-                    id: 0,
                     name: "USD Bank".to_string(),
                     currency: CurrencyArg::Usd,
                 },
@@ -3167,7 +3138,6 @@ mod tests {
             database: source_database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 0,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1250,
@@ -3287,6 +3257,194 @@ mod tests {
                 },
             }),
             Err(CliError::Repository(RepositoryError::RestoreTargetNotEmpty))
+        );
+    }
+
+    #[test]
+    fn completes_the_full_pre_tui_cli_workflow_before_and_after_restore() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_database = temp_dir.path().join("workflow.db");
+        let restored_database = temp_dir.path().join("restored.db");
+        let source_csv = temp_dir.path().join("source.csv");
+        let restored_csv = temp_dir.path().join("restored.csv");
+        let backup_path = temp_dir.path().join("backup.json");
+        run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
+        run(create_account_cli(source_database.clone(), 0, "Bank")).unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 400,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transfer {
+                command: TransferCommand::Add {
+                    source_account_id: 1,
+                    destination_account_id: 2,
+                    source_amount_minor: 100,
+                    source_currency: CurrencyArg::Cny,
+                    destination_amount_minor: 100,
+                    destination_currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T11:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Move savings".to_string(),
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Set {
+                    account_id: 1,
+                    category: CategoryArg::Food,
+                    year: 2026,
+                    month: 8,
+                    limit_minor: 1000,
+                },
+            },
+        })
+        .unwrap();
+
+        let original_balance = run(Cli {
+            database: source_database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 1 },
+            },
+        })
+        .unwrap();
+        let original_budget = run(Cli {
+            database: source_database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Status {
+                    account_id: 1,
+                    year: 2026,
+                    month: 8,
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        let original_trend = run(Cli {
+            database: source_database.clone(),
+            command: Command::Report {
+                command: ReportCommand::Trend {
+                    account_id: 1,
+                    from: "2026-08".to_string(),
+                    to: "2026-08".to_string(),
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Data {
+                command: DataCommand::ExportTransactions {
+                    account_id: 1,
+                    output: source_csv.clone(),
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database,
+            command: Command::Data {
+                command: DataCommand::Backup {
+                    output: backup_path.clone(),
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: restored_database.clone(),
+            command: Command::Data {
+                command: DataCommand::Restore { input: backup_path },
+            },
+        })
+        .unwrap();
+
+        let restored_balance = run(Cli {
+            database: restored_database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 1 },
+            },
+        })
+        .unwrap();
+        let restored_budget = run(Cli {
+            database: restored_database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Status {
+                    account_id: 1,
+                    year: 2026,
+                    month: 8,
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        let restored_trend = run(Cli {
+            database: restored_database.clone(),
+            command: Command::Report {
+                command: ReportCommand::Trend {
+                    account_id: 1,
+                    from: "2026-08".to_string(),
+                    to: "2026-08".to_string(),
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: restored_database,
+            command: Command::Data {
+                command: DataCommand::ExportTransactions {
+                    account_id: 1,
+                    output: restored_csv.clone(),
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                },
+            },
+        })
+        .unwrap();
+
+        assert_eq!(original_balance, "Account 1 balance: -500 (Cny)");
+        assert_eq!(restored_balance, original_balance);
+        assert_eq!(
+            original_budget,
+            "Food | limit 1000 | used 400 | remaining 600 | overrun false"
+        );
+        assert_eq!(restored_budget, original_budget);
+        assert!(original_trend.contains("2026-08 | income 0 | net expense 400 | net change -400"));
+        assert_eq!(restored_trend, original_trend);
+        assert_eq!(
+            std::fs::read_to_string(restored_csv).unwrap(),
+            std::fs::read_to_string(source_csv).unwrap()
         );
     }
 }

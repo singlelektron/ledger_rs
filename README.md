@@ -94,15 +94,15 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
+- 199 passing unit and workflow tests, including a shared in-memory/SQLite
+  repository contract and a complete CLI backup/restore verification scenario
 
-The project now provides both in-memory storage and file-backed SQLite account
-and transaction repositories. Its CLI can create accounts and record
-time-zone-aware transactions in a persistent SQLite database, then calculate
-an account balance or display category net outflow from the stored
-transactions. It can also display a validated account's transaction history in
-stable newest-first order, optionally filter that history by category and
-transaction kind or time range, list all accounts in ascending ID order, and
-display a cash-flow and category summary for a requested zoned time range.
+The pre-TUI application core is complete. In-memory and file-backed SQLite
+repositories implement the same account, transaction, transfer, budget, and
+pagination behavior. The CLI exercises all shared workflows, including CRUD,
+balances, activity, reports, CSV exchange, and full JSON recovery. The next
+product milestone is a TUI that calls these application use cases without
+duplicating their business rules.
 
 ## Goals
 
@@ -288,29 +288,28 @@ category breakdown from the same selected transactions. This supports monthly,
 yearly, and custom reporting periods without separate calculation rules. CLI
 presentation for ranged summaries is implemented with stable category ordering.
 
-## Scope of the First Complete Workflow
+## Completed Pre-TUI Scope
 
-The first complete version will:
+The shared application core now:
 
 1. Represent currency-aware money safely with integers
-2. Create accounts with a single currency
-3. Record time-zone-aware income, expense, and expense-refund transactions
-4. Calculate an account balance from its transactions
-5. Store data in memory or a persistent SQLite database
-6. Expose the workflow through a simple CLI
+2. Manage accounts, transactions, transfers, and monthly category budgets
+3. Preserve time-zone-aware occurrence times and generate budget and trend
+   reports for explicit IANA time zones
+4. Search and page stable transaction history
+5. Store data in memory or a migration-managed SQLite database
+6. Exchange transactions through atomic CSV import and filtered export
+7. Back up and atomically restore the complete aggregate graph through
+   versioned JSON
+8. Expose every workflow through the CLI for reuse by the next TUI milestone
 
-It will not initially include:
+The current scope does not include:
 
 - TUI or Web interfaces
 - Authentication and authorization
-- Exchange rates or automatic currency conversion
-- Cross-currency transfers
+- External exchange-rate lookup or automatic currency conversion
 - Automatic time-zone detection or daylight-saving-time input resolution
-- Budgets or advanced reports
 - Data synchronization
-
-Keeping the first version small allows the core business rules to be tested
-before interfaces and infrastructure add more complexity.
 
 ## Design Principles
 
@@ -380,6 +379,7 @@ src/
 ├── infrastructure/
 │   ├── in_memory.rs
 │   ├── mod.rs
+│   ├── repository_contract_tests.rs
 │   └── sqlite.rs
 ├── cli.rs
 ├── lib.rs
@@ -524,7 +524,14 @@ version are rejected explicitly.
 
 ### Later Milestones
 
-- TUI
+#### Next: TUI
+
+- Render account activity, balances, budgets, and reports from the shared
+  application layer
+- Keep terminal state and keyboard handling outside domain and repository code
+
+#### After TUI
+
 - Web API
 - Authentication and synchronization
 - External exchange-rate services
@@ -872,8 +879,11 @@ After changing Rust code, run:
 
 ```bash
 cargo fmt
-cargo clippy --all-targets --all-features
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
+cargo test --workspace -- --list
+git diff --check
 ```
 
 ## Development Workflow

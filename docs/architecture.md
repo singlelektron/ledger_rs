@@ -22,3 +22,7 @@ traits supply the complete aggregate graph, and validation reconstructs every
 domain entity before persistence. The SQLite infrastructure owns the final
 empty-target check and one cross-table restore transaction because atomicity is
 a storage concern.
+
+The in-memory and SQLite implementations run through one shared repository
+contract covering CRUD, dependency errors, and stable cursor pagination. This
+contract is the compatibility boundary future interfaces can rely on.
