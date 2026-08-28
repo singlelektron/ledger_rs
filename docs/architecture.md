@@ -16,3 +16,9 @@ business rules.
 Bulk CSV import is coordinated in the application layer. It validates every
 row before calling the transaction repository's atomic batch-create operation;
 CSV parsing and presentation remain independent of SQLite.
+
+Versioned JSON backup is also coordinated by the application layer: repository
+traits supply the complete aggregate graph, and validation reconstructs every
+domain entity before persistence. The SQLite infrastructure owns the final
+empty-target check and one cross-table restore transaction because atomicity is
+a storage concern.

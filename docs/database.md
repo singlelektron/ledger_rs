@@ -21,3 +21,8 @@ versioned backup restoration and legacy-data tests.
 Transaction repositories also expose atomic batch creation for CSV import.
 SQLite performs the whole batch in one database transaction, so a constraint
 or storage failure cannot leave a partially imported file.
+
+JSON restore is allowed only when all four data tables are empty. Version 1
+restores accounts first, followed by transactions, transfers, and budgets, with
+their original integer IDs. The empty check and every insert run in one SQLite
+transaction; any constraint or storage error rolls back the whole restore.

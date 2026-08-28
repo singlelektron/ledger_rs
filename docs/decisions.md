@@ -19,3 +19,11 @@ transaction IDs. Imports validate the complete file first and then use one
 atomic repository operation. This keeps CSV useful for bulk exchange while
 reserving identity-preserving full recovery for the versioned JSON backup
 format.
+
+## Versioned JSON for full recovery
+
+The complete backup format has an explicit version and preserves internal IDs,
+relationships, currencies, and zoned timestamps. Restore is intentionally
+limited to an empty database, validates all domain and reference rules before
+writing, and uses one cross-table SQLite transaction. This avoids ambiguous
+merge semantics and prevents partial recovery.

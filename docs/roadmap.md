@@ -8,8 +8,9 @@ independently tested milestones:
 3. Transaction search and pagination
 4. Transfers and account activity
 5. Monthly category budgets and reports
-6. CSV exchange and JSON backup/restore
-7. TUI
+6. CSV exchange and JSON backup/restore (completed)
+7. Shared contract and end-to-end workflow hardening
+8. TUI
 
 The Web API follows the TUI. Authentication, synchronization, and external
 exchange-rate services remain out of scope for this phase.

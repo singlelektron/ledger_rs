@@ -69,6 +69,8 @@ SQLite persistence layer are implemented and tested:
   explicit zero rows for months without transactions
 - Atomic CSV transaction import and filtered export using a fixed, ID-free
   exchange format with quoting, Unicode, and original zoned timestamps
+- Version 1 JSON backup and empty-database restore for accounts, transactions,
+  transfers, and budgets, preserving IDs, relationships, and IANA time zones
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -349,6 +351,7 @@ split into crates such as `core`, `cli`, and `database`.
 src/
 ├── application/
 │   ├── account_balance.rs
+│   ├── backup.rs
 │   ├── budget_report.rs
 │   ├── category_report.rs
 │   ├── create_account.rs
@@ -510,14 +513,14 @@ version are rejected explicitly.
 - Parse a reporting range and display the summary through the CLI - Completed
 - Display category rows in stable order - Completed
 
-### Milestone 10: Complete Pre-TUI Business Workflows - In Progress
+### Milestone 10: Complete Pre-TUI Business Workflows - Completed
 
 - Repository IDs, account and transaction CRUD - Completed
 - Search and stable cursor pagination - Completed
 - Transfers and unified account activity - Completed
 - Monthly category budgets, execution status, and trend reports - Completed
 - Atomic CSV transaction import and filtered export - Completed
-- Versioned JSON backup and restore - Pending
+- Versioned JSON backup and restore - Completed
 
 ### Later Milestones
 
@@ -793,6 +796,27 @@ Internal transaction IDs are deliberately omitted and allocated by the target
 repository. The importer parses and validates every row before writing; an
 invalid row leaves the database unchanged. Re-importing the same file creates
 new transactions and is not idempotent.
+
+Create a complete, identity-preserving JSON backup:
+
+```bash
+cargo run -- data backup --output ledger-backup.json
+```
+
+Restore it into an empty target database:
+
+```bash
+cargo run -- \
+  --database restored.db \
+  data restore \
+  --input ledger-backup.json
+```
+
+The top-level `format_version` is currently `1`. Unlike CSV exchange, JSON
+backup preserves account, transaction, transfer, and budget IDs as well as all
+references and original zoned timestamps. Restore validates the entire backup
+before opening one SQLite transaction and refuses any database that already
+contains ledger data.
 
 Query the balance calculated from an account's stored transactions:
 

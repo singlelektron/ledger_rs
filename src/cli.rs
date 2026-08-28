@@ -1,6 +1,7 @@
 use crate::{
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
+        backup::{BackupError, create_json_backup, validate_json_backup},
         budget_report::{BudgetReportError, get_budget_statuses},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
@@ -34,7 +35,7 @@ use crate::{
         transaction::{Category, NewTransaction, TransactionError, TransactionId, TransactionKind},
         transfer::{NewTransfer, TransferError, TransferId},
     },
-    infrastructure::sqlite::open_complete_repositories,
+    infrastructure::sqlite::{open_complete_repositories, restore_backup},
 };
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
@@ -84,6 +85,14 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum DataCommand {
+    Backup {
+        #[arg(long)]
+        output: PathBuf,
+    },
+    Restore {
+        #[arg(long)]
+        input: PathBuf,
+    },
     ImportTransactions {
         #[arg(long)]
         input: PathBuf,
@@ -501,6 +510,7 @@ pub enum CliError {
     BudgetReport(BudgetReportError),
     MonthlyTrend(MonthlyTrendError),
     CsvExchange(CsvExchangeError),
+    Backup(BackupError),
     Io { path: PathBuf, message: String },
 }
 
@@ -609,6 +619,12 @@ impl From<MonthlyTrendError> for CliError {
 impl From<CsvExchangeError> for CliError {
     fn from(error: CsvExchangeError) -> Self {
         Self::CsvExchange(error)
+    }
+}
+
+impl From<BackupError> for CliError {
+    fn from(error: BackupError) -> Self {
+        Self::Backup(error)
     }
 }
 
@@ -1272,6 +1288,28 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
         },
 
         Command::Data { command } => match command {
+            DataCommand::Backup { output } => {
+                let contents = create_json_backup(
+                    &account_repository,
+                    &transaction_repository,
+                    &transfer_repository,
+                    &budget_repository,
+                )?;
+                std::fs::write(&output, contents).map_err(|error| CliError::Io {
+                    path: output.clone(),
+                    message: error.to_string(),
+                })?;
+                Ok(format!("Created backup at {}", output.display()))
+            }
+            DataCommand::Restore { input } => {
+                let contents = std::fs::read_to_string(&input).map_err(|error| CliError::Io {
+                    path: input.clone(),
+                    message: error.to_string(),
+                })?;
+                let backup = validate_json_backup(&contents)?;
+                restore_backup(&cli.database, &backup)?;
+                Ok(format!("Restored backup from {}", input.display()))
+            }
             DataCommand::ImportTransactions { input } => {
                 let contents = std::fs::read_to_string(&input).map_err(|error| CliError::Io {
                     path: input.clone(),
@@ -3105,5 +3143,150 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].description(), "晚餐, \"朋友\"");
         assert_eq!(stored[0].id(), TransactionId::new(1));
+    }
+
+    #[test]
+    fn backs_up_and_restores_every_aggregate_with_original_ids() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_database = temp_dir.path().join("source.db");
+        let target_database = temp_dir.path().join("target.db");
+        let backup_path = temp_dir.path().join("ledger.json");
+        run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Create {
+                    id: 0,
+                    name: "USD Bank".to_string(),
+                    currency: CurrencyArg::Usd,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 0,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Dinner".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transfer {
+                command: TransferCommand::Add {
+                    source_account_id: 1,
+                    destination_account_id: 2,
+                    source_amount_minor: 700,
+                    source_currency: CurrencyArg::Cny,
+                    destination_amount_minor: 100,
+                    destination_currency: CurrencyArg::Usd,
+                    occurred_at: "2026-08-20T11:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Exchange".to_string(),
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Set {
+                    account_id: 1,
+                    category: CategoryArg::Food,
+                    year: 2026,
+                    month: 8,
+                    limit_minor: 5000,
+                },
+            },
+        })
+        .unwrap();
+
+        run(Cli {
+            database: source_database,
+            command: Command::Data {
+                command: DataCommand::Backup {
+                    output: backup_path.clone(),
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: target_database.clone(),
+            command: Command::Data {
+                command: DataCommand::Restore { input: backup_path },
+            },
+        })
+        .unwrap();
+
+        assert!(
+            run(Cli {
+                database: target_database.clone(),
+                command: Command::Transaction {
+                    command: TransactionCommand::Show { id: 1 },
+                },
+            })
+            .unwrap()
+            .contains("Dinner")
+        );
+        assert!(
+            run(Cli {
+                database: target_database.clone(),
+                command: Command::Transfer {
+                    command: TransferCommand::Show { id: 1 },
+                },
+            })
+            .unwrap()
+            .contains("Exchange")
+        );
+        assert!(
+            run(Cli {
+                database: target_database.clone(),
+                command: Command::Budget {
+                    command: BudgetCommand::Show { id: 1 },
+                },
+            })
+            .unwrap()
+            .contains("5000(Cny)")
+        );
+        let created = run(create_account_cli(target_database, 0, "Next")).unwrap();
+        assert!(created.starts_with("Created account 3:"));
+    }
+
+    #[test]
+    fn refuses_to_restore_into_a_nonempty_database() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_database = temp_dir.path().join("source.db");
+        let target_database = temp_dir.path().join("target.db");
+        let backup_path = temp_dir.path().join("empty.json");
+        run(Cli {
+            database: source_database,
+            command: Command::Data {
+                command: DataCommand::Backup {
+                    output: backup_path.clone(),
+                },
+            },
+        })
+        .unwrap();
+        run(create_account_cli(target_database.clone(), 0, "Existing")).unwrap();
+
+        assert_eq!(
+            run(Cli {
+                database: target_database,
+                command: Command::Data {
+                    command: DataCommand::Restore { input: backup_path },
+                },
+            }),
+            Err(CliError::Repository(RepositoryError::RestoreTargetNotEmpty))
+        );
     }
 }

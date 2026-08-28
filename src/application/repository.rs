@@ -103,6 +103,7 @@ pub enum RepositoryError {
     DuplicateBudgetId(BudgetId),
     InvalidId(u64),
     IdExhausted,
+    RestoreTargetNotEmpty,
     Storage(String),
     InvalidStoredData(String),
 }

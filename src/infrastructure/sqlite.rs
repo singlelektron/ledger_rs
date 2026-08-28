@@ -1,3 +1,4 @@
+use crate::application::backup::ValidatedBackup;
 use crate::application::repository::{
     AccountRepository, BudgetRepository, RepositoryError, TransactionRepository, TransferRepository,
 };
@@ -1006,6 +1007,117 @@ pub fn open_repositories(
     ))
 }
 
+pub fn restore_backup(
+    path: impl AsRef<Path>,
+    backup: &ValidatedBackup,
+) -> Result<(), RepositoryError> {
+    let connection =
+        Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    let stored_count: i64 = transaction
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM accounts) +
+                (SELECT COUNT(*) FROM transactions) +
+                (SELECT COUNT(*) FROM transfers) +
+                (SELECT COUNT(*) FROM budgets)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    if stored_count != 0 {
+        return Err(RepositoryError::RestoreTargetNotEmpty);
+    }
+
+    for account in backup.accounts() {
+        transaction
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (?1, ?2, ?3)",
+                params![
+                    i64::try_from(account.id().value())
+                        .map_err(|_| RepositoryError::InvalidId(account.id().value()))?,
+                    account.name(),
+                    currency_to_code(account.currency()),
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    }
+    for value in backup.transactions() {
+        transaction
+            .execute(
+                "INSERT INTO transactions
+                 (id, account_id, kind, amount_minor, currency, occurred_at, description, category)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    i64::try_from(value.id().value())
+                        .map_err(|_| RepositoryError::InvalidId(value.id().value()))?,
+                    i64::try_from(value.account_id().value())
+                        .map_err(|_| RepositoryError::InvalidId(value.account_id().value()))?,
+                    transaction_kind_to_code(value.kind()),
+                    value.amount().minor_units(),
+                    currency_to_code(value.amount().currency()),
+                    value.occurred_at().to_string(),
+                    value.description(),
+                    category_to_code(value.category()),
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    }
+    for value in backup.transfers() {
+        transaction
+            .execute(
+                "INSERT INTO transfers
+                 (id, source_account_id, destination_account_id, source_amount_minor,
+                  source_currency, destination_amount_minor, destination_currency,
+                  occurred_at, description)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    i64::try_from(value.id().value())
+                        .map_err(|_| RepositoryError::InvalidId(value.id().value()))?,
+                    i64::try_from(value.source_account_id().value()).map_err(|_| {
+                        RepositoryError::InvalidId(value.source_account_id().value())
+                    })?,
+                    i64::try_from(value.destination_account_id().value()).map_err(|_| {
+                        RepositoryError::InvalidId(value.destination_account_id().value())
+                    })?,
+                    value.source_amount().minor_units(),
+                    currency_to_code(value.source_amount().currency()),
+                    value.destination_amount().minor_units(),
+                    currency_to_code(value.destination_amount().currency()),
+                    value.occurred_at().to_string(),
+                    value.description(),
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    }
+    for value in backup.budgets() {
+        transaction
+            .execute(
+                "INSERT INTO budgets
+                 (id, account_id, category, year, month, limit_minor, currency)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    i64::try_from(value.id().value())
+                        .map_err(|_| RepositoryError::InvalidId(value.id().value()))?,
+                    i64::try_from(value.account_id().value())
+                        .map_err(|_| RepositoryError::InvalidId(value.account_id().value()))?,
+                    category_to_code(value.category()),
+                    value.month().year(),
+                    value.month().month(),
+                    value.limit().minor_units(),
+                    currency_to_code(value.limit().currency()),
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| RepositoryError::Storage(error.to_string()))
+}
+
 pub fn open_all_repositories(
     path: impl AsRef<Path>,
 ) -> Result<
@@ -1143,6 +1255,7 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::application::backup::validate_json_backup;
     use crate::domain::transaction::Category;
 
     use super::*;
@@ -1415,6 +1528,49 @@ mod tests {
                 .unwrap(),
             Vec::<Transaction>::new()
         );
+    }
+
+    #[test]
+    fn rolls_back_all_tables_when_backup_restore_fails() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("restore.db");
+        let connection = Connection::open(&database).unwrap();
+        initialize_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_restored_transaction
+                 BEFORE INSERT ON transactions
+                 BEGIN SELECT RAISE(ABORT, 'test restore failure'); END;",
+            )
+            .unwrap();
+        drop(connection);
+        let backup = validate_json_backup(
+            r#"{
+                "format_version":1,
+                "accounts":[{"id":1,"name":"Cash","currency":"CNY"}],
+                "transactions":[{
+                    "id":1,"account_id":1,"kind":"expense","amount_minor":100,
+                    "currency":"CNY","occurred_at":"2026-08-20T10:00:00+08:00[Asia/Shanghai]",
+                    "description":"Lunch","category":"food"
+                }],
+                "transfers":[],"budgets":[]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            restore_backup(&database, &backup),
+            Err(RepositoryError::Storage(_))
+        ));
+        let connection = Connection::open(database).unwrap();
+        let account_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
+            .unwrap();
+        let transaction_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(account_count, 0);
+        assert_eq!(transaction_count, 0);
     }
 
     #[test]
