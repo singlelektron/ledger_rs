@@ -236,6 +236,29 @@ impl AccountRepository for SqliteAccountRepository {
         }
         Ok(accounts)
     }
+
+    fn update(&mut self, account: Account) -> Result<bool, RepositoryError> {
+        let id = i64::try_from(account.id().value())
+            .map_err(|_| RepositoryError::InvalidId(account.id().value()))?;
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE accounts SET name = ?1 WHERE id = ?2",
+                params![account.name(), id],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(changed == 1)
+    }
+
+    fn delete(&mut self, id: AccountId) -> Result<bool, RepositoryError> {
+        let id_value =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let changed = self
+            .connection
+            .execute("DELETE FROM accounts WHERE id = ?1", params![id_value])
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(changed == 1)
+    }
 }
 
 impl TransactionRepository for SqliteTransactionRepository {

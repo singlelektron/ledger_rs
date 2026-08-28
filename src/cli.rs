@@ -5,6 +5,7 @@ use crate::{
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
         list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
+        manage_account::{ManageAccountError, delete_account, get_account, rename_account},
         ranged_summary::{GetRangedSummaryError, get_ranged_summary},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
@@ -61,6 +62,24 @@ pub enum AccountCommand {
     },
 
     Balance {
+        #[arg(long)]
+        id: u64,
+    },
+
+    Show {
+        #[arg(long)]
+        id: u64,
+    },
+
+    Update {
+        #[arg(long)]
+        id: u64,
+
+        #[arg(long)]
+        name: String,
+    },
+
+    Delete {
         #[arg(long)]
         id: u64,
     },
@@ -241,6 +260,7 @@ pub enum CliError {
     ListAccounts(ListAccountsError),
 
     GetRangedSummary(GetRangedSummaryError),
+    ManageAccount(ManageAccountError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -294,6 +314,12 @@ impl From<ListAccountsError> for CliError {
 impl From<GetRangedSummaryError> for CliError {
     fn from(error: GetRangedSummaryError) -> Self {
         Self::GetRangedSummary(error)
+    }
+}
+
+impl From<ManageAccountError> for CliError {
+    fn from(error: ManageAccountError) -> Self {
+        Self::ManageAccount(error)
     }
 }
 
@@ -368,6 +394,35 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     balance.minor_units(),
                     balance.currency(),
                 ))
+            }
+
+            AccountCommand::Show { id } => {
+                let account = get_account(&account_repository, AccountId::new(id))?;
+                Ok(format!(
+                    "Account {}: {} ({:?})",
+                    account.id().value(),
+                    account.name(),
+                    account.currency()
+                ))
+            }
+
+            AccountCommand::Update { id, name } => {
+                let account = rename_account(&mut account_repository, AccountId::new(id), name)?;
+                Ok(format!(
+                    "Updated account {}: {} ({:?})",
+                    account.id().value(),
+                    account.name(),
+                    account.currency()
+                ))
+            }
+
+            AccountCommand::Delete { id } => {
+                delete_account(
+                    &mut account_repository,
+                    &transaction_repository,
+                    AccountId::new(id),
+                )?;
+                Ok(format!("Deleted account {id}"))
             }
 
             AccountCommand::List => {
@@ -1833,6 +1888,55 @@ mod tests {
             Net Change: 500 (Cny)\n\
             Category: Food, Net Outflow: 500 (Cny)\n\
             Category: Salary, Net Outflow: -1000 (Cny)"
+        );
+    }
+
+    #[test]
+    fn shows_renames_and_deletes_account() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
+
+        let shown = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Show { id: 1 },
+            },
+        })
+        .unwrap();
+        assert_eq!(shown, "Account 1: Cash (Cny)");
+
+        let updated = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Update {
+                    id: 1,
+                    name: "Wallet".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(updated, "Updated account 1: Wallet (Cny)");
+
+        let deleted = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Delete { id: 1 },
+            },
+        })
+        .unwrap();
+        assert_eq!(deleted, "Deleted account 1");
+
+        assert_eq!(
+            run(Cli {
+                database,
+                command: Command::Account {
+                    command: AccountCommand::Show { id: 1 },
+                },
+            }),
+            Err(CliError::ManageAccount(
+                ManageAccountError::AccountNotFound(AccountId::new(1))
+            ))
         );
     }
 }

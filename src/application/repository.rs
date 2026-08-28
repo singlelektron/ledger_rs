@@ -13,6 +13,18 @@ pub trait AccountRepository {
     fn find_by_id(&self, id: AccountId) -> Result<Option<Account>, RepositoryError>;
 
     fn find_all(&self) -> Result<Vec<Account>, RepositoryError>;
+
+    fn update(&mut self, _account: Account) -> Result<bool, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "account updates are not supported".to_string(),
+        ))
+    }
+
+    fn delete(&mut self, _id: AccountId) -> Result<bool, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "account deletion is not supported".to_string(),
+        ))
+    }
 }
 
 pub trait TransactionRepository {

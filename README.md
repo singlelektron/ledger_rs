@@ -52,6 +52,8 @@ SQLite persistence layer are implemented and tested:
   repository
 - Repository-allocated account and transaction IDs, so interfaces do not need
   to invent persistent identifiers
+- Account detail, rename, and restricted deletion use cases exposed through the
+  CLI; accounts with transactions cannot be deleted
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -534,6 +536,17 @@ cargo run -- account list
 
 Accounts are displayed in ascending ID order. An empty database returns an
 explicit message instead of empty output.
+
+Show, rename, or delete an empty account:
+
+```bash
+cargo run -- account show --id 1
+cargo run -- account update --id 1 --name Wallet
+cargo run -- account delete --id 1
+```
+
+An account's currency is immutable. Deletion is rejected while the account has
+transactions, preserving its accounting history.
 
 Record a transaction for an existing account:
 

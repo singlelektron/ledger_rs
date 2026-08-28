@@ -56,6 +56,24 @@ impl AccountRepository for InMemoryAccountRepository {
     fn find_all(&self) -> Result<Vec<Account>, RepositoryError> {
         Ok(self.accounts.clone())
     }
+
+    fn update(&mut self, account: Account) -> Result<bool, RepositoryError> {
+        let Some(stored) = self
+            .accounts
+            .iter_mut()
+            .find(|item| item.id() == account.id())
+        else {
+            return Ok(false);
+        };
+        *stored = account;
+        Ok(true)
+    }
+
+    fn delete(&mut self, id: AccountId) -> Result<bool, RepositoryError> {
+        let original_len = self.accounts.len();
+        self.accounts.retain(|account| account.id() != id);
+        Ok(self.accounts.len() != original_len)
+    }
 }
 
 impl TransactionRepository for InMemoryTransactionRepository {
