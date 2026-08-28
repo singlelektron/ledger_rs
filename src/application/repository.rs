@@ -37,6 +37,15 @@ pub trait TransactionRepository {
         ))
     }
 
+    fn create_many(
+        &mut self,
+        _transactions: Vec<NewTransaction>,
+    ) -> Result<Vec<Transaction>, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "atomic transaction creation is not supported".to_string(),
+        ))
+    }
+
     fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError>;
 
     fn find_by_id(&self, _id: TransactionId) -> Result<Option<Transaction>, RepositoryError> {

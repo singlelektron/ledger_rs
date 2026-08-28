@@ -12,3 +12,7 @@ interface or database.
 The project remains a single crate while the shared core is small. A future TUI
 must call the same application use cases as the CLI instead of duplicating
 business rules.
+
+Bulk CSV import is coordinated in the application layer. It validates every
+row before calling the transaction repository's atomic batch-create operation;
+CSV parsing and presentation remain independent of SQLite.

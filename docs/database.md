@@ -17,3 +17,7 @@ schema version and stored data unchanged.
 Account and transaction inserts omit their integer primary key and use SQLite's
 generated row ID. Explicit IDs remain an infrastructure-only capability for
 versioned backup restoration and legacy-data tests.
+
+Transaction repositories also expose atomic batch creation for CSV import.
+SQLite performs the whole batch in one database transaction, so a constraint
+or storage failure cannot leave a partially imported file.

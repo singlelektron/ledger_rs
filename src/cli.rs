@@ -4,6 +4,7 @@ use crate::{
         budget_report::{BudgetReportError, get_budget_statuses},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
+        csv_exchange::{CsvExchangeError, export_transactions_csv, import_transactions_csv},
         list_accounts::{ListAccountsError, list_accounts},
         list_transactions::{
             ListTransactionsError, TransactionCursor, TransactionFilter, TransactionPageRequest,
@@ -73,6 +74,46 @@ pub enum Command {
     Budget {
         #[command(subcommand)]
         command: BudgetCommand,
+    },
+
+    Data {
+        #[command(subcommand)]
+        command: DataCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DataCommand {
+    ImportTransactions {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    #[command(group(
+    ArgGroup::new("export-time-bound")
+        .args(["from", "to"])
+        .multiple(true)
+    ))]
+    ExportTransactions {
+        #[arg(long)]
+        account_id: u64,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, ignore_case = true)]
+        category: Option<CategoryArg>,
+        #[arg(long, ignore_case = true)]
+        kind: Option<TransactionKindArg>,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long, requires = "export-time-bound")]
+        time_zone: Option<String>,
+        #[arg(long)]
+        description_contains: Option<String>,
+        #[arg(long)]
+        min_amount_minor: Option<i64>,
+        #[arg(long)]
+        max_amount_minor: Option<i64>,
     },
 }
 
@@ -459,6 +500,8 @@ pub enum CliError {
     ManageBudget(ManageBudgetError),
     BudgetReport(BudgetReportError),
     MonthlyTrend(MonthlyTrendError),
+    CsvExchange(CsvExchangeError),
+    Io { path: PathBuf, message: String },
 }
 
 impl From<RepositoryError> for CliError {
@@ -560,6 +603,12 @@ impl From<BudgetReportError> for CliError {
 impl From<MonthlyTrendError> for CliError {
     fn from(error: MonthlyTrendError) -> Self {
         Self::MonthlyTrend(error)
+    }
+}
+
+impl From<CsvExchangeError> for CliError {
+    fn from(error: CsvExchangeError) -> Self {
+        Self::CsvExchange(error)
     }
 }
 
@@ -1219,6 +1268,57 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     })
                     .collect::<Vec<_>>()
                     .join("\n"))
+            }
+        },
+
+        Command::Data { command } => match command {
+            DataCommand::ImportTransactions { input } => {
+                let contents = std::fs::read_to_string(&input).map_err(|error| CliError::Io {
+                    path: input.clone(),
+                    message: error.to_string(),
+                })?;
+                let created = import_transactions_csv(
+                    &account_repository,
+                    &mut transaction_repository,
+                    &contents,
+                )?;
+                Ok(format!("Imported {} transactions", created.len()))
+            }
+            DataCommand::ExportTransactions {
+                account_id,
+                output,
+                category,
+                kind,
+                from,
+                to,
+                time_zone,
+                description_contains,
+                min_amount_minor,
+                max_amount_minor,
+            } => {
+                let contents = export_transactions_csv(
+                    &account_repository,
+                    &transaction_repository,
+                    AccountId::new(account_id),
+                    TransactionFilter {
+                        category: category.map(Category::from),
+                        kind: kind.map(TransactionKind::from),
+                        from: from
+                            .map(|value| parse_occurred_at(&value, time_zone.as_deref()))
+                            .transpose()?,
+                        to: to
+                            .map(|value| parse_occurred_at(&value, time_zone.as_deref()))
+                            .transpose()?,
+                        description_contains,
+                        min_amount_minor,
+                        max_amount_minor,
+                    },
+                )?;
+                std::fs::write(&output, contents).map_err(|error| CliError::Io {
+                    path: output.clone(),
+                    message: error.to_string(),
+                })?;
+                Ok(format!("Exported transactions to {}", output.display()))
             }
         },
     }
@@ -2933,5 +3033,77 @@ mod tests {
         assert!(output.contains("2026-08 | income 1000 | net expense 450 | net change 550"));
         assert!(output.contains("2026-08 | Food | net outflow 450"));
         assert!(output.contains("2026-09 | income 0 | net expense 0 | net change 0"));
+    }
+
+    #[test]
+    fn exports_and_imports_transactions_as_csv() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_database = temp_dir.path().join("source.db");
+        let target_database = temp_dir.path().join("target.db");
+        let csv_path = temp_dir.path().join("transactions.csv");
+        run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
+        run(create_account_cli(target_database.clone(), 0, "Cash")).unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 0,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "晚餐, \"朋友\"".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+
+        let exported = run(Cli {
+            database: source_database,
+            command: Command::Data {
+                command: DataCommand::ExportTransactions {
+                    account_id: 1,
+                    output: csv_path.clone(),
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            exported,
+            format!("Exported transactions to {}", csv_path.display())
+        );
+        assert!(
+            std::fs::read_to_string(&csv_path)
+                .unwrap()
+                .contains("\"晚餐, \"\"朋友\"\"\"")
+        );
+
+        let imported = run(Cli {
+            database: target_database.clone(),
+            command: Command::Data {
+                command: DataCommand::ImportTransactions {
+                    input: csv_path.clone(),
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(imported, "Imported 1 transactions");
+
+        let (_, transactions) = open_repositories(&target_database).unwrap();
+        let stored = transactions.find_by_account_id(AccountId::new(1)).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].description(), "晚餐, \"朋友\"");
+        assert_eq!(stored[0].id(), TransactionId::new(1));
     }
 }

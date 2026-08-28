@@ -389,6 +389,44 @@ impl TransactionRepository for SqliteTransactionRepository {
         Ok(Transaction::from_new(TransactionId::new(id), transaction))
     }
 
+    fn create_many(
+        &mut self,
+        transactions: Vec<NewTransaction>,
+    ) -> Result<Vec<Transaction>, RepositoryError> {
+        let database_transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let mut created = Vec::with_capacity(transactions.len());
+        for transaction in transactions {
+            let account_id = i64::try_from(transaction.account_id().value())
+                .map_err(|_| RepositoryError::InvalidId(transaction.account_id().value()))?;
+            database_transaction
+                .execute(
+                    "INSERT INTO transactions
+                    (account_id, kind, amount_minor, currency, occurred_at, description, category)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        account_id,
+                        transaction_kind_to_code(transaction.kind()),
+                        transaction.amount().minor_units(),
+                        currency_to_code(transaction.amount().currency()),
+                        transaction.occurred_at().to_string(),
+                        transaction.description(),
+                        category_to_code(transaction.category()),
+                    ],
+                )
+                .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            let id = u64::try_from(database_transaction.last_insert_rowid())
+                .map_err(|_| RepositoryError::IdExhausted)?;
+            created.push(Transaction::from_new(TransactionId::new(id), transaction));
+        }
+        database_transaction
+            .commit()
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(created)
+    }
+
     fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError> {
         let id = i64::try_from(transaction.id().value())
             .map_err(|_| RepositoryError::InvalidId(transaction.id().value()))?;
@@ -1346,6 +1384,37 @@ mod tests {
 
         assert_eq!(first.id(), TransactionId::new(1));
         assert_eq!(second.id(), TransactionId::new(2));
+    }
+
+    #[test]
+    fn rolls_back_atomic_transaction_creation() {
+        let (mut account_repository, mut transaction_repository) =
+            in_memory_repositories().unwrap();
+        let account = account_repository
+            .create(NewAccount::new("Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let build = |account_id| {
+            NewTransaction::new(
+                account_id,
+                TransactionKind::Expense,
+                Money::from_minor_units(100, Currency::Cny),
+                sample_occurred_at(),
+                "Lunch".to_string(),
+                Category::Food,
+            )
+            .unwrap()
+        };
+
+        let result = transaction_repository
+            .create_many(vec![build(account.id()), build(AccountId::new(999))]);
+
+        assert!(matches!(result, Err(RepositoryError::Storage(_))));
+        assert_eq!(
+            transaction_repository
+                .find_by_account_id(account.id())
+                .unwrap(),
+            Vec::<Transaction>::new()
+        );
     }
 
     #[test]

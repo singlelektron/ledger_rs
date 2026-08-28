@@ -67,6 +67,8 @@ SQLite persistence layer are implemented and tested:
   remaining amount, and explicit overrun status
 - Monthly cash-flow and category trends across inclusive month ranges, including
   explicit zero rows for months without transactions
+- Atomic CSV transaction import and filtered export using a fixed, ID-free
+  exchange format with quoting, Unicode, and original zoned timestamps
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -84,11 +86,9 @@ SQLite persistence layer are implemented and tested:
   categories, timestamps, and original IANA time-zone names
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
-- A `clap`-based CLI entry point with `account create`, `account list`,
-  `transaction add`, `transaction list`, `account balance`, and
-  `report category` and `report summary` commands, case-insensitive enum
-  parsing, configurable database paths, and nonzero exit status on application
-  errors
+- A `clap`-based CLI entry point covering account, transaction, transfer,
+  budget, report, and CSV data workflows, with case-insensitive enum parsing,
+  configurable database paths, and nonzero exit status on application errors
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
@@ -251,10 +251,10 @@ silently choosing a timestamp.
 Transaction lists are not sorted by the domain entity. The application-level
 transaction-history query orders them by `occurred_at` from newest to oldest
 and uses descending transaction ID as a deterministic tie-breaker. Optional
-category, transaction-kind, and occurrence-time filters are applied in the
-application layer. Time ranges are left-closed and right-open, so `from` is
-included while `to` is excluded. Pagination will be added later as a separate
-application concern.
+category, transaction-kind, description, amount, and occurrence-time filters
+are applied in the application layer. Time ranges are left-closed and
+right-open, so `from` is included while `to` is excluded. Stable cursor
+pagination uses the same `(occurred_at, id)` ordering.
 
 `ExpenseRefund` represents money that reverses part of an earlier expense. For
 example, when one person pays a restaurant bill and friends later reimburse
@@ -349,22 +349,31 @@ split into crates such as `core`, `cli`, and `database`.
 src/
 ├── application/
 │   ├── account_balance.rs
+│   ├── budget_report.rs
 │   ├── category_report.rs
 │   ├── create_account.rs
+│   ├── csv_exchange.rs
 │   ├── list_accounts.rs
 │   ├── list_transactions.rs
+│   ├── manage_account.rs
+│   ├── manage_budget.rs
+│   ├── manage_transaction.rs
+│   ├── manage_transfer.rs
 │   ├── mod.rs
+│   ├── monthly_trend.rs
 │   ├── ranged_summary.rs
 │   ├── record_transaction.rs
 │   └── repository.rs
 ├── domain/
 │   ├── account.rs
 │   ├── balance.rs
+│   ├── budget.rs
 │   ├── category_report.rs
 │   ├── mod.rs
 │   ├── money.rs
 │   ├── summary.rs
-│   └── transaction.rs
+│   ├── transaction.rs
+│   └── transfer.rs
 ├── infrastructure/
 │   ├── in_memory.rs
 │   ├── mod.rs
@@ -501,14 +510,21 @@ version are rejected explicitly.
 - Parse a reporting range and display the summary through the CLI - Completed
 - Display category rows in stable order - Completed
 
+### Milestone 10: Complete Pre-TUI Business Workflows - In Progress
+
+- Repository IDs, account and transaction CRUD - Completed
+- Search and stable cursor pagination - Completed
+- Transfers and unified account activity - Completed
+- Monthly category budgets, execution status, and trend reports - Completed
+- Atomic CSV transaction import and filtered export - Completed
+- Versioned JSON backup and restore - Pending
+
 ### Later Milestones
 
 - TUI
 - Web API
-- Budgets
-- Additional reports and data import/export
-- Additional transaction filters and pagination
-- Exchange rates and cross-currency transfers
+- Authentication and synchronization
+- External exchange-rate services
 
 ## Local Development
 
@@ -755,6 +771,28 @@ cargo run -- transaction list \
 Either boundary may be omitted. `--time-zone` is accepted only when at least
 one of `--from` or `--to` is present. As with transaction creation, unknown
 time zones and ambiguous or nonexistent local times are rejected.
+
+Export filtered transactions to the fixed CSV exchange format:
+
+```bash
+cargo run -- data export-transactions \
+  --account-id 1 \
+  --category food \
+  --output transactions.csv
+```
+
+Import all CSV rows atomically into existing accounts:
+
+```bash
+cargo run -- data import-transactions --input transactions.csv
+```
+
+The columns are
+`account_id,kind,amount_minor,currency,occurred_at,description,category`.
+Internal transaction IDs are deliberately omitted and allocated by the target
+repository. The importer parses and validates every row before writing; an
+invalid row leaves the database unchanged. Re-importing the same file creates
+new transactions and is not idempotent.
 
 Query the balance calculated from an account's stored transactions:
 

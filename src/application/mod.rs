@@ -3,6 +3,7 @@ pub mod account_balance;
 pub mod budget_report;
 pub mod category_report;
 pub mod create_account;
+pub mod csv_exchange;
 pub mod list_accounts;
 pub mod list_transactions;
 pub mod manage_account;

@@ -117,6 +117,35 @@ impl TransactionRepository for InMemoryTransactionRepository {
         Ok(transaction)
     }
 
+    fn create_many(
+        &mut self,
+        transactions: Vec<NewTransaction>,
+    ) -> Result<Vec<Transaction>, RepositoryError> {
+        let start = self
+            .transactions
+            .iter()
+            .map(|transaction| transaction.id().value())
+            .max()
+            .unwrap_or(0);
+        let count = u64::try_from(transactions.len()).map_err(|_| RepositoryError::IdExhausted)?;
+        start
+            .checked_add(count)
+            .ok_or(RepositoryError::IdExhausted)?;
+        let created = transactions
+            .into_iter()
+            .enumerate()
+            .map(|(index, transaction)| {
+                let offset = u64::try_from(index).map_err(|_| RepositoryError::IdExhausted)?;
+                Ok(Transaction::from_new(
+                    TransactionId::new(start + offset + 1),
+                    transaction,
+                ))
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
+        self.transactions.extend(created.iter().cloned());
+        Ok(created)
+    }
+
     fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError> {
         if self.transactions.iter().any(|t| t.id() == transaction.id()) {
             return Err(RepositoryError::DuplicateTransactionId(transaction.id()));
