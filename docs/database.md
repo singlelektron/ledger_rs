@@ -5,7 +5,8 @@ connection.
 
 Schema changes are applied sequentially using SQLite's `PRAGMA user_version`.
 Schema version 1 contains `accounts` and `transactions`; version 2 adds atomic
-transfer aggregates with foreign keys to both participating accounts. Databases created before
+transfer aggregates with foreign keys to both participating accounts; version 3
+adds monthly category budgets with a unique account/category/month scope. Databases created before
 migrations were introduced have `user_version = 0`; initialization adopts their
 existing tables, preserves their rows, and records version 1. Opening a database
 whose version is newer than the application supports is rejected.

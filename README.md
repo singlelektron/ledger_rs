@@ -61,6 +61,8 @@ SQLite persistence layer are implemented and tested:
 - Atomic same-currency and cross-currency transfers with user-locked source and
   destination amounts, CRUD commands, balance integration, and unified account
   activity queries
+- Monthly category budgets with repository-assigned IDs, positive limits in the
+  account currency, unique account/category/month scopes, and CLI management
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -574,6 +576,24 @@ cargo run -- transfer show --id 1
 The two amounts are positive and locked when the transfer is recorded. For a
 same-currency transfer they must be equal. Transfers affect both account
 balances but are excluded from income, expense, category, and cash-flow totals.
+
+Set, list, inspect, or delete a monthly category budget:
+
+```bash
+cargo run -- budget set \
+  --account-id 1 \
+  --category food \
+  --year 2026 \
+  --month 8 \
+  --limit-minor 100000
+cargo run -- budget list --account-id 1
+cargo run -- budget show --id 1
+cargo run -- budget delete --id 1
+```
+
+Setting the same account, category, and month again updates the existing budget
+without changing its ID. The limit uses the account currency, so no separate
+currency argument is accepted. Accounts with budgets cannot be deleted.
 
 Record a transaction for an existing account:
 

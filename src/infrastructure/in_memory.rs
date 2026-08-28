@@ -1,8 +1,9 @@
 use crate::application::repository::{
-    AccountRepository, RepositoryError, TransactionRepository, TransferRepository,
+    AccountRepository, BudgetRepository, RepositoryError, TransactionRepository, TransferRepository,
 };
 use crate::domain::account::{Account, AccountId, NewAccount};
-use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
+use crate::domain::budget::{Budget, BudgetId, BudgetMonth, NewBudget};
+use crate::domain::transaction::{Category, NewTransaction, Transaction, TransactionId};
 use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
 
 #[derive(Default)]
@@ -24,6 +25,17 @@ pub struct InMemoryTransactionRepository {
 #[derive(Default)]
 pub struct InMemoryTransferRepository {
     transfers: Vec<Transfer>,
+}
+
+#[derive(Default)]
+pub struct InMemoryBudgetRepository {
+    budgets: Vec<Budget>,
+}
+
+impl InMemoryBudgetRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl InMemoryTransferRepository {
@@ -207,6 +219,75 @@ impl TransferRepository for InMemoryTransferRepository {
         let original_len = self.transfers.len();
         self.transfers.retain(|item| item.id() != id);
         Ok(self.transfers.len() != original_len)
+    }
+}
+
+impl BudgetRepository for InMemoryBudgetRepository {
+    fn set(&mut self, budget: NewBudget) -> Result<Budget, RepositoryError> {
+        if let Some(existing) = self.budgets.iter_mut().find(|item| {
+            item.account_id() == budget.account_id()
+                && item.category() == budget.category()
+                && item.month() == budget.month()
+        }) {
+            let updated = Budget::from_new(existing.id(), budget);
+            *existing = updated.clone();
+            return Ok(updated);
+        }
+        let id = self
+            .budgets
+            .iter()
+            .map(|item| item.id().value())
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(RepositoryError::IdExhausted)?;
+        let created = Budget::from_new(BudgetId::new(id), budget);
+        self.budgets.push(created.clone());
+        Ok(created)
+    }
+
+    fn save(&mut self, budget: Budget) -> Result<(), RepositoryError> {
+        if self.budgets.iter().any(|item| item.id() == budget.id()) {
+            return Err(RepositoryError::DuplicateBudgetId(budget.id()));
+        }
+        self.budgets.push(budget);
+        Ok(())
+    }
+
+    fn find_by_id(&self, id: BudgetId) -> Result<Option<Budget>, RepositoryError> {
+        Ok(self.budgets.iter().find(|item| item.id() == id).cloned())
+    }
+
+    fn find_by_account_id(&self, id: AccountId) -> Result<Vec<Budget>, RepositoryError> {
+        Ok(self
+            .budgets
+            .iter()
+            .filter(|item| item.account_id() == id)
+            .cloned()
+            .collect())
+    }
+
+    fn find_by_scope(
+        &self,
+        account_id: AccountId,
+        category: Category,
+        month: BudgetMonth,
+    ) -> Result<Option<Budget>, RepositoryError> {
+        Ok(self
+            .budgets
+            .iter()
+            .find(|item| {
+                item.account_id() == account_id
+                    && item.category() == category
+                    && item.month() == month
+            })
+            .cloned())
+    }
+
+    fn delete(&mut self, id: BudgetId) -> Result<bool, RepositoryError> {
+        let original_len = self.budgets.len();
+        self.budgets.retain(|item| item.id() != id);
+        Ok(self.budgets.len() != original_len)
     }
 }
 

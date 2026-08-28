@@ -1,4 +1,6 @@
 use crate::domain::account::{Account, AccountId, NewAccount};
+use crate::domain::budget::{Budget, BudgetId, BudgetMonth, NewBudget};
+use crate::domain::transaction::Category;
 use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
 use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
 
@@ -70,11 +72,26 @@ pub trait TransferRepository {
     fn delete(&mut self, id: TransferId) -> Result<bool, RepositoryError>;
 }
 
+pub trait BudgetRepository {
+    fn set(&mut self, budget: NewBudget) -> Result<Budget, RepositoryError>;
+    fn save(&mut self, budget: Budget) -> Result<(), RepositoryError>;
+    fn find_by_id(&self, id: BudgetId) -> Result<Option<Budget>, RepositoryError>;
+    fn find_by_account_id(&self, id: AccountId) -> Result<Vec<Budget>, RepositoryError>;
+    fn find_by_scope(
+        &self,
+        account_id: AccountId,
+        category: Category,
+        month: BudgetMonth,
+    ) -> Result<Option<Budget>, RepositoryError>;
+    fn delete(&mut self, id: BudgetId) -> Result<bool, RepositoryError>;
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum RepositoryError {
     DuplicateAccountId(AccountId),
     DuplicateTransactionId(TransactionId),
     DuplicateTransferId(TransferId),
+    DuplicateBudgetId(BudgetId),
     InvalidId(u64),
     IdExhausted,
     Storage(String),

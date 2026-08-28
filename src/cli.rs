@@ -9,8 +9,9 @@ use crate::{
             list_account_transaction_page,
         },
         manage_account::{
-            ManageAccountError, delete_account_with_transfers, get_account, rename_account,
+            ManageAccountError, delete_account_with_dependencies, get_account, rename_account,
         },
+        manage_budget::{ManageBudgetError, delete_budget, get_budget, list_budgets, set_budget},
         manage_transaction::{
             ManageTransactionError, TransactionChanges, delete_transaction, get_transaction,
             update_transaction,
@@ -25,11 +26,12 @@ use crate::{
     },
     domain::{
         account::AccountId,
+        budget::{BudgetError, BudgetId, BudgetMonth},
         money::{Currency, Money},
         transaction::{Category, NewTransaction, TransactionError, TransactionId, TransactionKind},
         transfer::{NewTransfer, TransferError, TransferId},
     },
-    infrastructure::sqlite::open_all_repositories,
+    infrastructure::sqlite::open_complete_repositories,
 };
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
@@ -64,6 +66,39 @@ pub enum Command {
     Transfer {
         #[command(subcommand)]
         command: TransferCommand,
+    },
+
+    Budget {
+        #[command(subcommand)]
+        command: BudgetCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BudgetCommand {
+    Set {
+        #[arg(long)]
+        account_id: u64,
+        #[arg(long, ignore_case = true)]
+        category: CategoryArg,
+        #[arg(long)]
+        year: i32,
+        #[arg(long)]
+        month: u8,
+        #[arg(long)]
+        limit_minor: i64,
+    },
+    Show {
+        #[arg(long)]
+        id: u64,
+    },
+    List {
+        #[arg(long)]
+        account_id: u64,
+    },
+    Delete {
+        #[arg(long)]
+        id: u64,
     },
 }
 
@@ -384,6 +419,7 @@ pub enum CliError {
 
     Transaction(TransactionError),
     Transfer(TransferError),
+    Budget(BudgetError),
     RecordTransaction(RecordTransactionError),
     GetCategoryReport(GetCategoryReportError),
 
@@ -396,6 +432,7 @@ pub enum CliError {
     ManageAccount(ManageAccountError),
     ManageTransaction(ManageTransactionError),
     ManageTransfer(ManageTransferError),
+    ManageBudget(ManageBudgetError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -419,6 +456,12 @@ impl From<TransactionError> for CliError {
 impl From<TransferError> for CliError {
     fn from(error: TransferError) -> Self {
         Self::Transfer(error)
+    }
+}
+
+impl From<BudgetError> for CliError {
+    fn from(error: BudgetError) -> Self {
+        Self::Budget(error)
     }
 }
 
@@ -476,6 +519,12 @@ impl From<ManageTransferError> for CliError {
     }
 }
 
+impl From<ManageBudgetError> for CliError {
+    fn from(error: ManageBudgetError) -> Self {
+        Self::ManageBudget(error)
+    }
+}
+
 fn parse_occurred_at(input: &str, time_zone: Option<&str>) -> Result<Zoned, CliError> {
     match time_zone {
         None => input
@@ -527,8 +576,12 @@ fn parse_transaction_cursor(input: &str) -> Result<TransactionCursor, CliError> 
 }
 
 pub fn run(cli: Cli) -> Result<String, CliError> {
-    let (mut account_repository, mut transaction_repository, mut transfer_repository) =
-        open_all_repositories(&cli.database)?;
+    let (
+        mut account_repository,
+        mut transaction_repository,
+        mut transfer_repository,
+        mut budget_repository,
+    ) = open_complete_repositories(&cli.database)?;
 
     match cli.command {
         Command::Account { command } => match command {
@@ -585,10 +638,11 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
             }
 
             AccountCommand::Delete { id } => {
-                delete_account_with_transfers(
+                delete_account_with_dependencies(
                     &mut account_repository,
                     &transaction_repository,
                     &transfer_repository,
+                    &budget_repository,
                     AccountId::new(id),
                 )?;
                 Ok(format!("Deleted account {id}"))
@@ -974,6 +1028,68 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
             TransferCommand::Delete { id } => {
                 delete_transfer(&mut transfer_repository, TransferId::new(id))?;
                 Ok(format!("Deleted transfer {id}"))
+            }
+        },
+
+        Command::Budget { command } => match command {
+            BudgetCommand::Set {
+                account_id,
+                category,
+                year,
+                month,
+                limit_minor,
+            } => {
+                let budget = set_budget(
+                    &account_repository,
+                    &mut budget_repository,
+                    AccountId::new(account_id),
+                    category.into(),
+                    BudgetMonth::new(year, month)?,
+                    limit_minor,
+                )?;
+                Ok(format!("Set budget {}", budget.id().value()))
+            }
+            BudgetCommand::Show { id } => {
+                let budget = get_budget(&budget_repository, BudgetId::new(id))?;
+                Ok(format!(
+                    "Budget {} | account {} | {:?} | {:04}-{:02} | {}({:?})",
+                    budget.id().value(),
+                    budget.account_id().value(),
+                    budget.category(),
+                    budget.month().year(),
+                    budget.month().month(),
+                    budget.limit().minor_units(),
+                    budget.limit().currency()
+                ))
+            }
+            BudgetCommand::List { account_id } => {
+                let budgets = list_budgets(
+                    &account_repository,
+                    &budget_repository,
+                    AccountId::new(account_id),
+                )?;
+                if budgets.is_empty() {
+                    return Ok(format!("No budgets found for account {account_id}"));
+                }
+                Ok(budgets
+                    .into_iter()
+                    .map(|budget| {
+                        format!(
+                            "Budget {} | {:?} | {:04}-{:02} | {}({:?})",
+                            budget.id().value(),
+                            budget.category(),
+                            budget.month().year(),
+                            budget.month().month(),
+                            budget.limit().minor_units(),
+                            budget.limit().currency()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            BudgetCommand::Delete { id } => {
+                delete_budget(&mut budget_repository, BudgetId::new(id))?;
+                Ok(format!("Deleted budget {id}"))
             }
         },
     }
@@ -2580,6 +2696,72 @@ mod tests {
                 },
             }),
             Ok("Deleted transfer 1".to_string())
+        );
+    }
+
+    #[test]
+    fn manages_monthly_budget_and_restricts_account_deletion() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
+
+        let set = run(Cli {
+            database: database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Set {
+                    account_id: 1,
+                    category: CategoryArg::Food,
+                    year: 2026,
+                    month: 8,
+                    limit_minor: 1000,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(set, "Set budget 1");
+
+        let updated = run(Cli {
+            database: database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Set {
+                    account_id: 1,
+                    category: CategoryArg::Food,
+                    year: 2026,
+                    month: 8,
+                    limit_minor: 2000,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(updated, "Set budget 1");
+        let shown = run(Cli {
+            database: database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Show { id: 1 },
+            },
+        })
+        .unwrap();
+        assert!(shown.contains("2000(Cny)"));
+
+        assert_eq!(
+            run(Cli {
+                database: database.clone(),
+                command: Command::Account {
+                    command: AccountCommand::Delete { id: 1 },
+                },
+            }),
+            Err(CliError::ManageAccount(ManageAccountError::HasBudgets(
+                AccountId::new(1)
+            )))
+        );
+        assert_eq!(
+            run(Cli {
+                database,
+                command: Command::Budget {
+                    command: BudgetCommand::Delete { id: 1 },
+                },
+            }),
+            Ok("Deleted budget 1".to_string())
         );
     }
 }

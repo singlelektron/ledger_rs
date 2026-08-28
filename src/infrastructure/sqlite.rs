@@ -1,7 +1,8 @@
 use crate::application::repository::{
-    AccountRepository, RepositoryError, TransactionRepository, TransferRepository,
+    AccountRepository, BudgetRepository, RepositoryError, TransactionRepository, TransferRepository,
 };
 use crate::domain::account::{Account, AccountId, NewAccount};
+use crate::domain::budget::{Budget, BudgetId, BudgetMonth, NewBudget};
 use crate::domain::money::{Currency, Money};
 use crate::domain::transaction::{NewTransaction, Transaction, TransactionId, TransactionKind};
 use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
@@ -11,7 +12,7 @@ use rusqlite::{Connection, params};
 use std::path::Path;
 use std::rc::Rc;
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 fn currency_to_code(currency: Currency) -> &'static str {
     match currency {
@@ -146,6 +147,9 @@ pub struct SqliteTransactionRepository {
 pub struct SqliteTransferRepository {
     connection: Rc<Connection>,
 }
+pub struct SqliteBudgetRepository {
+    connection: Rc<Connection>,
+}
 
 pub fn in_memory_repositories()
 -> Result<(SqliteAccountRepository, SqliteTransactionRepository), RepositoryError> {
@@ -184,6 +188,33 @@ pub fn in_memory_all_repositories() -> Result<
             connection: Rc::clone(&connection),
         },
         SqliteTransferRepository { connection },
+    ))
+}
+
+pub fn in_memory_complete_repositories() -> Result<
+    (
+        SqliteAccountRepository,
+        SqliteTransactionRepository,
+        SqliteTransferRepository,
+        SqliteBudgetRepository,
+    ),
+    RepositoryError,
+> {
+    let connection = Connection::open_in_memory()
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    let connection = Rc::new(connection);
+    Ok((
+        SqliteAccountRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransactionRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransferRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteBudgetRepository { connection },
     ))
 }
 
@@ -762,6 +793,163 @@ impl TransferRepository for SqliteTransferRepository {
     }
 }
 
+impl BudgetRepository for SqliteBudgetRepository {
+    fn set(&mut self, budget: NewBudget) -> Result<Budget, RepositoryError> {
+        if let Some(existing) =
+            self.find_by_scope(budget.account_id(), budget.category(), budget.month())?
+        {
+            self.connection
+                .execute(
+                    "UPDATE budgets SET limit_minor=?1, currency=?2 WHERE id=?3",
+                    params![
+                        budget.limit().minor_units(),
+                        currency_to_code(budget.limit().currency()),
+                        i64::try_from(existing.id().value())
+                            .map_err(|_| RepositoryError::InvalidId(existing.id().value()))?,
+                    ],
+                )
+                .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            return Ok(Budget::from_new(existing.id(), budget));
+        }
+        let account_id = i64::try_from(budget.account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(budget.account_id().value()))?;
+        self.connection
+            .execute(
+                "INSERT INTO budgets (account_id, category, year, month, limit_minor, currency)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    account_id,
+                    category_to_code(budget.category()),
+                    budget.month().year(),
+                    budget.month().month(),
+                    budget.limit().minor_units(),
+                    currency_to_code(budget.limit().currency()),
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let id = u64::try_from(self.connection.last_insert_rowid())
+            .map_err(|_| RepositoryError::IdExhausted)?;
+        Ok(Budget::from_new(BudgetId::new(id), budget))
+    }
+
+    fn save(&mut self, budget: Budget) -> Result<(), RepositoryError> {
+        let id = i64::try_from(budget.id().value())
+            .map_err(|_| RepositoryError::InvalidId(budget.id().value()))?;
+        let account_id = i64::try_from(budget.account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(budget.account_id().value()))?;
+        self.connection
+            .execute(
+                "INSERT INTO budgets (id, account_id, category, year, month, limit_minor, currency)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    account_id,
+                    category_to_code(budget.category()),
+                    budget.month().year(),
+                    budget.month().month(),
+                    budget.limit().minor_units(),
+                    currency_to_code(budget.limit().currency()),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(code, _)
+                    if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY =>
+                {
+                    RepositoryError::DuplicateBudgetId(budget.id())
+                }
+                _ => RepositoryError::Storage(error.to_string()),
+            })?;
+        Ok(())
+    }
+
+    fn find_by_id(&self, id: BudgetId) -> Result<Option<Budget>, RepositoryError> {
+        let id_value =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let stored = self.connection.query_row(
+            "SELECT account_id, category, year, month, limit_minor, currency FROM budgets WHERE id=?1",
+            params![id_value],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i32>(2)?, row.get::<_, u8>(3)?, row.get::<_, i64>(4)?, row.get::<_, String>(5)?)),
+        ).optional().map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        stored
+            .map(|(account, category, year, month, limit, currency)| {
+                let account = AccountId::new(u64::try_from(account).map_err(|_| {
+                    RepositoryError::InvalidStoredData("invalid budget account id".to_string())
+                })?);
+                let month = BudgetMonth::new(year, month).map_err(|error| {
+                    RepositoryError::InvalidStoredData(format!("invalid budget month: {error:?}"))
+                })?;
+                Budget::new(
+                    id,
+                    account,
+                    category_from_code(&category)?,
+                    month,
+                    Money::from_minor_units(limit, currency_from_code(&currency)?),
+                )
+                .map_err(|error| {
+                    RepositoryError::InvalidStoredData(format!("invalid budget: {error:?}"))
+                })
+            })
+            .transpose()
+    }
+
+    fn find_by_account_id(&self, id: AccountId) -> Result<Vec<Budget>, RepositoryError> {
+        let id_value =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM budgets WHERE account_id=?1")
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let ids = statement
+            .query_map(params![id_value], |row| row.get::<_, i64>(0))
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let mut budgets = Vec::new();
+        for stored in ids {
+            let stored = stored.map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            let id = BudgetId::new(u64::try_from(stored).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!("invalid budget id: {stored}"))
+            })?);
+            if let Some(budget) = self.find_by_id(id)? {
+                budgets.push(budget);
+            }
+        }
+        Ok(budgets)
+    }
+
+    fn find_by_scope(
+        &self,
+        account_id: AccountId,
+        category: crate::domain::transaction::Category,
+        month: BudgetMonth,
+    ) -> Result<Option<Budget>, RepositoryError> {
+        let account = i64::try_from(account_id.value())
+            .map_err(|_| RepositoryError::InvalidId(account_id.value()))?;
+        let id = self.connection.query_row(
+            "SELECT id FROM budgets WHERE account_id=?1 AND category=?2 AND year=?3 AND month=?4",
+            params![account, category_to_code(category), month.year(), month.month()],
+            |row| row.get::<_, i64>(0),
+        ).optional().map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        id.map(|value| {
+            let id = BudgetId::new(u64::try_from(value).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!("invalid budget id: {value}"))
+            })?);
+            self.find_by_id(id)?.ok_or_else(|| {
+                RepositoryError::InvalidStoredData("budget disappeared during lookup".to_string())
+            })
+        })
+        .transpose()
+    }
+
+    fn delete(&mut self, id: BudgetId) -> Result<bool, RepositoryError> {
+        let id_value =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let changed = self
+            .connection
+            .execute("DELETE FROM budgets WHERE id=?1", params![id_value])
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(changed == 1)
+    }
+}
+
 pub fn open_repositories(
     path: impl AsRef<Path>,
 ) -> Result<(SqliteAccountRepository, SqliteTransactionRepository), RepositoryError> {
@@ -802,6 +990,35 @@ pub fn open_all_repositories(
             connection: Rc::clone(&connection),
         },
         SqliteTransferRepository { connection },
+    ))
+}
+
+pub fn open_complete_repositories(
+    path: impl AsRef<Path>,
+) -> Result<
+    (
+        SqliteAccountRepository,
+        SqliteTransactionRepository,
+        SqliteTransferRepository,
+        SqliteBudgetRepository,
+    ),
+    RepositoryError,
+> {
+    let connection =
+        Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    let connection = Rc::new(connection);
+    Ok((
+        SqliteAccountRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransactionRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransferRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteBudgetRepository { connection },
     ))
 }
 
@@ -864,6 +1081,25 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 3 {
+        transaction.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS budgets (
+                id          INTEGER PRIMARY KEY,
+                account_id  INTEGER NOT NULL,
+                category    TEXT NOT NULL,
+                year        INTEGER NOT NULL,
+                month       INTEGER NOT NULL,
+                limit_minor INTEGER NOT NULL,
+                currency    TEXT NOT NULL,
+                UNIQUE (account_id, category, year, month),
+                FOREIGN KEY (account_id) REFERENCES accounts(id)
+            );
+            PRAGMA user_version = 3;
+            "#,
+        )?;
+    }
+
     transaction.commit()
 }
 
@@ -883,6 +1119,7 @@ mod tests {
 
         assert!(connection.table_exists(None, "transactions").unwrap());
         assert!(connection.table_exists(None, "transfers").unwrap());
+        assert!(connection.table_exists(None, "budgets").unwrap());
 
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
