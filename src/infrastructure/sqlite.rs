@@ -8,6 +8,8 @@ use rusqlite::{Connection, params};
 use std::path::Path;
 use std::rc::Rc;
 
+const CURRENT_SCHEMA_VERSION: i64 = 1;
+
 fn currency_to_code(currency: Currency) -> &'static str {
     match currency {
         Currency::Cny => "CNY",
@@ -361,10 +363,18 @@ pub fn open_repositories(
 }
 
 pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute_batch(
-        r#"
-        PRAGMA foreign_keys = ON;
+    connection.pragma_update(None, "foreign_keys", true)?;
 
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version > CURRENT_SCHEMA_VERSION {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+
+    let transaction = connection.unchecked_transaction()?;
+
+    if version < 1 {
+        transaction.execute_batch(
+            r#"
         CREATE TABLE IF NOT EXISTS accounts (
             id       INTEGER PRIMARY KEY,
             name     TEXT NOT NULL,
@@ -384,8 +394,13 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
             FOREIGN KEY (account_id)
                 REFERENCES accounts(id)
         );
+
+        PRAGMA user_version = 1;
         "#,
-    )
+        )?;
+    }
+
+    transaction.commit()
 }
 
 #[cfg(test)]
@@ -403,6 +418,11 @@ mod tests {
         assert!(connection.table_exists(None, "accounts").unwrap());
 
         assert!(connection.table_exists(None, "transactions").unwrap());
+
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]
@@ -424,6 +444,60 @@ mod tests {
             .unwrap();
 
         assert_eq!(enabled, 1);
+    }
+
+    #[test]
+    fn adopts_legacy_schema_without_losing_data() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE accounts (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    currency TEXT NOT NULL
+                );
+                CREATE TABLE transactions (
+                    id INTEGER PRIMARY KEY,
+                    account_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    amount_minor INTEGER NOT NULL,
+                    currency TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    FOREIGN KEY (account_id) REFERENCES accounts(id)
+                );
+                INSERT INTO accounts (id, name, currency) VALUES (7, 'Legacy cash', 'CNY');
+                "#,
+            )
+            .unwrap();
+
+        initialize_schema(&connection).unwrap();
+
+        let stored_name: String = connection
+            .query_row("SELECT name FROM accounts WHERE id = 7", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored_name, "Legacy cash");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn rejects_database_from_newer_schema_version() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION + 1)
+            .unwrap();
+
+        assert!(matches!(
+            initialize_schema(&connection),
+            Err(rusqlite::Error::InvalidQuery)
+        ));
     }
 
     #[test]

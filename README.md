@@ -56,6 +56,8 @@ SQLite persistence layer are implemented and tested:
   and occurrence-time range
 - SQLite support through `rusqlite`, including repeatable schema initialization
   for account and transaction tables with foreign-key enforcement enabled
+- Versioned, transactional SQLite schema migrations that adopt existing
+  pre-migration databases without deleting their data
 - A SQLite account repository that saves, queries, and lists accounts while
   reporting duplicate IDs, unsupported ID ranges, and invalid stored data
 - A SQLite transaction repository that shares its connection with the account
@@ -405,10 +407,10 @@ results, and returning the process exit status.
 - Open file-backed repositories and preserve data after closing and reopening
   the SQLite connection
 
-Database schema migrations are not implemented yet. During the current
-pre-release development stage there is no existing user database to preserve,
-so a development database should be deleted and recreated after an incompatible
-schema change.
+SQLite schema migrations use `PRAGMA user_version`. Existing databases created
+before migrations were introduced are adopted as version 1 without deleting
+their account or transaction rows. Databases from a newer unsupported schema
+version are rejected explicitly.
 
 ### Milestone 5: CLI - Completed
 
