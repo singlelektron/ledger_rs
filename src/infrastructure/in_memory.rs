@@ -100,6 +100,14 @@ impl TransactionRepository for InMemoryTransactionRepository {
         Ok(())
     }
 
+    fn find_by_id(&self, id: TransactionId) -> Result<Option<Transaction>, RepositoryError> {
+        Ok(self
+            .transactions
+            .iter()
+            .find(|transaction| transaction.id() == id)
+            .cloned())
+    }
+
     fn find_by_account_id(
         &self,
         account_id: AccountId,
@@ -111,6 +119,25 @@ impl TransactionRepository for InMemoryTransactionRepository {
             .cloned()
             .collect();
         Ok(transactions)
+    }
+
+    fn update(&mut self, transaction: Transaction) -> Result<bool, RepositoryError> {
+        let Some(stored) = self
+            .transactions
+            .iter_mut()
+            .find(|item| item.id() == transaction.id())
+        else {
+            return Ok(false);
+        };
+        *stored = transaction;
+        Ok(true)
+    }
+
+    fn delete(&mut self, id: TransactionId) -> Result<bool, RepositoryError> {
+        let original_len = self.transactions.len();
+        self.transactions
+            .retain(|transaction| transaction.id() != id);
+        Ok(self.transactions.len() != original_len)
     }
 }
 

@@ -6,6 +6,10 @@ use crate::{
         list_accounts::{ListAccountsError, list_accounts},
         list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
         manage_account::{ManageAccountError, delete_account, get_account, rename_account},
+        manage_transaction::{
+            ManageTransactionError, TransactionChanges, delete_transaction, get_transaction,
+            update_transaction,
+        },
         ranged_summary::{GetRangedSummaryError, get_ranged_summary},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
@@ -13,7 +17,7 @@ use crate::{
     domain::{
         account::AccountId,
         money::{Currency, Money},
-        transaction::{Category, NewTransaction, TransactionError, TransactionKind},
+        transaction::{Category, NewTransaction, TransactionError, TransactionId, TransactionKind},
     },
     infrastructure::sqlite::open_repositories,
 };
@@ -142,6 +146,45 @@ pub enum TransactionCommand {
         #[arg(long, requires = "time-bound")]
         time_zone: Option<String>,
     },
+
+    Show {
+        #[arg(long)]
+        id: u64,
+    },
+
+    Update {
+        #[arg(long)]
+        id: u64,
+
+        #[arg(long)]
+        account_id: Option<u64>,
+
+        #[arg(long, ignore_case = true)]
+        kind: Option<TransactionKindArg>,
+
+        #[arg(long)]
+        amount_minor: Option<i64>,
+
+        #[arg(long, ignore_case = true)]
+        currency: Option<CurrencyArg>,
+
+        #[arg(long)]
+        occurred_at: Option<String>,
+
+        #[arg(long)]
+        description: Option<String>,
+
+        #[arg(long, ignore_case = true)]
+        category: Option<CategoryArg>,
+
+        #[arg(long, requires = "occurred_at")]
+        time_zone: Option<String>,
+    },
+
+    Delete {
+        #[arg(long)]
+        id: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -261,6 +304,7 @@ pub enum CliError {
 
     GetRangedSummary(GetRangedSummaryError),
     ManageAccount(ManageAccountError),
+    ManageTransaction(ManageTransactionError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -320,6 +364,12 @@ impl From<GetRangedSummaryError> for CliError {
 impl From<ManageAccountError> for CliError {
     fn from(error: ManageAccountError) -> Self {
         Self::ManageAccount(error)
+    }
+}
+
+impl From<ManageTransactionError> for CliError {
+    fn from(error: ManageTransactionError) -> Self {
+        Self::ManageTransaction(error)
     }
 }
 
@@ -531,6 +581,66 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 }
 
                 Ok(output_lines.join("\n"))
+            }
+
+            TransactionCommand::Show { id } => {
+                let transaction = get_transaction(&transaction_repository, TransactionId::new(id))?;
+                Ok(format!(
+                    "Transaction {} | {:?} | {} | {}({:?}) | {} | {:?}",
+                    transaction.id().value(),
+                    transaction.kind(),
+                    transaction.occurred_at(),
+                    transaction.amount().minor_units(),
+                    transaction.amount().currency(),
+                    transaction.description(),
+                    transaction.category(),
+                ))
+            }
+
+            TransactionCommand::Update {
+                id,
+                account_id,
+                kind,
+                amount_minor,
+                currency,
+                occurred_at,
+                description,
+                category,
+                time_zone,
+            } => {
+                let transaction_id = TransactionId::new(id);
+                let current = get_transaction(&transaction_repository, transaction_id)?;
+                let amount = if amount_minor.is_some() || currency.is_some() {
+                    Some(Money::from_minor_units(
+                        amount_minor.unwrap_or(current.amount().minor_units()),
+                        currency
+                            .map(Currency::from)
+                            .unwrap_or(current.amount().currency()),
+                    ))
+                } else {
+                    None
+                };
+                let updated = update_transaction(
+                    &account_repository,
+                    &mut transaction_repository,
+                    transaction_id,
+                    TransactionChanges {
+                        account_id: account_id.map(AccountId::new),
+                        kind: kind.map(TransactionKind::from),
+                        amount,
+                        occurred_at: occurred_at
+                            .map(|value| parse_occurred_at(&value, time_zone.as_deref()))
+                            .transpose()?,
+                        description,
+                        category: category.map(Category::from),
+                    },
+                )?;
+                Ok(format!("Updated transaction {}", updated.id().value()))
+            }
+
+            TransactionCommand::Delete { id } => {
+                delete_transaction(&mut transaction_repository, TransactionId::new(id))?;
+                Ok(format!("Deleted transaction {id}"))
             }
         },
 
@@ -1937,6 +2047,79 @@ mod tests {
             Err(CliError::ManageAccount(
                 ManageAccountError::AccountNotFound(AccountId::new(1))
             ))
+        );
+    }
+
+    #[test]
+    fn shows_updates_and_deletes_transaction() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
+        run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    id: 0,
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 100,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+
+        let shown = run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Show { id: 1 },
+            },
+        })
+        .unwrap();
+        assert!(shown.contains("Transaction 1"));
+        assert!(shown.contains("Lunch"));
+
+        let updated = run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Update {
+                    id: 1,
+                    account_id: None,
+                    kind: None,
+                    amount_minor: Some(250),
+                    currency: None,
+                    occurred_at: None,
+                    description: Some("Dinner".to_string()),
+                    category: None,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(updated, "Updated transaction 1");
+
+        let shown = run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Show { id: 1 },
+            },
+        })
+        .unwrap();
+        assert!(shown.contains("250(Cny)"));
+        assert!(shown.contains("Dinner"));
+
+        assert_eq!(
+            run(Cli {
+                database,
+                command: Command::Transaction {
+                    command: TransactionCommand::Delete { id: 1 },
+                },
+            }),
+            Ok("Deleted transaction 1".to_string())
         );
     }
 }

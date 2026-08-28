@@ -54,6 +54,8 @@ SQLite persistence layer are implemented and tested:
   to invent persistent identifiers
 - Account detail, rename, and restricted deletion use cases exposed through the
   CLI; accounts with transactions cannot be deleted
+- Transaction detail, partial update, reassignment, and deletion use cases with
+  account and currency validation
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -592,6 +594,17 @@ List an account's stored transactions:
 ```bash
 cargo run -- transaction list --account-id 1
 ```
+
+Show, partially update, or delete a transaction:
+
+```bash
+cargo run -- transaction show --id 1
+cargo run -- transaction update --id 1 --amount-minor 1500 --description Dinner
+cargo run -- transaction delete --id 1
+```
+
+An update keeps omitted fields unchanged. Moving a transaction to another
+account requires its amount currency to match the destination account.
 
 Transactions are displayed from newest to oldest. If multiple transactions
 have the same occurrence time, the higher transaction ID is displayed first so

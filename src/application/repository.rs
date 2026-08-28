@@ -36,10 +36,28 @@ pub trait TransactionRepository {
 
     fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError>;
 
+    fn find_by_id(&self, _id: TransactionId) -> Result<Option<Transaction>, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "transaction lookup is not supported".to_string(),
+        ))
+    }
+
     fn find_by_account_id(
         &self,
         account_id: AccountId,
     ) -> Result<Vec<Transaction>, RepositoryError>;
+
+    fn update(&mut self, _transaction: Transaction) -> Result<bool, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "transaction updates are not supported".to_string(),
+        ))
+    }
+
+    fn delete(&mut self, _id: TransactionId) -> Result<bool, RepositoryError> {
+        Err(RepositoryError::Storage(
+            "transaction deletion is not supported".to_string(),
+        ))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -93,6 +93,47 @@ fn category_from_code(code: &str) -> Result<crate::domain::transaction::Category
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn transaction_from_stored(
+    id: i64,
+    account_id: i64,
+    kind_code: String,
+    amount_minor: i64,
+    currency_code: String,
+    occurred_at_str: String,
+    description: String,
+    category_code: String,
+) -> Result<Transaction, RepositoryError> {
+    let transaction_id = TransactionId::new(u64::try_from(id).map_err(|_| {
+        RepositoryError::InvalidStoredData(format!("invalid transaction id: {id}"))
+    })?);
+    let account_id = AccountId::new(u64::try_from(account_id).map_err(|_| {
+        RepositoryError::InvalidStoredData(format!("invalid account id: {account_id}"))
+    })?);
+    let kind = transaction_kind_from_code(&kind_code)?;
+    let currency = currency_from_code(&currency_code)?;
+    let amount = Money::from_minor_units(amount_minor, currency);
+    let occurred_at: Zoned = occurred_at_str.parse().map_err(|error| {
+        RepositoryError::InvalidStoredData(format!(
+            "invalid occurred_at: {occurred_at_str}, error: {error:?}"
+        ))
+    })?;
+    let category = category_from_code(&category_code)?;
+
+    Transaction::new(
+        transaction_id,
+        account_id,
+        kind,
+        amount,
+        occurred_at,
+        description,
+        category,
+    )
+    .map_err(|error| {
+        RepositoryError::InvalidStoredData(format!("invalid transaction data: {error:?}"))
+    })
+}
+
 pub struct SqliteAccountRepository {
     connection: Rc<Connection>,
 }
@@ -322,6 +363,52 @@ impl TransactionRepository for SqliteTransactionRepository {
         Ok(())
     }
 
+    fn find_by_id(&self, id: TransactionId) -> Result<Option<Transaction>, RepositoryError> {
+        let database_id =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let stored = self
+            .connection
+            .query_row(
+                "
+                SELECT id, account_id, kind, amount_minor, currency, occurred_at, description, category
+                FROM transactions
+                WHERE id = ?1
+                ",
+                params![database_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+        stored
+            .map(
+                |(id, account_id, kind, amount, currency, occurred, description, category)| {
+                    transaction_from_stored(
+                        id,
+                        account_id,
+                        kind,
+                        amount,
+                        currency,
+                        occurred,
+                        description,
+                        category,
+                    )
+                },
+            )
+            .transpose()
+    }
+
     fn find_by_account_id(
         &self,
         account_id: AccountId,
@@ -402,6 +489,45 @@ impl TransactionRepository for SqliteTransactionRepository {
             transactions.push(transaction);
         }
         Ok(transactions)
+    }
+
+    fn update(&mut self, transaction: Transaction) -> Result<bool, RepositoryError> {
+        let id = i64::try_from(transaction.id().value())
+            .map_err(|_| RepositoryError::InvalidId(transaction.id().value()))?;
+        let account_id = i64::try_from(transaction.account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transaction.account_id().value()))?;
+        let changed = self
+            .connection
+            .execute(
+                "
+                UPDATE transactions
+                SET account_id = ?1, kind = ?2, amount_minor = ?3, currency = ?4,
+                    occurred_at = ?5, description = ?6, category = ?7
+                WHERE id = ?8
+                ",
+                params![
+                    account_id,
+                    transaction_kind_to_code(transaction.kind()),
+                    transaction.amount().minor_units(),
+                    currency_to_code(transaction.amount().currency()),
+                    transaction.occurred_at().to_string(),
+                    transaction.description(),
+                    category_to_code(transaction.category()),
+                    id,
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(changed == 1)
+    }
+
+    fn delete(&mut self, id: TransactionId) -> Result<bool, RepositoryError> {
+        let id_value =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let changed = self
+            .connection
+            .execute("DELETE FROM transactions WHERE id = ?1", params![id_value])
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(changed == 1)
     }
 }
 
