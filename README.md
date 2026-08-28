@@ -56,6 +56,8 @@ SQLite persistence layer are implemented and tested:
   CLI; accounts with transactions cannot be deleted
 - Transaction detail, partial update, reassignment, and deletion use cases with
   account and currency validation
+- Transaction description and amount-range search plus stable cursor pagination
+  ordered by occurrence time and transaction ID
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -636,6 +638,21 @@ cargo run -- transaction list \
 Category and transaction-kind input is case-insensitive. When a filter is
 omitted, it does not restrict the results. When no transaction matches the
 selected filters, the command returns the same explicit empty-list message.
+
+Search descriptions case-insensitively, constrain positive amount bounds, and
+page through a stable newest-first result:
+
+```bash
+cargo run -- transaction list \
+  --account-id 1 \
+  --description-contains lunch \
+  --min-amount-minor 500 \
+  --max-amount-minor 5000 \
+  --limit 20
+```
+
+When another page exists, the output includes an opaque `Next cursor` value.
+Pass it unchanged with `--cursor`. Page sizes must be between 1 and 200.
 
 Filter transactions by a zoned occurrence-time range:
 

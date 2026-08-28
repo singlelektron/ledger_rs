@@ -4,7 +4,10 @@ use crate::{
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
-        list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
+        list_transactions::{
+            ListTransactionsError, TransactionCursor, TransactionFilter, TransactionPageRequest,
+            list_account_transaction_page,
+        },
         manage_account::{ManageAccountError, delete_account, get_account, rename_account},
         manage_transaction::{
             ManageTransactionError, TransactionChanges, delete_transaction, get_transaction,
@@ -145,6 +148,21 @@ pub enum TransactionCommand {
 
         #[arg(long, requires = "time-bound")]
         time_zone: Option<String>,
+
+        #[arg(long)]
+        description_contains: Option<String>,
+
+        #[arg(long)]
+        min_amount_minor: Option<i64>,
+
+        #[arg(long)]
+        max_amount_minor: Option<i64>,
+
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        #[arg(long)]
+        cursor: Option<String>,
     },
 
     Show {
@@ -292,6 +310,7 @@ pub enum CliError {
     CreateAccount(CreateAccountError),
 
     InvalidTime { input: String, message: String },
+    InvalidCursor(String),
 
     Transaction(TransactionError),
     RecordTransaction(RecordTransactionError),
@@ -408,6 +427,19 @@ fn parse_occurred_at(input: &str, time_zone: Option<&str>) -> Result<Zoned, CliE
                 })
         }
     }
+}
+
+fn parse_transaction_cursor(input: &str) -> Result<TransactionCursor, CliError> {
+    let (occurred_at, id) = input
+        .rsplit_once('|')
+        .ok_or_else(|| CliError::InvalidCursor(input.to_string()))?;
+    let occurred_at = occurred_at
+        .parse::<Zoned>()
+        .map_err(|_| CliError::InvalidCursor(input.to_string()))?;
+    let id = id
+        .parse::<u64>()
+        .map_err(|_| CliError::InvalidCursor(input.to_string()))?;
+    Ok(TransactionCursor { occurred_at, id })
 }
 
 pub fn run(cli: Cli) -> Result<String, CliError> {
@@ -545,8 +577,13 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 from,
                 to,
                 time_zone,
+                description_contains,
+                min_amount_minor,
+                max_amount_minor,
+                limit,
+                cursor,
             } => {
-                let transactions = list_account_transactions(
+                let page = list_account_transaction_page(
                     &account_repository,
                     &transaction_repository,
                     AccountId::new(account_id),
@@ -559,15 +596,24 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                         to: to
                             .map(|s| parse_occurred_at(&s, time_zone.as_deref()))
                             .transpose()?,
+                        description_contains,
+                        min_amount_minor,
+                        max_amount_minor,
+                    },
+                    TransactionPageRequest {
+                        limit,
+                        cursor: cursor
+                            .map(|value| parse_transaction_cursor(&value))
+                            .transpose()?,
                     },
                 )?;
 
-                if transactions.is_empty() {
+                if page.items.is_empty() {
                     return Ok(format!("No transactions found for account {}", account_id));
                 }
 
                 let mut output_lines: Vec<String> = Vec::new();
-                for transaction in transactions {
+                for transaction in page.items {
                     output_lines.push(format!(
                         "Transaction {} | {:?} | {} | {}({:?}) | {} | {:?}",
                         transaction.id().value(),
@@ -578,6 +624,10 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                         transaction.description(),
                         transaction.category(),
                     ));
+                }
+
+                if let Some(cursor) = page.next_cursor {
+                    output_lines.push(format!("Next cursor: {}|{}", cursor.occurred_at, cursor.id));
                 }
 
                 Ok(output_lines.join("\n"))
@@ -1510,6 +1560,7 @@ mod tests {
                         from,
                         to,
                         time_zone,
+                        ..
                     },
             } => {
                 assert_eq!(account_id, 1);
@@ -1541,6 +1592,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1572,6 +1628,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1596,6 +1657,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1707,6 +1773,7 @@ mod tests {
                         from,
                         to,
                         time_zone: _,
+                        ..
                     },
             } => {
                 assert_eq!(account_id, 1);
@@ -1742,6 +1809,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1771,6 +1843,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1824,6 +1901,7 @@ mod tests {
                         from: _,
                         to: _,
                         time_zone,
+                        ..
                     },
             } => {
                 assert_eq!(account_id, 1);
@@ -1850,6 +1928,11 @@ mod tests {
                     from: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string()),
                     to: Some("2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string()),
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1878,6 +1961,11 @@ mod tests {
                     from: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string()),
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1907,6 +1995,11 @@ mod tests {
                     from: None,
                     to: Some("2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string()),
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -2121,5 +2214,98 @@ mod tests {
             }),
             Ok("Deleted transaction 1".to_string())
         );
+    }
+
+    #[test]
+    fn parses_transaction_search_and_pagination_options() {
+        let cli = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "list",
+            "--account-id",
+            "1",
+            "--description-contains",
+            "lunch",
+            "--min-amount-minor",
+            "100",
+            "--max-amount-minor",
+            "500",
+            "--limit",
+            "10",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Transaction {
+                command:
+                    TransactionCommand::List {
+                        description_contains,
+                        min_amount_minor,
+                        max_amount_minor,
+                        limit,
+                        ..
+                    },
+            } => {
+                assert_eq!(description_contains.as_deref(), Some("lunch"));
+                assert_eq!(min_amount_minor, Some(100));
+                assert_eq!(max_amount_minor, Some(500));
+                assert_eq!(limit, 10);
+            }
+            _ => panic!("expected transaction list command"),
+        }
+    }
+
+    #[test]
+    fn paginates_transaction_list_with_returned_cursor() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let first = run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 2,
+                    cursor: None,
+                },
+            },
+        })
+        .unwrap();
+        let cursor = first
+            .lines()
+            .find_map(|line| line.strip_prefix("Next cursor: "))
+            .unwrap()
+            .to_string();
+
+        let second = run(Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 2,
+                    cursor: Some(cursor),
+                },
+            },
+        })
+        .unwrap();
+        assert!(second.starts_with("Transaction 1 | Income"));
+        assert!(!second.contains("Next cursor:"));
     }
 }
