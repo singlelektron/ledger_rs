@@ -65,6 +65,8 @@ SQLite persistence layer are implemented and tested:
   account currency, unique account/category/month scopes, and CLI management
 - Time-zone-aware monthly budget execution reports with signed usage,
   remaining amount, and explicit overrun status
+- Monthly cash-flow and category trends across inclusive month ranges, including
+  explicit zero rows for months without transactions
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -609,6 +611,20 @@ cargo run -- budget status \
 
 Usage is `Expense - ExpenseRefund`; income and transfers are ignored. Refunds
 may make usage negative and remaining funds greater than the original limit.
+
+Display monthly cash-flow and category trends:
+
+```bash
+cargo run -- report trend \
+  --account-id 1 \
+  --from 2026-01 \
+  --to 2026-12 \
+  --time-zone Asia/Shanghai
+```
+
+The month range is inclusive. Each month is selected in the supplied IANA time
+zone, empty months are retained with zero totals, and category rows use stable
+ordering. Transfers remain excluded from these cash-flow trends.
 
 Record a transaction for an existing account:
 

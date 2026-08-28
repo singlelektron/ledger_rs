@@ -21,6 +21,7 @@ use crate::{
             ManageTransferError, TransferChanges, create_transfer, delete_transfer, get_transfer,
             list_account_transfers, update_transfer,
         },
+        monthly_trend::{MonthlyTrendError, get_monthly_trend},
         ranged_summary::{GetRangedSummaryError, get_ranged_summary},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
@@ -341,6 +342,17 @@ pub enum ReportCommand {
         #[arg(long)]
         time_zone: Option<String>,
     },
+
+    Trend {
+        #[arg(long)]
+        account_id: u64,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        time_zone: String,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -427,6 +439,7 @@ pub enum CliError {
 
     InvalidTime { input: String, message: String },
     InvalidCursor(String),
+    InvalidMonth(String),
 
     Transaction(TransactionError),
     Transfer(TransferError),
@@ -445,6 +458,7 @@ pub enum CliError {
     ManageTransfer(ManageTransferError),
     ManageBudget(ManageBudgetError),
     BudgetReport(BudgetReportError),
+    MonthlyTrend(MonthlyTrendError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -543,6 +557,12 @@ impl From<BudgetReportError> for CliError {
     }
 }
 
+impl From<MonthlyTrendError> for CliError {
+    fn from(error: MonthlyTrendError) -> Self {
+        Self::MonthlyTrend(error)
+    }
+}
+
 fn parse_occurred_at(input: &str, time_zone: Option<&str>) -> Result<Zoned, CliError> {
     match time_zone {
         None => input
@@ -591,6 +611,19 @@ fn parse_transaction_cursor(input: &str) -> Result<TransactionCursor, CliError> 
         .parse::<u64>()
         .map_err(|_| CliError::InvalidCursor(input.to_string()))?;
     Ok(TransactionCursor { occurred_at, id })
+}
+
+fn parse_budget_month(input: &str) -> Result<BudgetMonth, CliError> {
+    let (year, month) = input
+        .split_once('-')
+        .ok_or_else(|| CliError::InvalidMonth(input.to_string()))?;
+    let year = year
+        .parse::<i32>()
+        .map_err(|_| CliError::InvalidMonth(input.to_string()))?;
+    let month = month
+        .parse::<u8>()
+        .map_err(|_| CliError::InvalidMonth(input.to_string()))?;
+    BudgetMonth::new(year, month).map_err(CliError::from)
 }
 
 pub fn run(cli: Cli) -> Result<String, CliError> {
@@ -925,6 +958,50 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 report_lines.extend(category_lines);
 
                 Ok(report_lines.join("\n"))
+            }
+
+            ReportCommand::Trend {
+                account_id,
+                from,
+                to,
+                time_zone,
+            } => {
+                let rows = get_monthly_trend(
+                    &account_repository,
+                    &transaction_repository,
+                    AccountId::new(account_id),
+                    parse_budget_month(&from)?,
+                    parse_budget_month(&to)?,
+                    &time_zone,
+                )?;
+                let mut lines = Vec::new();
+                for row in rows {
+                    lines.push(format!(
+                        "{:04}-{:02} | income {} | net expense {} | net change {}",
+                        row.month.year(),
+                        row.month.month(),
+                        row.summary.income_total().minor_units(),
+                        row.summary.net_expense_total().minor_units(),
+                        row.summary.net_change().minor_units()
+                    ));
+                    let mut categories = row
+                        .summary
+                        .net_outflow_by_category()
+                        .iter()
+                        .map(|(category, amount)| {
+                            format!(
+                                "{:04}-{:02} | {:?} | net outflow {}",
+                                row.month.year(),
+                                row.month.month(),
+                                category,
+                                amount.minor_units()
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    categories.sort();
+                    lines.extend(categories);
+                }
+                Ok(lines.join("\n"))
             }
         },
 
@@ -2832,5 +2909,29 @@ mod tests {
             }),
             Ok("Deleted budget 1".to_string())
         );
+    }
+
+    #[test]
+    fn reports_monthly_trend_with_empty_month() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let output = run(Cli {
+            database,
+            command: Command::Report {
+                command: ReportCommand::Trend {
+                    account_id: 1,
+                    from: "2026-08".to_string(),
+                    to: "2026-09".to_string(),
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+
+        assert!(output.contains("2026-08 | income 1000 | net expense 450 | net change 550"));
+        assert!(output.contains("2026-08 | Food | net outflow 450"));
+        assert!(output.contains("2026-09 | income 0 | net expense 0 | net change 0"));
     }
 }
