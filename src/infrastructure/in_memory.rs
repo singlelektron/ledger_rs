@@ -1,6 +1,9 @@
-use crate::application::repository::{AccountRepository, RepositoryError, TransactionRepository};
+use crate::application::repository::{
+    AccountRepository, RepositoryError, TransactionRepository, TransferRepository,
+};
 use crate::domain::account::{Account, AccountId, NewAccount};
 use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
+use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
 
 #[derive(Default)]
 pub struct InMemoryAccountRepository {
@@ -16,6 +19,17 @@ impl InMemoryAccountRepository {
 #[derive(Default)]
 pub struct InMemoryTransactionRepository {
     transactions: Vec<Transaction>,
+}
+
+#[derive(Default)]
+pub struct InMemoryTransferRepository {
+    transfers: Vec<Transfer>,
+}
+
+impl InMemoryTransferRepository {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl InMemoryTransactionRepository {
@@ -138,6 +152,61 @@ impl TransactionRepository for InMemoryTransactionRepository {
         self.transactions
             .retain(|transaction| transaction.id() != id);
         Ok(self.transactions.len() != original_len)
+    }
+}
+
+impl TransferRepository for InMemoryTransferRepository {
+    fn create(&mut self, transfer: NewTransfer) -> Result<Transfer, RepositoryError> {
+        let next_id = self
+            .transfers
+            .iter()
+            .map(|transfer| transfer.id().value())
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(RepositoryError::IdExhausted)?;
+        let transfer = Transfer::from_new(TransferId::new(next_id), transfer);
+        self.transfers.push(transfer.clone());
+        Ok(transfer)
+    }
+
+    fn save(&mut self, transfer: Transfer) -> Result<(), RepositoryError> {
+        if self.transfers.iter().any(|item| item.id() == transfer.id()) {
+            return Err(RepositoryError::DuplicateTransferId(transfer.id()));
+        }
+        self.transfers.push(transfer);
+        Ok(())
+    }
+
+    fn find_by_id(&self, id: TransferId) -> Result<Option<Transfer>, RepositoryError> {
+        Ok(self.transfers.iter().find(|item| item.id() == id).cloned())
+    }
+
+    fn find_by_account_id(&self, id: AccountId) -> Result<Vec<Transfer>, RepositoryError> {
+        Ok(self
+            .transfers
+            .iter()
+            .filter(|item| item.source_account_id() == id || item.destination_account_id() == id)
+            .cloned()
+            .collect())
+    }
+
+    fn update(&mut self, transfer: Transfer) -> Result<bool, RepositoryError> {
+        let Some(stored) = self
+            .transfers
+            .iter_mut()
+            .find(|item| item.id() == transfer.id())
+        else {
+            return Ok(false);
+        };
+        *stored = transfer;
+        Ok(true)
+    }
+
+    fn delete(&mut self, id: TransferId) -> Result<bool, RepositoryError> {
+        let original_len = self.transfers.len();
+        self.transfers.retain(|item| item.id() != id);
+        Ok(self.transfers.len() != original_len)
     }
 }
 

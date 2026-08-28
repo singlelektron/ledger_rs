@@ -58,6 +58,9 @@ SQLite persistence layer are implemented and tested:
   account and currency validation
 - Transaction description and amount-range search plus stable cursor pagination
   ordered by occurrence time and transaction ID
+- Atomic same-currency and cross-currency transfers with user-locked source and
+  destination amounts, CRUD commands, balance integration, and unified account
+  activity queries
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
@@ -550,7 +553,27 @@ cargo run -- account delete --id 1
 ```
 
 An account's currency is immutable. Deletion is rejected while the account has
-transactions, preserving its accounting history.
+transactions or transfers, preserving its accounting history.
+
+Create and inspect a transfer between two accounts:
+
+```bash
+cargo run -- transfer add \
+  --source-account-id 1 \
+  --destination-account-id 2 \
+  --source-amount-minor 700 \
+  --source-currency cny \
+  --destination-amount-minor 100 \
+  --destination-currency usd \
+  --occurred-at '2026-08-20T10:00:00+08:00[Asia/Shanghai]' \
+  --description Exchange
+cargo run -- transfer list --account-id 1
+cargo run -- transfer show --id 1
+```
+
+The two amounts are positive and locked when the transfer is recorded. For a
+same-currency transfer they must be equal. Transfers affect both account
+balances but are excluded from income, expense, category, and cash-flow totals.
 
 Record a transaction for an existing account:
 

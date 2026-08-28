@@ -1,6 +1,6 @@
 use crate::{
     application::{
-        account_balance::{GetAccountBalanceError, get_account_balance},
+        account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
@@ -8,10 +8,16 @@ use crate::{
             ListTransactionsError, TransactionCursor, TransactionFilter, TransactionPageRequest,
             list_account_transaction_page,
         },
-        manage_account::{ManageAccountError, delete_account, get_account, rename_account},
+        manage_account::{
+            ManageAccountError, delete_account_with_transfers, get_account, rename_account,
+        },
         manage_transaction::{
             ManageTransactionError, TransactionChanges, delete_transaction, get_transaction,
             update_transaction,
+        },
+        manage_transfer::{
+            ManageTransferError, TransferChanges, create_transfer, delete_transfer, get_transfer,
+            list_account_transfers, update_transfer,
         },
         ranged_summary::{GetRangedSummaryError, get_ranged_summary},
         record_transaction::{RecordTransactionError, record_transaction},
@@ -21,8 +27,9 @@ use crate::{
         account::AccountId,
         money::{Currency, Money},
         transaction::{Category, NewTransaction, TransactionError, TransactionId, TransactionKind},
+        transfer::{NewTransfer, TransferError, TransferId},
     },
-    infrastructure::sqlite::open_repositories,
+    infrastructure::sqlite::open_all_repositories,
 };
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
@@ -52,6 +59,69 @@ pub enum Command {
     Report {
         #[command(subcommand)]
         command: ReportCommand,
+    },
+
+    Transfer {
+        #[command(subcommand)]
+        command: TransferCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TransferCommand {
+    Add {
+        #[arg(long)]
+        source_account_id: u64,
+        #[arg(long)]
+        destination_account_id: u64,
+        #[arg(long)]
+        source_amount_minor: i64,
+        #[arg(long, ignore_case = true)]
+        source_currency: CurrencyArg,
+        #[arg(long)]
+        destination_amount_minor: i64,
+        #[arg(long, ignore_case = true)]
+        destination_currency: CurrencyArg,
+        #[arg(long)]
+        occurred_at: String,
+        #[arg(long)]
+        description: String,
+        #[arg(long)]
+        time_zone: Option<String>,
+    },
+    Show {
+        #[arg(long)]
+        id: u64,
+    },
+    List {
+        #[arg(long)]
+        account_id: u64,
+    },
+    Update {
+        #[arg(long)]
+        id: u64,
+        #[arg(long)]
+        source_account_id: Option<u64>,
+        #[arg(long)]
+        destination_account_id: Option<u64>,
+        #[arg(long)]
+        source_amount_minor: Option<i64>,
+        #[arg(long, ignore_case = true)]
+        source_currency: Option<CurrencyArg>,
+        #[arg(long)]
+        destination_amount_minor: Option<i64>,
+        #[arg(long, ignore_case = true)]
+        destination_currency: Option<CurrencyArg>,
+        #[arg(long)]
+        occurred_at: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long, requires = "occurred_at")]
+        time_zone: Option<String>,
+    },
+    Delete {
+        #[arg(long)]
+        id: u64,
     },
 }
 
@@ -313,6 +383,7 @@ pub enum CliError {
     InvalidCursor(String),
 
     Transaction(TransactionError),
+    Transfer(TransferError),
     RecordTransaction(RecordTransactionError),
     GetCategoryReport(GetCategoryReportError),
 
@@ -324,6 +395,7 @@ pub enum CliError {
     GetRangedSummary(GetRangedSummaryError),
     ManageAccount(ManageAccountError),
     ManageTransaction(ManageTransactionError),
+    ManageTransfer(ManageTransferError),
 }
 
 impl From<RepositoryError> for CliError {
@@ -341,6 +413,12 @@ impl From<CreateAccountError> for CliError {
 impl From<TransactionError> for CliError {
     fn from(error: TransactionError) -> Self {
         Self::Transaction(error)
+    }
+}
+
+impl From<TransferError> for CliError {
+    fn from(error: TransferError) -> Self {
+        Self::Transfer(error)
     }
 }
 
@@ -389,6 +467,12 @@ impl From<ManageAccountError> for CliError {
 impl From<ManageTransactionError> for CliError {
     fn from(error: ManageTransactionError) -> Self {
         Self::ManageTransaction(error)
+    }
+}
+
+impl From<ManageTransferError> for CliError {
+    fn from(error: ManageTransferError) -> Self {
+        Self::ManageTransfer(error)
     }
 }
 
@@ -443,7 +527,8 @@ fn parse_transaction_cursor(input: &str) -> Result<TransactionCursor, CliError> 
 }
 
 pub fn run(cli: Cli) -> Result<String, CliError> {
-    let (mut account_repository, mut transaction_repository) = open_repositories(&cli.database)?;
+    let (mut account_repository, mut transaction_repository, mut transfer_repository) =
+        open_all_repositories(&cli.database)?;
 
     match cli.command {
         Command::Account { command } => match command {
@@ -464,9 +549,10 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
             }
 
             AccountCommand::Balance { id } => {
-                let balance = get_account_balance(
+                let balance = get_account_balance_with_transfers(
                     &account_repository,
                     &transaction_repository,
+                    &transfer_repository,
                     AccountId::new(id),
                 )?;
 
@@ -499,9 +585,10 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
             }
 
             AccountCommand::Delete { id } => {
-                delete_account(
+                delete_account_with_transfers(
                     &mut account_repository,
                     &transaction_repository,
+                    &transfer_repository,
                     AccountId::new(id),
                 )?;
                 Ok(format!("Deleted account {id}"))
@@ -766,6 +853,127 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 report_lines.extend(category_lines);
 
                 Ok(report_lines.join("\n"))
+            }
+        },
+
+        Command::Transfer { command } => match command {
+            TransferCommand::Add {
+                source_account_id,
+                destination_account_id,
+                source_amount_minor,
+                source_currency,
+                destination_amount_minor,
+                destination_currency,
+                occurred_at,
+                description,
+                time_zone,
+            } => {
+                let transfer = NewTransfer::new(
+                    AccountId::new(source_account_id),
+                    AccountId::new(destination_account_id),
+                    Money::from_minor_units(source_amount_minor, source_currency.into()),
+                    Money::from_minor_units(destination_amount_minor, destination_currency.into()),
+                    parse_occurred_at(&occurred_at, time_zone.as_deref())?,
+                    description,
+                )?;
+                let transfer =
+                    create_transfer(&account_repository, &mut transfer_repository, transfer)?;
+                Ok(format!("Created transfer {}", transfer.id().value()))
+            }
+            TransferCommand::Show { id } => {
+                let transfer = get_transfer(&transfer_repository, TransferId::new(id))?;
+                Ok(format!(
+                    "Transfer {} | {} -> {} | {}({:?}) -> {}({:?}) | {} | {}",
+                    transfer.id().value(),
+                    transfer.source_account_id().value(),
+                    transfer.destination_account_id().value(),
+                    transfer.source_amount().minor_units(),
+                    transfer.source_amount().currency(),
+                    transfer.destination_amount().minor_units(),
+                    transfer.destination_amount().currency(),
+                    transfer.occurred_at(),
+                    transfer.description()
+                ))
+            }
+            TransferCommand::List { account_id } => {
+                let transfers = list_account_transfers(
+                    &account_repository,
+                    &transfer_repository,
+                    AccountId::new(account_id),
+                )?;
+                if transfers.is_empty() {
+                    return Ok(format!("No transfers found for account {account_id}"));
+                }
+                Ok(transfers
+                    .into_iter()
+                    .map(|transfer| {
+                        format!(
+                            "Transfer {} | {} -> {} | {}",
+                            transfer.id().value(),
+                            transfer.source_account_id().value(),
+                            transfer.destination_account_id().value(),
+                            transfer.description()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            TransferCommand::Update {
+                id,
+                source_account_id,
+                destination_account_id,
+                source_amount_minor,
+                source_currency,
+                destination_amount_minor,
+                destination_currency,
+                occurred_at,
+                description,
+                time_zone,
+            } => {
+                let transfer_id = TransferId::new(id);
+                let current = get_transfer(&transfer_repository, transfer_id)?;
+                let source_amount = if source_amount_minor.is_some() || source_currency.is_some() {
+                    Some(Money::from_minor_units(
+                        source_amount_minor.unwrap_or(current.source_amount().minor_units()),
+                        source_currency
+                            .map(Currency::from)
+                            .unwrap_or(current.source_amount().currency()),
+                    ))
+                } else {
+                    None
+                };
+                let destination_amount =
+                    if destination_amount_minor.is_some() || destination_currency.is_some() {
+                        Some(Money::from_minor_units(
+                            destination_amount_minor
+                                .unwrap_or(current.destination_amount().minor_units()),
+                            destination_currency
+                                .map(Currency::from)
+                                .unwrap_or(current.destination_amount().currency()),
+                        ))
+                    } else {
+                        None
+                    };
+                let updated = update_transfer(
+                    &account_repository,
+                    &mut transfer_repository,
+                    transfer_id,
+                    TransferChanges {
+                        source_account_id: source_account_id.map(AccountId::new),
+                        destination_account_id: destination_account_id.map(AccountId::new),
+                        source_amount,
+                        destination_amount,
+                        occurred_at: occurred_at
+                            .map(|value| parse_occurred_at(&value, time_zone.as_deref()))
+                            .transpose()?,
+                        description,
+                    },
+                )?;
+                Ok(format!("Updated transfer {}", updated.id().value()))
+            }
+            TransferCommand::Delete { id } => {
+                delete_transfer(&mut transfer_repository, TransferId::new(id))?;
+                Ok(format!("Deleted transfer {id}"))
             }
         },
     }
@@ -2307,5 +2515,71 @@ mod tests {
         .unwrap();
         assert!(second.starts_with("Transaction 1 | Income"));
         assert!(!second.contains("Next cursor:"));
+    }
+
+    #[test]
+    fn manages_transfer_and_includes_it_in_balances() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        run(create_account_cli(database.clone(), 0, "Source")).unwrap();
+        run(create_account_cli(database.clone(), 0, "Destination")).unwrap();
+
+        let created = run(Cli {
+            database: database.clone(),
+            command: Command::Transfer {
+                command: TransferCommand::Add {
+                    source_account_id: 1,
+                    destination_account_id: 2,
+                    source_amount_minor: 100,
+                    source_currency: CurrencyArg::Cny,
+                    destination_amount_minor: 100,
+                    destination_currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Move".to_string(),
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(created, "Created transfer 1");
+
+        let source_balance = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 1 },
+            },
+        })
+        .unwrap();
+        let destination_balance = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 2 },
+            },
+        })
+        .unwrap();
+        assert_eq!(source_balance, "Account 1 balance: -100 (Cny)");
+        assert_eq!(destination_balance, "Account 2 balance: 100 (Cny)");
+
+        assert_eq!(
+            run(Cli {
+                database: database.clone(),
+                command: Command::Account {
+                    command: AccountCommand::Delete { id: 1 },
+                },
+            }),
+            Err(CliError::ManageAccount(ManageAccountError::HasTransfers(
+                AccountId::new(1)
+            )))
+        );
+
+        assert_eq!(
+            run(Cli {
+                database,
+                command: Command::Transfer {
+                    command: TransferCommand::Delete { id: 1 },
+                },
+            }),
+            Ok("Deleted transfer 1".to_string())
+        );
     }
 }

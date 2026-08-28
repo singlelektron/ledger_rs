@@ -1,14 +1,17 @@
-use crate::application::repository::{AccountRepository, RepositoryError, TransactionRepository};
+use crate::application::repository::{
+    AccountRepository, RepositoryError, TransactionRepository, TransferRepository,
+};
 use crate::domain::account::{Account, AccountId, NewAccount};
 use crate::domain::money::{Currency, Money};
 use crate::domain::transaction::{NewTransaction, Transaction, TransactionId, TransactionKind};
+use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
 use jiff::Zoned;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
 use std::path::Path;
 use std::rc::Rc;
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 fn currency_to_code(currency: Currency) -> &'static str {
     match currency {
@@ -140,6 +143,9 @@ pub struct SqliteAccountRepository {
 pub struct SqliteTransactionRepository {
     connection: Rc<Connection>,
 }
+pub struct SqliteTransferRepository {
+    connection: Rc<Connection>,
+}
 
 pub fn in_memory_repositories()
 -> Result<(SqliteAccountRepository, SqliteTransactionRepository), RepositoryError> {
@@ -155,6 +161,29 @@ pub fn in_memory_repositories()
             connection: Rc::clone(&connection),
         },
         SqliteTransactionRepository { connection },
+    ))
+}
+
+pub fn in_memory_all_repositories() -> Result<
+    (
+        SqliteAccountRepository,
+        SqliteTransactionRepository,
+        SqliteTransferRepository,
+    ),
+    RepositoryError,
+> {
+    let connection = Connection::open_in_memory()
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    let connection = Rc::new(connection);
+    Ok((
+        SqliteAccountRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransactionRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransferRepository { connection },
     ))
 }
 
@@ -531,6 +560,208 @@ impl TransactionRepository for SqliteTransactionRepository {
     }
 }
 
+impl TransferRepository for SqliteTransferRepository {
+    fn create(&mut self, transfer: NewTransfer) -> Result<Transfer, RepositoryError> {
+        let source_id = i64::try_from(transfer.source_account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transfer.source_account_id().value()))?;
+        let destination_id = i64::try_from(transfer.destination_account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transfer.destination_account_id().value()))?;
+        self.connection
+            .execute(
+                "INSERT INTO transfers
+                (source_account_id, destination_account_id, source_amount_minor, source_currency,
+                 destination_amount_minor, destination_currency, occurred_at, description)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    source_id,
+                    destination_id,
+                    transfer.source_amount().minor_units(),
+                    currency_to_code(transfer.source_amount().currency()),
+                    transfer.destination_amount().minor_units(),
+                    currency_to_code(transfer.destination_amount().currency()),
+                    transfer.occurred_at().to_string(),
+                    transfer.description(),
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let id = u64::try_from(self.connection.last_insert_rowid())
+            .map_err(|_| RepositoryError::IdExhausted)?;
+        Ok(Transfer::from_new(TransferId::new(id), transfer))
+    }
+
+    fn save(&mut self, transfer: Transfer) -> Result<(), RepositoryError> {
+        let id = i64::try_from(transfer.id().value())
+            .map_err(|_| RepositoryError::InvalidId(transfer.id().value()))?;
+        let source_id = i64::try_from(transfer.source_account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transfer.source_account_id().value()))?;
+        let destination_id = i64::try_from(transfer.destination_account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transfer.destination_account_id().value()))?;
+        self.connection
+            .execute(
+                "INSERT INTO transfers
+                (id, source_account_id, destination_account_id, source_amount_minor, source_currency,
+                 destination_amount_minor, destination_currency, occurred_at, description)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    source_id,
+                    destination_id,
+                    transfer.source_amount().minor_units(),
+                    currency_to_code(transfer.source_amount().currency()),
+                    transfer.destination_amount().minor_units(),
+                    currency_to_code(transfer.destination_amount().currency()),
+                    transfer.occurred_at().to_string(),
+                    transfer.description(),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(code, _)
+                    if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY =>
+                {
+                    RepositoryError::DuplicateTransferId(transfer.id())
+                }
+                _ => RepositoryError::Storage(error.to_string()),
+            })?;
+        Ok(())
+    }
+
+    fn find_by_id(&self, id: TransferId) -> Result<Option<Transfer>, RepositoryError> {
+        let id_value =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT source_account_id, destination_account_id, source_amount_minor,
+                        source_currency, destination_amount_minor, destination_currency,
+                        occurred_at, description FROM transfers WHERE id = ?1",
+                params![id_value],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        stored
+            .map(
+                |(
+                    source,
+                    destination,
+                    source_minor,
+                    source_currency,
+                    destination_minor,
+                    destination_currency,
+                    occurred,
+                    description,
+                )| {
+                    let source = AccountId::new(u64::try_from(source).map_err(|_| {
+                        RepositoryError::InvalidStoredData(
+                            "invalid transfer source account id".to_string(),
+                        )
+                    })?);
+                    let destination = AccountId::new(u64::try_from(destination).map_err(|_| {
+                        RepositoryError::InvalidStoredData(
+                            "invalid transfer destination account id".to_string(),
+                        )
+                    })?);
+                    Transfer::new(
+                        id,
+                        source,
+                        destination,
+                        Money::from_minor_units(
+                            source_minor,
+                            currency_from_code(&source_currency)?,
+                        ),
+                        Money::from_minor_units(
+                            destination_minor,
+                            currency_from_code(&destination_currency)?,
+                        ),
+                        occurred.parse().map_err(|error| {
+                            RepositoryError::InvalidStoredData(format!(
+                                "invalid transfer occurred_at: {error}"
+                            ))
+                        })?,
+                        description,
+                    )
+                    .map_err(|error| {
+                        RepositoryError::InvalidStoredData(format!("invalid transfer: {error:?}"))
+                    })
+                },
+            )
+            .transpose()
+    }
+
+    fn find_by_account_id(&self, id: AccountId) -> Result<Vec<Transfer>, RepositoryError> {
+        let id_value =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM transfers WHERE source_account_id = ?1 OR destination_account_id = ?1",
+        ).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let ids = statement
+            .query_map(params![id_value], |row| row.get::<_, i64>(0))
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let mut transfers = Vec::new();
+        for stored_id in ids {
+            let stored_id =
+                stored_id.map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            let transfer_id = TransferId::new(u64::try_from(stored_id).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!("invalid transfer id: {stored_id}"))
+            })?);
+            if let Some(transfer) = self.find_by_id(transfer_id)? {
+                transfers.push(transfer);
+            }
+        }
+        Ok(transfers)
+    }
+
+    fn update(&mut self, transfer: Transfer) -> Result<bool, RepositoryError> {
+        let id = i64::try_from(transfer.id().value())
+            .map_err(|_| RepositoryError::InvalidId(transfer.id().value()))?;
+        let source = i64::try_from(transfer.source_account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transfer.source_account_id().value()))?;
+        let destination = i64::try_from(transfer.destination_account_id().value())
+            .map_err(|_| RepositoryError::InvalidId(transfer.destination_account_id().value()))?;
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE transfers SET source_account_id=?1, destination_account_id=?2,
+             source_amount_minor=?3, source_currency=?4, destination_amount_minor=?5,
+             destination_currency=?6, occurred_at=?7, description=?8 WHERE id=?9",
+                params![
+                    source,
+                    destination,
+                    transfer.source_amount().minor_units(),
+                    currency_to_code(transfer.source_amount().currency()),
+                    transfer.destination_amount().minor_units(),
+                    currency_to_code(transfer.destination_amount().currency()),
+                    transfer.occurred_at().to_string(),
+                    transfer.description(),
+                    id
+                ],
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(changed == 1)
+    }
+
+    fn delete(&mut self, id: TransferId) -> Result<bool, RepositoryError> {
+        let id_value =
+            i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
+        let changed = self
+            .connection
+            .execute("DELETE FROM transfers WHERE id=?1", params![id_value])
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(changed == 1)
+    }
+}
+
 pub fn open_repositories(
     path: impl AsRef<Path>,
 ) -> Result<(SqliteAccountRepository, SqliteTransactionRepository), RepositoryError> {
@@ -546,6 +777,31 @@ pub fn open_repositories(
             connection: Rc::clone(&connection),
         },
         SqliteTransactionRepository { connection },
+    ))
+}
+
+pub fn open_all_repositories(
+    path: impl AsRef<Path>,
+) -> Result<
+    (
+        SqliteAccountRepository,
+        SqliteTransactionRepository,
+        SqliteTransferRepository,
+    ),
+    RepositoryError,
+> {
+    let connection =
+        Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    let connection = Rc::new(connection);
+    Ok((
+        SqliteAccountRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransactionRepository {
+            connection: Rc::clone(&connection),
+        },
+        SqliteTransferRepository { connection },
     ))
 }
 
@@ -587,6 +843,27 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 2 {
+        transaction.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS transfers (
+                id                       INTEGER PRIMARY KEY,
+                source_account_id        INTEGER NOT NULL,
+                destination_account_id   INTEGER NOT NULL,
+                source_amount_minor      INTEGER NOT NULL,
+                source_currency          TEXT NOT NULL,
+                destination_amount_minor INTEGER NOT NULL,
+                destination_currency     TEXT NOT NULL,
+                occurred_at              TEXT NOT NULL,
+                description              TEXT NOT NULL,
+                FOREIGN KEY (source_account_id) REFERENCES accounts(id),
+                FOREIGN KEY (destination_account_id) REFERENCES accounts(id)
+            );
+            PRAGMA user_version = 2;
+            "#,
+        )?;
+    }
+
     transaction.commit()
 }
 
@@ -605,6 +882,7 @@ mod tests {
         assert!(connection.table_exists(None, "accounts").unwrap());
 
         assert!(connection.table_exists(None, "transactions").unwrap());
+        assert!(connection.table_exists(None, "transfers").unwrap());
 
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))

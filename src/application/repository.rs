@@ -1,5 +1,6 @@
 use crate::domain::account::{Account, AccountId, NewAccount};
 use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
+use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
 
 pub trait AccountRepository {
     fn create(&mut self, _account: NewAccount) -> Result<Account, RepositoryError> {
@@ -60,10 +61,20 @@ pub trait TransactionRepository {
     }
 }
 
+pub trait TransferRepository {
+    fn create(&mut self, transfer: NewTransfer) -> Result<Transfer, RepositoryError>;
+    fn save(&mut self, transfer: Transfer) -> Result<(), RepositoryError>;
+    fn find_by_id(&self, id: TransferId) -> Result<Option<Transfer>, RepositoryError>;
+    fn find_by_account_id(&self, id: AccountId) -> Result<Vec<Transfer>, RepositoryError>;
+    fn update(&mut self, transfer: Transfer) -> Result<bool, RepositoryError>;
+    fn delete(&mut self, id: TransferId) -> Result<bool, RepositoryError>;
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum RepositoryError {
     DuplicateAccountId(AccountId),
     DuplicateTransactionId(TransactionId),
+    DuplicateTransferId(TransferId),
     InvalidId(u64),
     IdExhausted,
     Storage(String),

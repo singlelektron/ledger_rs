@@ -1,3 +1,4 @@
+pub mod account_activity;
 pub mod account_balance;
 pub mod category_report;
 pub mod create_account;
@@ -5,6 +6,7 @@ pub mod list_accounts;
 pub mod list_transactions;
 pub mod manage_account;
 pub mod manage_transaction;
+pub mod manage_transfer;
 pub mod ranged_summary;
 pub mod record_transaction;
 pub mod repository;

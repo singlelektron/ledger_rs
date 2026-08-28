@@ -4,3 +4,4 @@ pub mod category_report;
 pub mod money;
 pub mod summary;
 pub mod transaction;
+pub mod transfer;

@@ -1,10 +1,13 @@
-use crate::application::repository::{AccountRepository, RepositoryError, TransactionRepository};
+use crate::application::repository::{
+    AccountRepository, RepositoryError, TransactionRepository, TransferRepository,
+};
 use crate::domain::account::{Account, AccountError, AccountId};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ManageAccountError {
     AccountNotFound(AccountId),
     HasTransactions(AccountId),
+    HasTransfers(AccountId),
     Account(AccountError),
     Repository(RepositoryError),
 }
@@ -51,6 +54,25 @@ pub fn delete_account(
     get_account(account_repository, id)?;
     if !transaction_repository.find_by_account_id(id)?.is_empty() {
         return Err(ManageAccountError::HasTransactions(id));
+    }
+    if !account_repository.delete(id)? {
+        return Err(ManageAccountError::AccountNotFound(id));
+    }
+    Ok(())
+}
+
+pub fn delete_account_with_transfers(
+    account_repository: &mut impl AccountRepository,
+    transaction_repository: &impl TransactionRepository,
+    transfer_repository: &impl TransferRepository,
+    id: AccountId,
+) -> Result<(), ManageAccountError> {
+    get_account(account_repository, id)?;
+    if !transaction_repository.find_by_account_id(id)?.is_empty() {
+        return Err(ManageAccountError::HasTransactions(id));
+    }
+    if !transfer_repository.find_by_account_id(id)?.is_empty() {
+        return Err(ManageAccountError::HasTransfers(id));
     }
     if !account_repository.delete(id)? {
         return Err(ManageAccountError::AccountNotFound(id));
