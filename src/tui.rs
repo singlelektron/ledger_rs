@@ -8,7 +8,9 @@ use crate::{
     domain::{
         account::{Account, AccountId},
         money::{Currency, Money},
-        transaction::Transaction,
+        transaction::{
+            Category, NewTransaction, Transaction, TransactionError, TransactionId, TransactionKind,
+        },
     },
 };
 use crossterm::event::KeyCode;
@@ -83,9 +85,25 @@ pub enum Action {
     Continue,
     Reload,
     Quit,
-    CreateAccount { name: String, currency: Currency },
-    RenameAccount { id: AccountId, name: String },
-    DeleteAccount { id: AccountId },
+    CreateAccount {
+        name: String,
+        currency: Currency,
+    },
+    RenameAccount {
+        id: AccountId,
+        name: String,
+    },
+    DeleteAccount {
+        id: AccountId,
+    },
+    CreateTransaction(TransactionInput),
+    UpdateTransaction {
+        id: TransactionId,
+        input: TransactionInput,
+    },
+    DeleteTransaction {
+        id: TransactionId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +117,8 @@ enum Mode {
     Browse,
     AccountForm(AccountForm),
     ConfirmDeleteAccount(AccountId),
+    TransactionForm(TransactionForm),
+    ConfirmDeleteTransaction(TransactionId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +139,74 @@ struct AccountForm {
     name: String,
     currency: Currency,
     field: AccountField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransactionFormKind {
+    Create,
+    Edit(TransactionId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransactionField {
+    Kind,
+    Amount,
+    OccurredAt,
+    Description,
+    Category,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransactionForm {
+    form_kind: TransactionFormKind,
+    account_id: AccountId,
+    currency: Currency,
+    kind: TransactionKind,
+    amount_minor: String,
+    occurred_at: String,
+    description: String,
+    category: Category,
+    field: TransactionField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionInput {
+    account_id: AccountId,
+    currency: Currency,
+    kind: TransactionKind,
+    amount_minor: String,
+    occurred_at: String,
+    description: String,
+    category: Category,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransactionInputError {
+    InvalidAmount(String),
+    InvalidOccurredAt(String),
+    Transaction(TransactionError),
+}
+
+impl TransactionInput {
+    pub fn into_new_transaction(self) -> Result<NewTransaction, TransactionInputError> {
+        let amount_minor = self
+            .amount_minor
+            .parse::<i64>()
+            .map_err(|_| TransactionInputError::InvalidAmount(self.amount_minor.clone()))?;
+        let occurred_at = self
+            .occurred_at
+            .parse()
+            .map_err(|_| TransactionInputError::InvalidOccurredAt(self.occurred_at.clone()))?;
+        NewTransaction::new(
+            self.account_id,
+            self.kind,
+            Money::from_minor_units(amount_minor, self.currency),
+            occurred_at,
+            self.description,
+            self.category,
+        )
+        .map_err(TransactionInputError::Transaction)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,6 +350,21 @@ impl App {
                     }
                 };
             }
+            Mode::TransactionForm(form) => {
+                let (mode, action) = handle_transaction_form_key(form, key);
+                self.mode = mode;
+                return action;
+            }
+            Mode::ConfirmDeleteTransaction(id) => {
+                return match key {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => Action::DeleteTransaction { id },
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Continue,
+                    _ => {
+                        self.mode = Mode::ConfirmDeleteTransaction(id);
+                        Action::Continue
+                    }
+                };
+            }
             Mode::Browse => {}
         }
 
@@ -277,6 +380,22 @@ impl App {
                 });
                 Action::Continue
             }
+            KeyCode::Char('n') => {
+                if let Some(account) = self.selected_account().map(AccountOverview::account) {
+                    self.mode = Mode::TransactionForm(TransactionForm {
+                        form_kind: TransactionFormKind::Create,
+                        account_id: account.id(),
+                        currency: account.currency(),
+                        kind: TransactionKind::Expense,
+                        amount_minor: String::new(),
+                        occurred_at: jiff::Zoned::now().to_string(),
+                        description: String::new(),
+                        category: Category::Food,
+                        field: TransactionField::Amount,
+                    });
+                }
+                Action::Continue
+            }
             KeyCode::Char('e') if self.focus == Focus::Accounts => {
                 if let Some(account) = self.selected_account().map(AccountOverview::account) {
                     self.mode = Mode::AccountForm(AccountForm {
@@ -288,12 +407,34 @@ impl App {
                 }
                 Action::Continue
             }
+            KeyCode::Char('e') if self.focus == Focus::Transactions => {
+                if let Some(transaction) = self.selected_transaction() {
+                    self.mode = Mode::TransactionForm(TransactionForm {
+                        form_kind: TransactionFormKind::Edit(transaction.id()),
+                        account_id: transaction.account_id(),
+                        currency: transaction.amount().currency(),
+                        kind: transaction.kind(),
+                        amount_minor: transaction.amount().minor_units().to_string(),
+                        occurred_at: transaction.occurred_at().to_string(),
+                        description: transaction.description().to_string(),
+                        category: transaction.category(),
+                        field: TransactionField::Description,
+                    });
+                }
+                Action::Continue
+            }
             KeyCode::Char('d') if self.focus == Focus::Accounts => {
                 if let Some(id) = self
                     .selected_account()
                     .map(|account| account.account().id())
                 {
                     self.mode = Mode::ConfirmDeleteAccount(id);
+                }
+                Action::Continue
+            }
+            KeyCode::Char('d') if self.focus == Focus::Transactions => {
+                if let Some(id) = self.selected_transaction().map(Transaction::id) {
+                    self.mode = Mode::ConfirmDeleteTransaction(id);
                 }
                 Action::Continue
             }
@@ -369,6 +510,144 @@ fn handle_account_form_key(mut form: AccountForm, key: KeyCode) -> (Mode, Action
     (Mode::AccountForm(form), action)
 }
 
+fn handle_transaction_form_key(mut form: TransactionForm, key: KeyCode) -> (Mode, Action) {
+    match key {
+        KeyCode::Esc => return (Mode::Browse, Action::Continue),
+        KeyCode::Enter => {
+            let form_kind = form.form_kind;
+            let input = form.into_input();
+            let action = match form_kind {
+                TransactionFormKind::Create => Action::CreateTransaction(input),
+                TransactionFormKind::Edit(id) => Action::UpdateTransaction { id, input },
+            };
+            return (Mode::Browse, action);
+        }
+        KeyCode::Tab => form.field = next_transaction_field(form.field),
+        KeyCode::BackTab => form.field = previous_transaction_field(form.field),
+        KeyCode::Left | KeyCode::Up if form.field == TransactionField::Kind => {
+            form.kind = previous_transaction_kind(form.kind);
+        }
+        KeyCode::Right | KeyCode::Down if form.field == TransactionField::Kind => {
+            form.kind = next_transaction_kind(form.kind);
+        }
+        KeyCode::Left | KeyCode::Up if form.field == TransactionField::Category => {
+            form.category = previous_category(form.category);
+        }
+        KeyCode::Right | KeyCode::Down if form.field == TransactionField::Category => {
+            form.category = next_category(form.category);
+        }
+        KeyCode::Delete => {
+            if let Some(value) = active_transaction_text(&mut form) {
+                value.clear();
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(value) = active_transaction_text(&mut form) {
+                value.pop();
+            }
+        }
+        KeyCode::Char(character) => {
+            if let Some(value) = active_transaction_text(&mut form) {
+                value.push(character);
+            }
+        }
+        _ => {}
+    }
+    (Mode::TransactionForm(form), Action::Continue)
+}
+
+impl TransactionForm {
+    fn into_input(self) -> TransactionInput {
+        TransactionInput {
+            account_id: self.account_id,
+            currency: self.currency,
+            kind: self.kind,
+            amount_minor: self.amount_minor,
+            occurred_at: self.occurred_at,
+            description: self.description,
+            category: self.category,
+        }
+    }
+}
+
+fn active_transaction_text(form: &mut TransactionForm) -> Option<&mut String> {
+    match form.field {
+        TransactionField::Amount => Some(&mut form.amount_minor),
+        TransactionField::OccurredAt => Some(&mut form.occurred_at),
+        TransactionField::Description => Some(&mut form.description),
+        TransactionField::Kind | TransactionField::Category => None,
+    }
+}
+
+fn next_transaction_field(field: TransactionField) -> TransactionField {
+    match field {
+        TransactionField::Kind => TransactionField::Amount,
+        TransactionField::Amount => TransactionField::OccurredAt,
+        TransactionField::OccurredAt => TransactionField::Description,
+        TransactionField::Description => TransactionField::Category,
+        TransactionField::Category => TransactionField::Kind,
+    }
+}
+
+fn previous_transaction_field(field: TransactionField) -> TransactionField {
+    match field {
+        TransactionField::Kind => TransactionField::Category,
+        TransactionField::Amount => TransactionField::Kind,
+        TransactionField::OccurredAt => TransactionField::Amount,
+        TransactionField::Description => TransactionField::OccurredAt,
+        TransactionField::Category => TransactionField::Description,
+    }
+}
+
+fn next_transaction_kind(kind: TransactionKind) -> TransactionKind {
+    match kind {
+        TransactionKind::Income => TransactionKind::Expense,
+        TransactionKind::Expense => TransactionKind::ExpenseRefund,
+        TransactionKind::ExpenseRefund => TransactionKind::Income,
+    }
+}
+
+fn previous_transaction_kind(kind: TransactionKind) -> TransactionKind {
+    match kind {
+        TransactionKind::Income => TransactionKind::ExpenseRefund,
+        TransactionKind::Expense => TransactionKind::Income,
+        TransactionKind::ExpenseRefund => TransactionKind::Expense,
+    }
+}
+
+const CATEGORIES: [Category; 14] = [
+    Category::Food,
+    Category::Transportation,
+    Category::Entertainment,
+    Category::Necessary,
+    Category::Health,
+    Category::Education,
+    Category::Shopping,
+    Category::Travel,
+    Category::Housing,
+    Category::Salary,
+    Category::Sale,
+    Category::Family,
+    Category::Investment,
+    Category::Other,
+];
+
+fn next_category(category: Category) -> Category {
+    let index = CATEGORIES
+        .iter()
+        .position(|candidate| *candidate == category)
+        .unwrap_or(0);
+    CATEGORIES[(index + 1) % CATEGORIES.len()]
+}
+
+fn previous_category(category: Category) -> Category {
+    let index = CATEGORIES
+        .iter()
+        .position(|candidate| *candidate == category)
+        .unwrap_or(0);
+    CATEGORIES[index.checked_sub(1).unwrap_or(CATEGORIES.len() - 1)]
+}
+
 fn next_currency(currency: Currency) -> Currency {
     match currency {
         Currency::Cny => Currency::Usd,
@@ -427,7 +706,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines = vec![Line::from(
-        "Tab/←/→ focus  ↑/k previous  ↓/j next  a add account  e edit  d delete  r refresh  q quit",
+        "Tab/←/→ focus  ↑/k previous  ↓/j next  a account  n transaction  e edit  d delete  r refresh  q quit",
     )];
     if let Some(status) = &app.status {
         lines.push(Line::styled(
@@ -449,6 +728,7 @@ fn render_mode(frame: &mut Frame, app: &App) {
     match &app.mode {
         Mode::Browse => {}
         Mode::AccountForm(form) => render_account_form(frame, form),
+        Mode::TransactionForm(form) => render_transaction_form(frame, form),
         Mode::ConfirmDeleteAccount(_) => {
             let area = centered_rect(frame.area(), 54, 5);
             frame.render_widget(Clear, area);
@@ -466,7 +746,78 @@ fn render_mode(frame: &mut Frame, app: &App) {
                 area,
             );
         }
+        Mode::ConfirmDeleteTransaction(_) => {
+            let area = centered_rect(frame.area(), 52, 4);
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from("Delete the selected transaction?"),
+                    Line::from("Press y to confirm or n/Esc to cancel."),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Confirm delete "),
+                ),
+                area,
+            );
+        }
     }
+}
+
+fn render_transaction_form(frame: &mut Frame, form: &TransactionForm) {
+    let area = centered_rect(frame.area(), 78, 11);
+    frame.render_widget(Clear, area);
+    let lines = vec![
+        Line::from(format!(
+            "Account: {} ({})",
+            form.account_id.value(),
+            currency_code(form.currency)
+        )),
+        transaction_form_line(
+            "Kind",
+            kind_label(form.kind).to_string(),
+            form.field == TransactionField::Kind,
+        ),
+        transaction_form_line(
+            "Amount (minor units)",
+            form.amount_minor.clone(),
+            form.field == TransactionField::Amount,
+        ),
+        transaction_form_line(
+            "Occurred at",
+            form.occurred_at.clone(),
+            form.field == TransactionField::OccurredAt,
+        ),
+        transaction_form_line(
+            "Description",
+            form.description.clone(),
+            form.field == TransactionField::Description,
+        ),
+        transaction_form_line(
+            "Category",
+            category_label(form.category).to_string(),
+            form.field == TransactionField::Category,
+        ),
+        Line::from("Tab/Shift-Tab changes field; arrows change kind/category."),
+        Line::from("Delete clears text; Enter saves; Esc cancels."),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
+            match form.form_kind {
+                TransactionFormKind::Create => " Create transaction ",
+                TransactionFormKind::Edit(_) => " Edit transaction ",
+            },
+        )),
+        area,
+    );
+}
+
+fn transaction_form_line(label: &str, value: String, selected: bool) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(format!("{label}: ")),
+        Span::styled(value, field_style(selected)),
+    ])
 }
 
 fn render_account_form(frame: &mut Frame, form: &AccountForm) {
@@ -618,6 +969,25 @@ fn kind_label(kind: crate::domain::transaction::TransactionKind) -> &'static str
         TransactionKind::Income => "Income",
         TransactionKind::Expense => "Expense",
         TransactionKind::ExpenseRefund => "Refund",
+    }
+}
+
+fn category_label(category: Category) -> &'static str {
+    match category {
+        Category::Food => "Food",
+        Category::Transportation => "Transportation",
+        Category::Entertainment => "Entertainment",
+        Category::Necessary => "Necessary",
+        Category::Health => "Health",
+        Category::Education => "Education",
+        Category::Shopping => "Shopping",
+        Category::Travel => "Travel",
+        Category::Housing => "Housing",
+        Category::Salary => "Salary",
+        Category::Sale => "Sale",
+        Category::Family => "Family",
+        Category::Investment => "Investment",
+        Category::Other => "Other",
     }
 }
 
@@ -909,5 +1279,131 @@ mod tests {
         assert!(screen.contains("Create account"));
         assert!(screen.contains("Currency: CNY"));
         assert!(screen.contains("Create failed: empty name"));
+    }
+
+    #[test]
+    fn transaction_forms_emit_create_update_and_delete_actions() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        let stored = Transaction::new(
+            TransactionId::new(9),
+            account.id(),
+            TransactionKind::Expense,
+            Money::from_minor_units(100, Currency::Cny),
+            "2026-08-30T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+            "Lunch".to_string(),
+            Category::Food,
+        )
+        .unwrap();
+        transactions.save(stored.clone()).unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "250".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Delete);
+        for character in "2026-08-31T12:00:00+08:00[Asia/Shanghai]".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        for character in "Dinner".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Right);
+        let Action::CreateTransaction(input) = app.handle_key(KeyCode::Enter) else {
+            panic!("expected create transaction action");
+        };
+        let created = input.into_new_transaction().unwrap();
+        assert_eq!(created.account_id(), account.id());
+        assert_eq!(created.amount().minor_units(), 250);
+        assert_eq!(created.description(), "Dinner");
+        assert_eq!(created.category(), Category::Transportation);
+
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('e'));
+        app.handle_key(KeyCode::Delete);
+        for character in "Brunch".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        let Action::UpdateTransaction { id, input } = app.handle_key(KeyCode::Enter) else {
+            panic!("expected update transaction action");
+        };
+        assert_eq!(id, stored.id());
+        assert_eq!(
+            input.into_new_transaction().unwrap().description(),
+            "Brunch"
+        );
+
+        app.handle_key(KeyCode::Char('d'));
+        assert_eq!(
+            app.handle_key(KeyCode::Char('y')),
+            Action::DeleteTransaction { id: stored.id() }
+        );
+    }
+
+    #[test]
+    fn transaction_input_reports_parse_and_domain_errors() {
+        let base = TransactionInput {
+            account_id: AccountId::new(1),
+            currency: Currency::Cny,
+            kind: TransactionKind::Expense,
+            amount_minor: "not-a-number".to_string(),
+            occurred_at: "2026-08-31T12:00:00+08:00[Asia/Shanghai]".to_string(),
+            description: "Lunch".to_string(),
+            category: Category::Food,
+        };
+        assert_eq!(
+            base.clone().into_new_transaction(),
+            Err(TransactionInputError::InvalidAmount(
+                "not-a-number".to_string()
+            ))
+        );
+        assert_eq!(
+            TransactionInput {
+                amount_minor: "100".to_string(),
+                occurred_at: "invalid".to_string(),
+                ..base.clone()
+            }
+            .into_new_transaction(),
+            Err(TransactionInputError::InvalidOccurredAt(
+                "invalid".to_string()
+            ))
+        );
+        assert_eq!(
+            TransactionInput {
+                amount_minor: "0".to_string(),
+                ..base
+            }
+            .into_new_transaction(),
+            Err(TransactionInputError::Transaction(
+                TransactionError::InvalidAmount
+            ))
+        );
+    }
+
+    #[test]
+    fn renders_transaction_dialog() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Create transaction"));
+        assert!(screen.contains("Amount (minor units)"));
+        assert!(screen.contains("Category: Food"));
     }
 }
