@@ -5,11 +5,7 @@ use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
 use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
 
 pub trait AccountRepository {
-    fn create(&mut self, _account: NewAccount) -> Result<Account, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "account creation is not supported".to_string(),
-        ))
-    }
+    fn create(&mut self, account: NewAccount) -> Result<Account, RepositoryError>;
 
     fn save(&mut self, account: Account) -> Result<(), RepositoryError>;
 
@@ -17,59 +13,31 @@ pub trait AccountRepository {
 
     fn find_all(&self) -> Result<Vec<Account>, RepositoryError>;
 
-    fn update(&mut self, _account: Account) -> Result<bool, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "account updates are not supported".to_string(),
-        ))
-    }
+    fn update(&mut self, account: Account) -> Result<bool, RepositoryError>;
 
-    fn delete(&mut self, _id: AccountId) -> Result<bool, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "account deletion is not supported".to_string(),
-        ))
-    }
+    fn delete(&mut self, id: AccountId) -> Result<bool, RepositoryError>;
 }
 
 pub trait TransactionRepository {
-    fn create(&mut self, _transaction: NewTransaction) -> Result<Transaction, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "transaction creation is not supported".to_string(),
-        ))
-    }
+    fn create(&mut self, transaction: NewTransaction) -> Result<Transaction, RepositoryError>;
 
     fn create_many(
         &mut self,
-        _transactions: Vec<NewTransaction>,
-    ) -> Result<Vec<Transaction>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "atomic transaction creation is not supported".to_string(),
-        ))
-    }
+        transactions: Vec<NewTransaction>,
+    ) -> Result<Vec<Transaction>, RepositoryError>;
 
     fn save(&mut self, transaction: Transaction) -> Result<(), RepositoryError>;
 
-    fn find_by_id(&self, _id: TransactionId) -> Result<Option<Transaction>, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "transaction lookup is not supported".to_string(),
-        ))
-    }
+    fn find_by_id(&self, id: TransactionId) -> Result<Option<Transaction>, RepositoryError>;
 
     fn find_by_account_id(
         &self,
         account_id: AccountId,
     ) -> Result<Vec<Transaction>, RepositoryError>;
 
-    fn update(&mut self, _transaction: Transaction) -> Result<bool, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "transaction updates are not supported".to_string(),
-        ))
-    }
+    fn update(&mut self, transaction: Transaction) -> Result<bool, RepositoryError>;
 
-    fn delete(&mut self, _id: TransactionId) -> Result<bool, RepositoryError> {
-        Err(RepositoryError::Storage(
-            "transaction deletion is not supported".to_string(),
-        ))
-    }
+    fn delete(&mut self, id: TransactionId) -> Result<bool, RepositoryError>;
 }
 
 pub trait TransferRepository {

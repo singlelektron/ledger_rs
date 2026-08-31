@@ -168,6 +168,13 @@ mod tests {
     struct FailingAccountRepository;
 
     impl AccountRepository for FailingAccountRepository {
+        fn create(
+            &mut self,
+            _account: crate::domain::account::NewAccount,
+        ) -> Result<Account, RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
+
         fn save(&mut self, _account: Account) -> Result<(), RepositoryError> {
             Err(RepositoryError::Storage("database unavailable".to_string()))
         }
@@ -177,6 +184,14 @@ mod tests {
         }
 
         fn find_all(&self) -> Result<Vec<Account>, RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
+
+        fn update(&mut self, _account: Account) -> Result<bool, RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
+
+        fn delete(&mut self, _id: AccountId) -> Result<bool, RepositoryError> {
             Err(RepositoryError::Storage("database unavailable".to_string()))
         }
     }
@@ -201,7 +216,25 @@ mod tests {
     struct FailingTransactionRepository;
 
     impl TransactionRepository for FailingTransactionRepository {
+        fn create(
+            &mut self,
+            _transaction: crate::domain::transaction::NewTransaction,
+        ) -> Result<Transaction, RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
+
+        fn create_many(
+            &mut self,
+            _transactions: Vec<crate::domain::transaction::NewTransaction>,
+        ) -> Result<Vec<Transaction>, RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
+
         fn save(&mut self, _transaction: Transaction) -> Result<(), RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
+
+        fn find_by_id(&self, _id: TransactionId) -> Result<Option<Transaction>, RepositoryError> {
             Err(RepositoryError::Storage("database unavailable".to_string()))
         }
 
@@ -209,6 +242,14 @@ mod tests {
             &self,
             _account_id: AccountId,
         ) -> Result<Vec<Transaction>, RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
+
+        fn update(&mut self, _transaction: Transaction) -> Result<bool, RepositoryError> {
+            Err(RepositoryError::Storage("database unavailable".to_string()))
+        }
+
+        fn delete(&mut self, _id: TransactionId) -> Result<bool, RepositoryError> {
             Err(RepositoryError::Storage("database unavailable".to_string()))
         }
     }
