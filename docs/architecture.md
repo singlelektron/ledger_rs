@@ -15,9 +15,12 @@ transaction-listing application use cases. Its terminal code owns only input,
 selection state, formatting, and rendering; it does not query SQLite directly
 or duplicate accounting rules.
 
-The first TUI milestone is read-only. Mutations remain available through the
-CLI until dedicated TUI forms can call the existing application use cases with
-clear validation and error feedback.
+TUI forms emit typed actions. A small TUI controller executes those actions by
+calling the existing account and transaction application use cases, then the
+dashboard reloads from the repositories. Domain validation, dependency checks,
+ID allocation, and persistence therefore remain outside rendering and input
+code. Operation errors are retained in the interface status line instead of
+terminating the terminal session.
 
 Bulk CSV import is coordinated in the application layer. It validates every
 row before calling the transaction repository's atomic batch-create operation;

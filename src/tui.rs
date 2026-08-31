@@ -1,9 +1,17 @@
 use crate::{
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
+        create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
         list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
-        repository::{AccountRepository, TransactionRepository, TransferRepository},
+        manage_account::{ManageAccountError, delete_account_with_dependencies, rename_account},
+        manage_transaction::{
+            ManageTransactionError, TransactionChanges, delete_transaction, update_transaction,
+        },
+        record_transaction::{RecordTransactionError, record_transaction},
+        repository::{
+            AccountRepository, BudgetRepository, TransactionRepository, TransferRepository,
+        },
     },
     domain::{
         account::{Account, AccountId},
@@ -187,6 +195,45 @@ pub enum TransactionInputError {
     Transaction(TransactionError),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExecuteActionError {
+    CreateAccount(CreateAccountError),
+    ManageAccount(ManageAccountError),
+    TransactionInput(TransactionInputError),
+    RecordTransaction(RecordTransactionError),
+    ManageTransaction(ManageTransactionError),
+}
+
+impl From<CreateAccountError> for ExecuteActionError {
+    fn from(error: CreateAccountError) -> Self {
+        Self::CreateAccount(error)
+    }
+}
+
+impl From<ManageAccountError> for ExecuteActionError {
+    fn from(error: ManageAccountError) -> Self {
+        Self::ManageAccount(error)
+    }
+}
+
+impl From<TransactionInputError> for ExecuteActionError {
+    fn from(error: TransactionInputError) -> Self {
+        Self::TransactionInput(error)
+    }
+}
+
+impl From<RecordTransactionError> for ExecuteActionError {
+    fn from(error: RecordTransactionError) -> Self {
+        Self::RecordTransaction(error)
+    }
+}
+
+impl From<ManageTransactionError> for ExecuteActionError {
+    fn from(error: ManageTransactionError) -> Self {
+        Self::ManageTransaction(error)
+    }
+}
+
 impl TransactionInput {
     pub fn into_new_transaction(self) -> Result<NewTransaction, TransactionInputError> {
         let amount_minor = self
@@ -207,6 +254,66 @@ impl TransactionInput {
         )
         .map_err(TransactionInputError::Transaction)
     }
+}
+
+pub fn execute_action(
+    action: Action,
+    account_repository: &mut impl AccountRepository,
+    transaction_repository: &mut impl TransactionRepository,
+    transfer_repository: &impl TransferRepository,
+    budget_repository: &impl BudgetRepository,
+) -> Result<Option<String>, ExecuteActionError> {
+    let message = match action {
+        Action::CreateAccount { name, currency } => {
+            let account = create_account(account_repository, name, currency)?;
+            format!("Created account {}", account.name())
+        }
+        Action::RenameAccount { id, name } => {
+            let account = rename_account(account_repository, id, name)?;
+            format!("Renamed account to {}", account.name())
+        }
+        Action::DeleteAccount { id } => {
+            delete_account_with_dependencies(
+                account_repository,
+                transaction_repository,
+                transfer_repository,
+                budget_repository,
+                id,
+            )?;
+            "Deleted account".to_string()
+        }
+        Action::CreateTransaction(input) => {
+            let transaction = record_transaction(
+                account_repository,
+                transaction_repository,
+                input.into_new_transaction()?,
+            )?;
+            format!("Created transaction {}", transaction.id().value())
+        }
+        Action::UpdateTransaction { id, input } => {
+            let input = input.into_new_transaction()?;
+            let transaction = update_transaction(
+                account_repository,
+                transaction_repository,
+                id,
+                TransactionChanges {
+                    account_id: Some(input.account_id()),
+                    kind: Some(input.kind()),
+                    amount: Some(input.amount().clone()),
+                    occurred_at: Some(input.occurred_at().clone()),
+                    description: Some(input.description().to_string()),
+                    category: Some(input.category()),
+                },
+            )?;
+            format!("Updated transaction {}", transaction.id().value())
+        }
+        Action::DeleteTransaction { id } => {
+            delete_transaction(transaction_repository, id)?;
+            "Deleted transaction".to_string()
+        }
+        Action::Continue | Action::Reload | Action::Quit => return Ok(None),
+    };
+    Ok(Some(message))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1038,7 +1145,8 @@ mod tests {
             transfer::NewTransfer,
         },
         infrastructure::in_memory::{
-            InMemoryAccountRepository, InMemoryTransactionRepository, InMemoryTransferRepository,
+            InMemoryAccountRepository, InMemoryBudgetRepository, InMemoryTransactionRepository,
+            InMemoryTransferRepository,
         },
     };
     use ratatui::{Terminal, backend::TestBackend};
@@ -1405,5 +1513,118 @@ mod tests {
         assert!(screen.contains("Create transaction"));
         assert!(screen.contains("Amount (minor units)"));
         assert!(screen.contains("Category: Food"));
+    }
+
+    #[test]
+    fn executes_complete_account_and_transaction_workflow() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let budgets = InMemoryBudgetRepository::new();
+
+        assert_eq!(
+            execute_action(
+                Action::CreateAccount {
+                    name: "Cash".to_string(),
+                    currency: Currency::Cny,
+                },
+                &mut accounts,
+                &mut transactions,
+                &transfers,
+                &budgets,
+            ),
+            Ok(Some("Created account Cash".to_string()))
+        );
+        let account = accounts.find_all().unwrap().remove(0);
+        let transaction_input = TransactionInput {
+            account_id: account.id(),
+            currency: account.currency(),
+            kind: TransactionKind::Expense,
+            amount_minor: "250".to_string(),
+            occurred_at: "2026-08-31T12:00:00+08:00[Asia/Shanghai]".to_string(),
+            description: "Lunch".to_string(),
+            category: Category::Food,
+        };
+        assert_eq!(
+            execute_action(
+                Action::CreateTransaction(transaction_input.clone()),
+                &mut accounts,
+                &mut transactions,
+                &transfers,
+                &budgets,
+            ),
+            Ok(Some("Created transaction 1".to_string()))
+        );
+        let transaction = transactions
+            .find_by_account_id(account.id())
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            execute_action(
+                Action::UpdateTransaction {
+                    id: transaction.id(),
+                    input: TransactionInput {
+                        description: "Dinner".to_string(),
+                        ..transaction_input
+                    },
+                },
+                &mut accounts,
+                &mut transactions,
+                &transfers,
+                &budgets,
+            ),
+            Ok(Some("Updated transaction 1".to_string()))
+        );
+        assert_eq!(
+            transactions
+                .find_by_id(transaction.id())
+                .unwrap()
+                .unwrap()
+                .description(),
+            "Dinner"
+        );
+
+        assert_eq!(
+            execute_action(
+                Action::DeleteAccount { id: account.id() },
+                &mut accounts,
+                &mut transactions,
+                &transfers,
+                &budgets,
+            ),
+            Err(ExecuteActionError::ManageAccount(
+                ManageAccountError::HasTransactions(account.id())
+            ))
+        );
+        execute_action(
+            Action::DeleteTransaction {
+                id: transaction.id(),
+            },
+            &mut accounts,
+            &mut transactions,
+            &transfers,
+            &budgets,
+        )
+        .unwrap();
+        execute_action(
+            Action::RenameAccount {
+                id: account.id(),
+                name: "Wallet".to_string(),
+            },
+            &mut accounts,
+            &mut transactions,
+            &transfers,
+            &budgets,
+        )
+        .unwrap();
+        execute_action(
+            Action::DeleteAccount { id: account.id() },
+            &mut accounts,
+            &mut transactions,
+            &transfers,
+            &budgets,
+        )
+        .unwrap();
+        assert!(accounts.find_all().unwrap().is_empty());
     }
 }
