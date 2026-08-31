@@ -2,10 +2,13 @@
 name = "ledger_rs"
 version = "0.1.0"
 edition = "2024"
+default-run = "ledger_rs"
 
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
+crossterm = "0.29.0"
 jiff = "0.2"
+ratatui = "0.30.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
