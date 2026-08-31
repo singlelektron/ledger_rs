@@ -9,9 +9,17 @@ layer; the application layer uses domain types and repository traits; SQLite and
 in-memory repositories implement those traits. Domain code never depends on an
 interface or database.
 
-The project remains a single crate while the shared core is small. A future TUI
-must call the same application use cases as the CLI instead of duplicating
-business rules.
+The project remains a single crate while the shared core is small. The CLI,
+minimal TUI shell, and Web UI call the same application use cases instead of
+duplicating business rules.
+
+The Axum Web interface lives in `src/web.rs`, with its executable entry point in
+`src/bin/ledger_web.rs`. Its state contains only the SQLite path. Each request
+opens repository adapters for that path and then calls synchronous application
+use cases. This keeps non-`Send` `rusqlite` connections out of shared server
+state and avoids changing repository traits for one interface. It is suitable
+for a local single-user MVP; a connection pool and explicit blocking-task
+boundary will be needed before serving concurrent remote users.
 
 Bulk CSV import is coordinated in the application layer. It validates every
 row before calling the transaction repository's atomic batch-create operation;

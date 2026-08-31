@@ -1,7 +1,7 @@
 # Roadmap
 
-The current pre-TUI phase completes the shared application core in small,
-independently tested milestones:
+The shared application core and first interface milestones were completed in
+small, independently tested steps:
 
 1. Versioned SQLite migrations
 2. Repository-allocated IDs and account/transaction management
@@ -10,7 +10,9 @@ independently tested milestones:
 5. Monthly category budgets and reports
 6. CSV exchange and JSON backup/restore (completed)
 7. Shared contract and end-to-end workflow hardening (completed)
-8. TUI (next)
+8. Minimal TUI shell
+9. Minimal local Web UI for account and transaction workflows (completed)
 
-The Web API follows the TUI. Authentication, synchronization, and external
-exchange-rate services remain out of scope for this phase.
+The next interface increments can deepen the TUI or add transfers, budgets, and
+reports to the Web UI. Authentication, synchronization, remote deployment, and
+external exchange-rate services remain out of scope for this phase.
