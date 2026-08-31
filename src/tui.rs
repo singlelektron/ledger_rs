@@ -5,15 +5,21 @@ use crate::{
         list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
         repository::{AccountRepository, TransactionRepository, TransferRepository},
     },
-    domain::{account::Account, money::Money, transaction::Transaction},
+    domain::{
+        account::{Account, AccountId},
+        money::{Currency, Money},
+        transaction::Transaction,
+    },
 };
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+    },
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -68,19 +74,57 @@ pub struct App {
     selected_account: usize,
     selected_transaction: usize,
     focus: Focus,
+    mode: Mode,
+    status: Option<Status>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Continue,
     Reload,
     Quit,
+    CreateAccount { name: String, currency: Currency },
+    RenameAccount { id: AccountId, name: String },
+    DeleteAccount { id: AccountId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Accounts,
     Transactions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Mode {
+    Browse,
+    AccountForm(AccountForm),
+    ConfirmDeleteAccount(AccountId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountFormKind {
+    Create,
+    Rename(AccountId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountField {
+    Name,
+    Currency,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AccountForm {
+    kind: AccountFormKind,
+    name: String,
+    currency: Currency,
+    field: AccountField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Status {
+    message: String,
+    is_error: bool,
 }
 
 impl App {
@@ -117,6 +161,8 @@ impl App {
             selected_account: 0,
             selected_transaction: 0,
             focus: Focus::Accounts,
+            mode: Mode::Browse,
+            status: None,
         })
     }
 
@@ -146,6 +192,13 @@ impl App {
 
     pub fn focus(&self) -> Focus {
         self.focus
+    }
+
+    pub fn set_status(&mut self, message: impl Into<String>, is_error: bool) {
+        self.status = Some(Status {
+            message: message.into(),
+            is_error,
+        });
     }
 
     pub fn select_next(&mut self) {
@@ -193,9 +246,57 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyCode) -> Action {
+        match std::mem::replace(&mut self.mode, Mode::Browse) {
+            Mode::AccountForm(form) => {
+                let (mode, action) = handle_account_form_key(form, key);
+                self.mode = mode;
+                return action;
+            }
+            Mode::ConfirmDeleteAccount(id) => {
+                return match key {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => Action::DeleteAccount { id },
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Continue,
+                    _ => {
+                        self.mode = Mode::ConfirmDeleteAccount(id);
+                        Action::Continue
+                    }
+                };
+            }
+            Mode::Browse => {}
+        }
+
         match key {
             KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
             KeyCode::Char('r') => Action::Reload,
+            KeyCode::Char('a') => {
+                self.mode = Mode::AccountForm(AccountForm {
+                    kind: AccountFormKind::Create,
+                    name: String::new(),
+                    currency: Currency::Cny,
+                    field: AccountField::Name,
+                });
+                Action::Continue
+            }
+            KeyCode::Char('e') if self.focus == Focus::Accounts => {
+                if let Some(account) = self.selected_account().map(AccountOverview::account) {
+                    self.mode = Mode::AccountForm(AccountForm {
+                        kind: AccountFormKind::Rename(account.id()),
+                        name: account.name().to_string(),
+                        currency: account.currency(),
+                        field: AccountField::Name,
+                    });
+                }
+                Action::Continue
+            }
+            KeyCode::Char('d') if self.focus == Focus::Accounts => {
+                if let Some(id) = self
+                    .selected_account()
+                    .map(|account| account.account().id())
+                {
+                    self.mode = Mode::ConfirmDeleteAccount(id);
+                }
+                Action::Continue
+            }
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::Accounts => Focus::Transactions,
@@ -224,13 +325,77 @@ impl App {
     }
 }
 
+fn handle_account_form_key(mut form: AccountForm, key: KeyCode) -> (Mode, Action) {
+    let action = match key {
+        KeyCode::Esc => return (Mode::Browse, Action::Continue),
+        KeyCode::Enter => {
+            let action = match form.kind {
+                AccountFormKind::Create => Action::CreateAccount {
+                    name: form.name,
+                    currency: form.currency,
+                },
+                AccountFormKind::Rename(id) => Action::RenameAccount {
+                    id,
+                    name: form.name,
+                },
+            };
+            return (Mode::Browse, action);
+        }
+        KeyCode::Tab if form.kind == AccountFormKind::Create => {
+            form.field = match form.field {
+                AccountField::Name => AccountField::Currency,
+                AccountField::Currency => AccountField::Name,
+            };
+            Action::Continue
+        }
+        KeyCode::Left | KeyCode::Up if form.field == AccountField::Currency => {
+            form.currency = previous_currency(form.currency);
+            Action::Continue
+        }
+        KeyCode::Right | KeyCode::Down if form.field == AccountField::Currency => {
+            form.currency = next_currency(form.currency);
+            Action::Continue
+        }
+        KeyCode::Backspace if form.field == AccountField::Name => {
+            form.name.pop();
+            Action::Continue
+        }
+        KeyCode::Char(character) if form.field == AccountField::Name => {
+            form.name.push(character);
+            Action::Continue
+        }
+        _ => Action::Continue,
+    };
+    (Mode::AccountForm(form), action)
+}
+
+fn next_currency(currency: Currency) -> Currency {
+    match currency {
+        Currency::Cny => Currency::Usd,
+        Currency::Usd => Currency::Eur,
+        Currency::Eur => Currency::Hkd,
+        Currency::Hkd => Currency::Myr,
+        Currency::Myr => Currency::Cny,
+    }
+}
+
+fn previous_currency(currency: Currency) -> Currency {
+    match currency {
+        Currency::Cny => Currency::Myr,
+        Currency::Usd => Currency::Cny,
+        Currency::Eur => Currency::Usd,
+        Currency::Hkd => Currency::Eur,
+        Currency::Myr => Currency::Hkd,
+    }
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     let [header_area, content_area, footer_area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .areas(frame.area());
     let [accounts_area, transactions_area] = Layout::default()
@@ -256,16 +421,110 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     render_accounts(frame, app, accounts_area);
     render_transactions(frame, app, transactions_area);
+    render_footer(frame, app, footer_area);
+    render_mode(frame, app);
+}
+
+fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let mut lines = vec![Line::from(
+        "Tab/←/→ focus  ↑/k previous  ↓/j next  a add account  e edit  d delete  r refresh  q quit",
+    )];
+    if let Some(status) = &app.status {
+        lines.push(Line::styled(
+            status.message.clone(),
+            Style::default().fg(if status.is_error {
+                Color::Red
+            } else {
+                Color::Green
+            }),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new("Tab/←/→ focus  ↑/k previous  ↓/j next  r refresh  q/Esc quit")
-            .style(Style::default().fg(Color::DarkGray)),
-        footer_area,
+        Paragraph::new(lines).style(Style::default().fg(Color::DarkGray)),
+        area,
     );
+}
+
+fn render_mode(frame: &mut Frame, app: &App) {
+    match &app.mode {
+        Mode::Browse => {}
+        Mode::AccountForm(form) => render_account_form(frame, form),
+        Mode::ConfirmDeleteAccount(_) => {
+            let area = centered_rect(frame.area(), 54, 5);
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from("Delete the selected account?"),
+                    Line::from("Allowed only when it has no transactions, transfers, or budgets."),
+                    Line::from("Press y to confirm or n/Esc to cancel."),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Confirm delete "),
+                ),
+                area,
+            );
+        }
+    }
+}
+
+fn render_account_form(frame: &mut Frame, form: &AccountForm) {
+    let is_create = form.kind == AccountFormKind::Create;
+    let area = centered_rect(frame.area(), 58, if is_create { 8 } else { 7 });
+    frame.render_widget(Clear, area);
+    let mut lines = vec![Line::from(vec![
+        Span::raw("Name: "),
+        Span::styled(
+            form.name.clone(),
+            field_style(form.field == AccountField::Name),
+        ),
+    ])];
+    if is_create {
+        lines.push(Line::from(vec![
+            Span::raw("Currency: "),
+            Span::styled(
+                currency_code(form.currency),
+                field_style(form.field == AccountField::Currency),
+            ),
+        ]));
+        lines.push(Line::from("Tab changes field; arrows change currency."));
+    }
+    lines.push(Line::from("Enter saves; Esc cancels."));
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(if is_create {
+            " Create account "
+        } else {
+            " Rename account "
+        })),
+        area,
+    );
+}
+
+fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    )
+}
+
+fn field_style(selected: bool) -> Style {
+    if selected {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::default()
+    }
 }
 
 fn render_accounts(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let items = if app.accounts().is_empty() {
-        vec![ListItem::new("No accounts. Create one with the CLI.")]
+        vec![ListItem::new("No accounts. Press a to create one.")]
     } else {
         app.accounts()
             .iter()
@@ -586,5 +845,69 @@ mod tests {
         assert!(screen.contains("Cash"));
         assert!(screen.contains("0.00 CNY"));
         assert!(screen.contains("Transactions (0)"));
+    }
+
+    #[test]
+    fn account_forms_emit_create_rename_and_delete_actions() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let mut empty = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        assert_eq!(empty.handle_key(KeyCode::Char('a')), Action::Continue);
+        for character in "Cash".chars() {
+            assert_eq!(empty.handle_key(KeyCode::Char(character)), Action::Continue);
+        }
+        empty.handle_key(KeyCode::Tab);
+        empty.handle_key(KeyCode::Right);
+        assert_eq!(
+            empty.handle_key(KeyCode::Enter),
+            Action::CreateAccount {
+                name: "Cash".to_string(),
+                currency: Currency::Usd,
+            }
+        );
+
+        let account = Account::new(AccountId::new(7), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('e'));
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        for character in "Wallet".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        assert_eq!(
+            app.handle_key(KeyCode::Enter),
+            Action::RenameAccount {
+                id: account.id(),
+                name: "Wallet".to_string(),
+            }
+        );
+
+        app.handle_key(KeyCode::Char('d'));
+        assert_eq!(
+            app.handle_key(KeyCode::Char('y')),
+            Action::DeleteAccount { id: account.id() }
+        );
+    }
+
+    #[test]
+    fn renders_account_dialog_and_operation_status() {
+        let accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.set_status("Create failed: empty name", true);
+        app.handle_key(KeyCode::Char('a'));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Create account"));
+        assert!(screen.contains("Currency: CNY"));
+        assert!(screen.contains("Create failed: empty name"));
     }
 }
