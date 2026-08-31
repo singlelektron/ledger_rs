@@ -11,7 +11,16 @@ current user's platform data directory: `$XDG_DATA_HOME/ledger_rs` on Linux
 The CLI creates the directory on first use. Keeping mutable user data outside
 the executable or extracted release directory makes upgrades independent from
 the ledger. An explicit `--database PATH` overrides this location and its
-parent directory is also created when needed.
+parent directory is also created when needed. On Unix, the application-owned
+default directory uses mode `0700` and the database uses `0600`; explicit paths
+retain user-selected permissions.
+
+Before the platform default was introduced, the CLI used `./ledger.db`. If this
+legacy file exists while the platform database does not, the CLI keeps using it
+and prints the platform migration destination. This compatibility fallback
+prevents an upgrade from presenting a new empty ledger. Migration is an explicit
+move performed while the application is stopped; after the platform database
+exists, it takes precedence. `--database` always has the highest precedence.
 
 Schema changes are applied sequentially using SQLite's `PRAGMA user_version`.
 Schema version 1 contains `accounts` and `transactions`; version 2 adds atomic

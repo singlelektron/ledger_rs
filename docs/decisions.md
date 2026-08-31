@@ -8,7 +8,11 @@ platform data directory and creates the parent directory on first use. The
 downloaded binary one stable ledger regardless of its launch directory and
 keeps mutable data outside replaceable release files. If no platform home/data
 environment variable exists, `ledger.db` in the current directory is the
-last-resort fallback.
+last-resort fallback. An existing legacy `./ledger.db` remains the default until
+it is explicitly moved to the new location, preventing a silent empty ledger
+after upgrade. Explicit paths always take precedence. On Unix, only the
+application-owned platform directory and database are restricted to the current
+user; the application does not change permissions on user-selected locations.
 
 ## Versioned SQLite migrations
 

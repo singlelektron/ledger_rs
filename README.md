@@ -94,7 +94,7 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 206 passing unit and workflow tests, including a shared in-memory/SQLite
+- 210 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract and a complete CLI backup/restore verification scenario
 
 The pre-TUI application core is complete. In-memory and file-backed SQLite
@@ -566,6 +566,18 @@ the default, which is useful for portable or isolated data sets:
 ```bash
 ./ledger_rs --database ./data/ledger.db account list
 ```
+
+Versions before this storage change used `./ledger.db` by default. During an
+upgrade, if that legacy file exists and the platform database does not, the
+application continues using the legacy file and prints its recommended migration
+destination. To migrate, exit every `ledger_rs` process, create the destination
+directory if necessary, and move `ledger.db` to the displayed path. Once the
+platform database exists, it becomes the default. An explicit `--database` path
+always takes precedence over both locations.
+
+On Unix systems, the application-owned default directory is restricted to mode
+`0700` and its database to `0600`. Explicit database locations retain the
+permissions selected by the user and operating system.
 
 The database is user data and must not be placed inside a release artifact;
 replacing the executable therefore does not replace or delete the ledger.
