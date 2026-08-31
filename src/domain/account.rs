@@ -19,6 +19,31 @@ pub enum AccountError {
 use crate::domain::money::Currency;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAccount {
+    name: String,
+    currency: Currency,
+}
+
+impl NewAccount {
+    pub fn new(name: String, currency: Currency) -> Result<Self, AccountError> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(AccountError::EmptyName);
+        }
+
+        Ok(Self { name, currency })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn currency(&self) -> Currency {
+        self.currency
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     id: AccountId,
     name: String,
@@ -27,12 +52,15 @@ pub struct Account {
 
 impl Account {
     pub fn new(id: AccountId, name: String, currency: Currency) -> Result<Self, AccountError> {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err(AccountError::EmptyName);
-        }
+        Ok(Self::from_new(id, NewAccount::new(name, currency)?))
+    }
 
-        Ok(Account { id, name, currency })
+    pub fn from_new(id: AccountId, account: NewAccount) -> Self {
+        Self {
+            id,
+            name: account.name,
+            currency: account.currency,
+        }
     }
 
     pub fn id(&self) -> AccountId {

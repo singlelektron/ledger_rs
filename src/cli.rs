@@ -1,20 +1,41 @@
 use crate::{
     application::{
-        account_balance::{GetAccountBalanceError, get_account_balance},
+        account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
+        backup::{BackupError, create_json_backup, validate_json_backup},
+        budget_report::{BudgetReportError, get_budget_statuses},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
+        csv_exchange::{CsvExchangeError, export_transactions_csv, import_transactions_csv},
         list_accounts::{ListAccountsError, list_accounts},
-        list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
+        list_transactions::{
+            ListTransactionsError, TransactionCursor, TransactionFilter, TransactionPageRequest,
+            list_account_transaction_page,
+        },
+        manage_account::{
+            ManageAccountError, delete_account_with_dependencies, get_account, rename_account,
+        },
+        manage_budget::{ManageBudgetError, delete_budget, get_budget, list_budgets, set_budget},
+        manage_transaction::{
+            ManageTransactionError, TransactionChanges, delete_transaction, get_transaction,
+            update_transaction,
+        },
+        manage_transfer::{
+            ManageTransferError, TransferChanges, create_transfer, delete_transfer, get_transfer,
+            list_account_transfers, update_transfer,
+        },
+        monthly_trend::{MonthlyTrendError, get_monthly_trend},
         ranged_summary::{GetRangedSummaryError, get_ranged_summary},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::RepositoryError,
     },
     domain::{
         account::AccountId,
+        budget::{BudgetError, BudgetId, BudgetMonth},
         money::{Currency, Money},
-        transaction::{self, Category, Transaction, TransactionError, TransactionKind},
+        transaction::{Category, NewTransaction, TransactionError, TransactionId, TransactionKind},
+        transfer::{NewTransfer, TransferError, TransferId},
     },
-    infrastructure::sqlite::open_repositories,
+    infrastructure::sqlite::{open_complete_repositories, restore_backup},
 };
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
@@ -45,14 +66,165 @@ pub enum Command {
         #[command(subcommand)]
         command: ReportCommand,
     },
+
+    Transfer {
+        #[command(subcommand)]
+        command: TransferCommand,
+    },
+
+    Budget {
+        #[command(subcommand)]
+        command: BudgetCommand,
+    },
+
+    Data {
+        #[command(subcommand)]
+        command: DataCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DataCommand {
+    Backup {
+        #[arg(long)]
+        output: PathBuf,
+    },
+    Restore {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    ImportTransactions {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    #[command(group(
+    ArgGroup::new("export-time-bound")
+        .args(["from", "to"])
+        .multiple(true)
+    ))]
+    ExportTransactions {
+        #[arg(long)]
+        account_id: u64,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, ignore_case = true)]
+        category: Option<CategoryArg>,
+        #[arg(long, ignore_case = true)]
+        kind: Option<TransactionKindArg>,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long, requires = "export-time-bound")]
+        time_zone: Option<String>,
+        #[arg(long)]
+        description_contains: Option<String>,
+        #[arg(long)]
+        min_amount_minor: Option<i64>,
+        #[arg(long)]
+        max_amount_minor: Option<i64>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BudgetCommand {
+    Set {
+        #[arg(long)]
+        account_id: u64,
+        #[arg(long, ignore_case = true)]
+        category: CategoryArg,
+        #[arg(long)]
+        year: i32,
+        #[arg(long)]
+        month: u8,
+        #[arg(long)]
+        limit_minor: i64,
+    },
+    Show {
+        #[arg(long)]
+        id: u64,
+    },
+    List {
+        #[arg(long)]
+        account_id: u64,
+    },
+    Delete {
+        #[arg(long)]
+        id: u64,
+    },
+    Status {
+        #[arg(long)]
+        account_id: u64,
+        #[arg(long)]
+        year: i32,
+        #[arg(long)]
+        month: u8,
+        #[arg(long)]
+        time_zone: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TransferCommand {
+    Add {
+        #[arg(long)]
+        source_account_id: u64,
+        #[arg(long)]
+        destination_account_id: u64,
+        #[arg(long)]
+        source_amount_minor: i64,
+        #[arg(long, ignore_case = true)]
+        source_currency: CurrencyArg,
+        #[arg(long)]
+        destination_amount_minor: i64,
+        #[arg(long, ignore_case = true)]
+        destination_currency: CurrencyArg,
+        #[arg(long)]
+        occurred_at: String,
+        #[arg(long)]
+        description: String,
+        #[arg(long)]
+        time_zone: Option<String>,
+    },
+    Show {
+        #[arg(long)]
+        id: u64,
+    },
+    List {
+        #[arg(long)]
+        account_id: u64,
+    },
+    Update {
+        #[arg(long)]
+        id: u64,
+        #[arg(long)]
+        source_account_id: Option<u64>,
+        #[arg(long)]
+        destination_account_id: Option<u64>,
+        #[arg(long)]
+        source_amount_minor: Option<i64>,
+        #[arg(long, ignore_case = true)]
+        source_currency: Option<CurrencyArg>,
+        #[arg(long)]
+        destination_amount_minor: Option<i64>,
+        #[arg(long, ignore_case = true)]
+        destination_currency: Option<CurrencyArg>,
+        #[arg(long)]
+        occurred_at: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long, requires = "occurred_at")]
+        time_zone: Option<String>,
+    },
+    Delete {
+        #[arg(long)]
+        id: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum AccountCommand {
     Create {
-        #[arg(long)]
-        id: u64,
-
         #[arg(long)]
         name: String,
 
@@ -65,15 +237,30 @@ pub enum AccountCommand {
         id: u64,
     },
 
+    Show {
+        #[arg(long)]
+        id: u64,
+    },
+
+    Update {
+        #[arg(long)]
+        id: u64,
+
+        #[arg(long)]
+        name: String,
+    },
+
+    Delete {
+        #[arg(long)]
+        id: u64,
+    },
+
     List,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum TransactionCommand {
     Add {
-        #[arg(long)]
-        id: u64,
-
         #[arg(long)]
         account_id: u64,
 
@@ -122,6 +309,60 @@ pub enum TransactionCommand {
 
         #[arg(long, requires = "time-bound")]
         time_zone: Option<String>,
+
+        #[arg(long)]
+        description_contains: Option<String>,
+
+        #[arg(long)]
+        min_amount_minor: Option<i64>,
+
+        #[arg(long)]
+        max_amount_minor: Option<i64>,
+
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+
+    Show {
+        #[arg(long)]
+        id: u64,
+    },
+
+    Update {
+        #[arg(long)]
+        id: u64,
+
+        #[arg(long)]
+        account_id: Option<u64>,
+
+        #[arg(long, ignore_case = true)]
+        kind: Option<TransactionKindArg>,
+
+        #[arg(long)]
+        amount_minor: Option<i64>,
+
+        #[arg(long, ignore_case = true)]
+        currency: Option<CurrencyArg>,
+
+        #[arg(long)]
+        occurred_at: Option<String>,
+
+        #[arg(long)]
+        description: Option<String>,
+
+        #[arg(long, ignore_case = true)]
+        category: Option<CategoryArg>,
+
+        #[arg(long, requires = "occurred_at")]
+        time_zone: Option<String>,
+    },
+
+    Delete {
+        #[arg(long)]
+        id: u64,
     },
 }
 
@@ -144,6 +385,17 @@ pub enum ReportCommand {
 
         #[arg(long)]
         time_zone: Option<String>,
+    },
+
+    Trend {
+        #[arg(long)]
+        account_id: u64,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        time_zone: String,
     },
 }
 
@@ -230,8 +482,12 @@ pub enum CliError {
     CreateAccount(CreateAccountError),
 
     InvalidTime { input: String, message: String },
+    InvalidCursor(String),
+    InvalidMonth(String),
 
     Transaction(TransactionError),
+    Transfer(TransferError),
+    Budget(BudgetError),
     RecordTransaction(RecordTransactionError),
     GetCategoryReport(GetCategoryReportError),
 
@@ -241,6 +497,15 @@ pub enum CliError {
     ListAccounts(ListAccountsError),
 
     GetRangedSummary(GetRangedSummaryError),
+    ManageAccount(ManageAccountError),
+    ManageTransaction(ManageTransactionError),
+    ManageTransfer(ManageTransferError),
+    ManageBudget(ManageBudgetError),
+    BudgetReport(BudgetReportError),
+    MonthlyTrend(MonthlyTrendError),
+    CsvExchange(CsvExchangeError),
+    Backup(BackupError),
+    Io { path: PathBuf, message: String },
 }
 
 impl From<RepositoryError> for CliError {
@@ -258,6 +523,18 @@ impl From<CreateAccountError> for CliError {
 impl From<TransactionError> for CliError {
     fn from(error: TransactionError) -> Self {
         Self::Transaction(error)
+    }
+}
+
+impl From<TransferError> for CliError {
+    fn from(error: TransferError) -> Self {
+        Self::Transfer(error)
+    }
+}
+
+impl From<BudgetError> for CliError {
+    fn from(error: BudgetError) -> Self {
+        Self::Budget(error)
     }
 }
 
@@ -294,6 +571,54 @@ impl From<ListAccountsError> for CliError {
 impl From<GetRangedSummaryError> for CliError {
     fn from(error: GetRangedSummaryError) -> Self {
         Self::GetRangedSummary(error)
+    }
+}
+
+impl From<ManageAccountError> for CliError {
+    fn from(error: ManageAccountError) -> Self {
+        Self::ManageAccount(error)
+    }
+}
+
+impl From<ManageTransactionError> for CliError {
+    fn from(error: ManageTransactionError) -> Self {
+        Self::ManageTransaction(error)
+    }
+}
+
+impl From<ManageTransferError> for CliError {
+    fn from(error: ManageTransferError) -> Self {
+        Self::ManageTransfer(error)
+    }
+}
+
+impl From<ManageBudgetError> for CliError {
+    fn from(error: ManageBudgetError) -> Self {
+        Self::ManageBudget(error)
+    }
+}
+
+impl From<BudgetReportError> for CliError {
+    fn from(error: BudgetReportError) -> Self {
+        Self::BudgetReport(error)
+    }
+}
+
+impl From<MonthlyTrendError> for CliError {
+    fn from(error: MonthlyTrendError) -> Self {
+        Self::MonthlyTrend(error)
+    }
+}
+
+impl From<CsvExchangeError> for CliError {
+    fn from(error: CsvExchangeError) -> Self {
+        Self::CsvExchange(error)
+    }
+}
+
+impl From<BackupError> for CliError {
+    fn from(error: BackupError) -> Self {
+        Self::Backup(error)
     }
 }
 
@@ -334,18 +659,45 @@ fn parse_occurred_at(input: &str, time_zone: Option<&str>) -> Result<Zoned, CliE
     }
 }
 
+fn parse_transaction_cursor(input: &str) -> Result<TransactionCursor, CliError> {
+    let (occurred_at, id) = input
+        .rsplit_once('|')
+        .ok_or_else(|| CliError::InvalidCursor(input.to_string()))?;
+    let occurred_at = occurred_at
+        .parse::<Zoned>()
+        .map_err(|_| CliError::InvalidCursor(input.to_string()))?;
+    let id = id
+        .parse::<u64>()
+        .map_err(|_| CliError::InvalidCursor(input.to_string()))?;
+    Ok(TransactionCursor { occurred_at, id })
+}
+
+fn parse_budget_month(input: &str) -> Result<BudgetMonth, CliError> {
+    let (year, month) = input
+        .split_once('-')
+        .ok_or_else(|| CliError::InvalidMonth(input.to_string()))?;
+    let year = year
+        .parse::<i32>()
+        .map_err(|_| CliError::InvalidMonth(input.to_string()))?;
+    let month = month
+        .parse::<u8>()
+        .map_err(|_| CliError::InvalidMonth(input.to_string()))?;
+    BudgetMonth::new(year, month).map_err(CliError::from)
+}
+
 pub fn run(cli: Cli) -> Result<String, CliError> {
-    let (mut account_repository, mut transaction_repository) = open_repositories(&cli.database)?;
+    let (
+        mut account_repository,
+        mut transaction_repository,
+        mut transfer_repository,
+        mut budget_repository,
+    ) = open_complete_repositories(&cli.database)?;
 
     match cli.command {
         Command::Account { command } => match command {
-            AccountCommand::Create { id, name, currency } => {
-                let account = create_account(
-                    &mut account_repository,
-                    AccountId::new(id),
-                    name,
-                    Currency::from(currency),
-                )?;
+            AccountCommand::Create { name, currency } => {
+                let account =
+                    create_account(&mut account_repository, name, Currency::from(currency))?;
 
                 Ok(format!(
                     "Created account {}: {} ({:?})",
@@ -356,9 +708,10 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
             }
 
             AccountCommand::Balance { id } => {
-                let balance = get_account_balance(
+                let balance = get_account_balance_with_transfers(
                     &account_repository,
                     &transaction_repository,
+                    &transfer_repository,
                     AccountId::new(id),
                 )?;
 
@@ -368,6 +721,37 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     balance.minor_units(),
                     balance.currency(),
                 ))
+            }
+
+            AccountCommand::Show { id } => {
+                let account = get_account(&account_repository, AccountId::new(id))?;
+                Ok(format!(
+                    "Account {}: {} ({:?})",
+                    account.id().value(),
+                    account.name(),
+                    account.currency()
+                ))
+            }
+
+            AccountCommand::Update { id, name } => {
+                let account = rename_account(&mut account_repository, AccountId::new(id), name)?;
+                Ok(format!(
+                    "Updated account {}: {} ({:?})",
+                    account.id().value(),
+                    account.name(),
+                    account.currency()
+                ))
+            }
+
+            AccountCommand::Delete { id } => {
+                delete_account_with_dependencies(
+                    &mut account_repository,
+                    &transaction_repository,
+                    &transfer_repository,
+                    &budget_repository,
+                    AccountId::new(id),
+                )?;
+                Ok(format!("Deleted account {id}"))
             }
 
             AccountCommand::List => {
@@ -393,7 +777,6 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
 
         Command::Transaction { command } => match command {
             TransactionCommand::Add {
-                id,
                 account_id,
                 kind,
                 amount_minor,
@@ -404,14 +787,19 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 time_zone,
             } => {
                 let occurred_at: Zoned = parse_occurred_at(&occurred_at, time_zone.as_deref())?;
-                let transaction = Transaction::new(
-                    transaction::TransactionId::new(id),
+                let transaction = NewTransaction::new(
                     AccountId::new(account_id),
                     TransactionKind::from(kind),
                     Money::from_minor_units(amount_minor, Currency::from(currency)),
                     occurred_at.clone(),
                     description,
                     Category::from(category),
+                )?;
+
+                let transaction = record_transaction(
+                    &account_repository,
+                    &mut transaction_repository,
+                    transaction,
                 )?;
 
                 let success_message = format!(
@@ -425,12 +813,6 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     occurred_at,
                 );
 
-                record_transaction(
-                    &account_repository,
-                    &mut transaction_repository,
-                    transaction,
-                )?;
-
                 Ok(success_message)
             }
 
@@ -441,8 +823,13 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                 from,
                 to,
                 time_zone,
+                description_contains,
+                min_amount_minor,
+                max_amount_minor,
+                limit,
+                cursor,
             } => {
-                let transactions = list_account_transactions(
+                let page = list_account_transaction_page(
                     &account_repository,
                     &transaction_repository,
                     AccountId::new(account_id),
@@ -455,15 +842,24 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                         to: to
                             .map(|s| parse_occurred_at(&s, time_zone.as_deref()))
                             .transpose()?,
+                        description_contains,
+                        min_amount_minor,
+                        max_amount_minor,
+                    },
+                    TransactionPageRequest {
+                        limit,
+                        cursor: cursor
+                            .map(|value| parse_transaction_cursor(&value))
+                            .transpose()?,
                     },
                 )?;
 
-                if transactions.is_empty() {
+                if page.items.is_empty() {
                     return Ok(format!("No transactions found for account {}", account_id));
                 }
 
                 let mut output_lines: Vec<String> = Vec::new();
-                for transaction in transactions {
+                for transaction in page.items {
                     output_lines.push(format!(
                         "Transaction {} | {:?} | {} | {}({:?}) | {} | {:?}",
                         transaction.id().value(),
@@ -476,7 +872,71 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     ));
                 }
 
+                if let Some(cursor) = page.next_cursor {
+                    output_lines.push(format!("Next cursor: {}|{}", cursor.occurred_at, cursor.id));
+                }
+
                 Ok(output_lines.join("\n"))
+            }
+
+            TransactionCommand::Show { id } => {
+                let transaction = get_transaction(&transaction_repository, TransactionId::new(id))?;
+                Ok(format!(
+                    "Transaction {} | {:?} | {} | {}({:?}) | {} | {:?}",
+                    transaction.id().value(),
+                    transaction.kind(),
+                    transaction.occurred_at(),
+                    transaction.amount().minor_units(),
+                    transaction.amount().currency(),
+                    transaction.description(),
+                    transaction.category(),
+                ))
+            }
+
+            TransactionCommand::Update {
+                id,
+                account_id,
+                kind,
+                amount_minor,
+                currency,
+                occurred_at,
+                description,
+                category,
+                time_zone,
+            } => {
+                let transaction_id = TransactionId::new(id);
+                let current = get_transaction(&transaction_repository, transaction_id)?;
+                let amount = if amount_minor.is_some() || currency.is_some() {
+                    Some(Money::from_minor_units(
+                        amount_minor.unwrap_or(current.amount().minor_units()),
+                        currency
+                            .map(Currency::from)
+                            .unwrap_or(current.amount().currency()),
+                    ))
+                } else {
+                    None
+                };
+                let updated = update_transaction(
+                    &account_repository,
+                    &mut transaction_repository,
+                    transaction_id,
+                    TransactionChanges {
+                        account_id: account_id.map(AccountId::new),
+                        kind: kind.map(TransactionKind::from),
+                        amount,
+                        occurred_at: occurred_at
+                            .map(|value| parse_occurred_at(&value, time_zone.as_deref()))
+                            .transpose()?,
+                        description,
+                        category: category.map(Category::from),
+                    },
+                )?;
+                Ok(format!("Updated transaction {}", updated.id().value()))
+            }
+
+            TransactionCommand::Delete { id } => {
+                delete_transaction(&mut transaction_repository, TransactionId::new(id))?;
+                Ok(format!("Deleted transaction {id}"))
             }
         },
 
@@ -553,6 +1013,340 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
 
                 Ok(report_lines.join("\n"))
             }
+
+            ReportCommand::Trend {
+                account_id,
+                from,
+                to,
+                time_zone,
+            } => {
+                let rows = get_monthly_trend(
+                    &account_repository,
+                    &transaction_repository,
+                    AccountId::new(account_id),
+                    parse_budget_month(&from)?,
+                    parse_budget_month(&to)?,
+                    &time_zone,
+                )?;
+                let mut lines = Vec::new();
+                for row in rows {
+                    lines.push(format!(
+                        "{:04}-{:02} | income {} | net expense {} | net change {}",
+                        row.month.year(),
+                        row.month.month(),
+                        row.summary.income_total().minor_units(),
+                        row.summary.net_expense_total().minor_units(),
+                        row.summary.net_change().minor_units()
+                    ));
+                    let mut categories = row
+                        .summary
+                        .net_outflow_by_category()
+                        .iter()
+                        .map(|(category, amount)| {
+                            format!(
+                                "{:04}-{:02} | {:?} | net outflow {}",
+                                row.month.year(),
+                                row.month.month(),
+                                category,
+                                amount.minor_units()
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    categories.sort();
+                    lines.extend(categories);
+                }
+                Ok(lines.join("\n"))
+            }
+        },
+
+        Command::Transfer { command } => match command {
+            TransferCommand::Add {
+                source_account_id,
+                destination_account_id,
+                source_amount_minor,
+                source_currency,
+                destination_amount_minor,
+                destination_currency,
+                occurred_at,
+                description,
+                time_zone,
+            } => {
+                let transfer = NewTransfer::new(
+                    AccountId::new(source_account_id),
+                    AccountId::new(destination_account_id),
+                    Money::from_minor_units(source_amount_minor, source_currency.into()),
+                    Money::from_minor_units(destination_amount_minor, destination_currency.into()),
+                    parse_occurred_at(&occurred_at, time_zone.as_deref())?,
+                    description,
+                )?;
+                let transfer =
+                    create_transfer(&account_repository, &mut transfer_repository, transfer)?;
+                Ok(format!("Created transfer {}", transfer.id().value()))
+            }
+            TransferCommand::Show { id } => {
+                let transfer = get_transfer(&transfer_repository, TransferId::new(id))?;
+                Ok(format!(
+                    "Transfer {} | {} -> {} | {}({:?}) -> {}({:?}) | {} | {}",
+                    transfer.id().value(),
+                    transfer.source_account_id().value(),
+                    transfer.destination_account_id().value(),
+                    transfer.source_amount().minor_units(),
+                    transfer.source_amount().currency(),
+                    transfer.destination_amount().minor_units(),
+                    transfer.destination_amount().currency(),
+                    transfer.occurred_at(),
+                    transfer.description()
+                ))
+            }
+            TransferCommand::List { account_id } => {
+                let transfers = list_account_transfers(
+                    &account_repository,
+                    &transfer_repository,
+                    AccountId::new(account_id),
+                )?;
+                if transfers.is_empty() {
+                    return Ok(format!("No transfers found for account {account_id}"));
+                }
+                Ok(transfers
+                    .into_iter()
+                    .map(|transfer| {
+                        format!(
+                            "Transfer {} | {} -> {} | {}",
+                            transfer.id().value(),
+                            transfer.source_account_id().value(),
+                            transfer.destination_account_id().value(),
+                            transfer.description()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            TransferCommand::Update {
+                id,
+                source_account_id,
+                destination_account_id,
+                source_amount_minor,
+                source_currency,
+                destination_amount_minor,
+                destination_currency,
+                occurred_at,
+                description,
+                time_zone,
+            } => {
+                let transfer_id = TransferId::new(id);
+                let current = get_transfer(&transfer_repository, transfer_id)?;
+                let source_amount = if source_amount_minor.is_some() || source_currency.is_some() {
+                    Some(Money::from_minor_units(
+                        source_amount_minor.unwrap_or(current.source_amount().minor_units()),
+                        source_currency
+                            .map(Currency::from)
+                            .unwrap_or(current.source_amount().currency()),
+                    ))
+                } else {
+                    None
+                };
+                let destination_amount =
+                    if destination_amount_minor.is_some() || destination_currency.is_some() {
+                        Some(Money::from_minor_units(
+                            destination_amount_minor
+                                .unwrap_or(current.destination_amount().minor_units()),
+                            destination_currency
+                                .map(Currency::from)
+                                .unwrap_or(current.destination_amount().currency()),
+                        ))
+                    } else {
+                        None
+                    };
+                let updated = update_transfer(
+                    &account_repository,
+                    &mut transfer_repository,
+                    transfer_id,
+                    TransferChanges {
+                        source_account_id: source_account_id.map(AccountId::new),
+                        destination_account_id: destination_account_id.map(AccountId::new),
+                        source_amount,
+                        destination_amount,
+                        occurred_at: occurred_at
+                            .map(|value| parse_occurred_at(&value, time_zone.as_deref()))
+                            .transpose()?,
+                        description,
+                    },
+                )?;
+                Ok(format!("Updated transfer {}", updated.id().value()))
+            }
+            TransferCommand::Delete { id } => {
+                delete_transfer(&mut transfer_repository, TransferId::new(id))?;
+                Ok(format!("Deleted transfer {id}"))
+            }
+        },
+
+        Command::Budget { command } => match command {
+            BudgetCommand::Set {
+                account_id,
+                category,
+                year,
+                month,
+                limit_minor,
+            } => {
+                let budget = set_budget(
+                    &account_repository,
+                    &mut budget_repository,
+                    AccountId::new(account_id),
+                    category.into(),
+                    BudgetMonth::new(year, month)?,
+                    limit_minor,
+                )?;
+                Ok(format!("Set budget {}", budget.id().value()))
+            }
+            BudgetCommand::Show { id } => {
+                let budget = get_budget(&budget_repository, BudgetId::new(id))?;
+                Ok(format!(
+                    "Budget {} | account {} | {:?} | {:04}-{:02} | {}({:?})",
+                    budget.id().value(),
+                    budget.account_id().value(),
+                    budget.category(),
+                    budget.month().year(),
+                    budget.month().month(),
+                    budget.limit().minor_units(),
+                    budget.limit().currency()
+                ))
+            }
+            BudgetCommand::List { account_id } => {
+                let budgets = list_budgets(
+                    &account_repository,
+                    &budget_repository,
+                    AccountId::new(account_id),
+                )?;
+                if budgets.is_empty() {
+                    return Ok(format!("No budgets found for account {account_id}"));
+                }
+                Ok(budgets
+                    .into_iter()
+                    .map(|budget| {
+                        format!(
+                            "Budget {} | {:?} | {:04}-{:02} | {}({:?})",
+                            budget.id().value(),
+                            budget.category(),
+                            budget.month().year(),
+                            budget.month().month(),
+                            budget.limit().minor_units(),
+                            budget.limit().currency()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            BudgetCommand::Delete { id } => {
+                delete_budget(&mut budget_repository, BudgetId::new(id))?;
+                Ok(format!("Deleted budget {id}"))
+            }
+            BudgetCommand::Status {
+                account_id,
+                year,
+                month,
+                time_zone,
+            } => {
+                let statuses = get_budget_statuses(
+                    &account_repository,
+                    &transaction_repository,
+                    &budget_repository,
+                    AccountId::new(account_id),
+                    BudgetMonth::new(year, month)?,
+                    &time_zone,
+                )?;
+                if statuses.is_empty() {
+                    return Ok(format!(
+                        "No budgets found for account {account_id} in {year:04}-{month:02}"
+                    ));
+                }
+                Ok(statuses
+                    .into_iter()
+                    .map(|status| {
+                        format!(
+                            "{:?} | limit {} | used {} | remaining {} | overrun {}",
+                            status.budget.category(),
+                            status.budget.limit().minor_units(),
+                            status.used.minor_units(),
+                            status.remaining.minor_units(),
+                            status.overrun
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+        },
+
+        Command::Data { command } => match command {
+            DataCommand::Backup { output } => {
+                let contents = create_json_backup(
+                    &account_repository,
+                    &transaction_repository,
+                    &transfer_repository,
+                    &budget_repository,
+                )?;
+                std::fs::write(&output, contents).map_err(|error| CliError::Io {
+                    path: output.clone(),
+                    message: error.to_string(),
+                })?;
+                Ok(format!("Created backup at {}", output.display()))
+            }
+            DataCommand::Restore { input } => {
+                let contents = std::fs::read_to_string(&input).map_err(|error| CliError::Io {
+                    path: input.clone(),
+                    message: error.to_string(),
+                })?;
+                let backup = validate_json_backup(&contents)?;
+                restore_backup(&cli.database, &backup)?;
+                Ok(format!("Restored backup from {}", input.display()))
+            }
+            DataCommand::ImportTransactions { input } => {
+                let contents = std::fs::read_to_string(&input).map_err(|error| CliError::Io {
+                    path: input.clone(),
+                    message: error.to_string(),
+                })?;
+                let created = import_transactions_csv(
+                    &account_repository,
+                    &mut transaction_repository,
+                    &contents,
+                )?;
+                Ok(format!("Imported {} transactions", created.len()))
+            }
+            DataCommand::ExportTransactions {
+                account_id,
+                output,
+                category,
+                kind,
+                from,
+                to,
+                time_zone,
+                description_contains,
+                min_amount_minor,
+                max_amount_minor,
+            } => {
+                let contents = export_transactions_csv(
+                    &account_repository,
+                    &transaction_repository,
+                    AccountId::new(account_id),
+                    TransactionFilter {
+                        category: category.map(Category::from),
+                        kind: kind.map(TransactionKind::from),
+                        from: from
+                            .map(|value| parse_occurred_at(&value, time_zone.as_deref()))
+                            .transpose()?,
+                        to: to
+                            .map(|value| parse_occurred_at(&value, time_zone.as_deref()))
+                            .transpose()?,
+                        description_contains,
+                        min_amount_minor,
+                        max_amount_minor,
+                    },
+                )?;
+                std::fs::write(&output, contents).map_err(|error| CliError::Io {
+                    path: output.clone(),
+                    message: error.to_string(),
+                })?;
+                Ok(format!("Exported transactions to {}", output.display()))
+            }
         },
     }
 }
@@ -562,12 +1356,11 @@ mod tests {
 
     use super::*;
 
-    fn create_account_cli(database: PathBuf, id: u64, name: &str) -> Cli {
+    fn create_account_cli(database: PathBuf, _legacy_id: u64, name: &str) -> Cli {
         Cli {
             database,
             command: Command::Account {
                 command: AccountCommand::Create {
-                    id,
                     name: name.to_string(),
                     currency: CurrencyArg::Cny,
                 },
@@ -583,8 +1376,6 @@ mod tests {
             "test.db",
             "account",
             "create",
-            "--id",
-            "1",
             "--name",
             "Cash",
             "--currency",
@@ -596,9 +1387,8 @@ mod tests {
 
         match cli.command {
             Command::Account {
-                command: AccountCommand::Create { id, name, currency },
+                command: AccountCommand::Create { name, currency, .. },
             } => {
-                assert_eq!(id, 1);
                 assert_eq!(name, "Cash");
                 assert!(matches!(currency, CurrencyArg::Cny));
             }
@@ -613,8 +1403,6 @@ mod tests {
             "ledger_rs",
             "account",
             "create",
-            "--id",
-            "1",
             "--name",
             "Cash",
             "--currency",
@@ -641,8 +1429,6 @@ mod tests {
             "ledger_rs",
             "account",
             "create",
-            "--id",
-            "1",
             "--name",
             "Cash",
             "--currency",
@@ -653,7 +1439,6 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 
-    use crate::application::repository::RepositoryError::DuplicateTransactionId;
     use crate::application::repository::{AccountRepository, TransactionRepository};
     use crate::domain::account::AccountId;
     use crate::domain::transaction::TransactionId;
@@ -683,7 +1468,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_error_for_duplicate_account_id() {
+    fn allocates_distinct_account_ids() {
         let temp_dir = tempfile::tempdir().unwrap();
         let database = temp_dir.path().join("ledger.db");
 
@@ -691,12 +1476,7 @@ mod tests {
 
         let result = run(create_account_cli(database, 1, "Bank"));
 
-        assert_eq!(
-            result,
-            Err(CliError::CreateAccount(CreateAccountError::Repository(
-                RepositoryError::DuplicateAccountId(AccountId::new(1),),
-            ),)),
-        );
+        assert_eq!(result, Ok("Created account 2: Bank (Cny)".to_string()));
     }
 
     use crate::domain::account::AccountError;
@@ -722,8 +1502,6 @@ mod tests {
             "ledger_rs",
             "transaction",
             "add",
-            "--id",
-            "1",
             "--account-id",
             "2",
             "--kind",
@@ -745,14 +1523,12 @@ mod tests {
             Command::Transaction {
                 command:
                     TransactionCommand::Add {
-                        id,
                         account_id,
                         amount_minor,
                         description,
                         ..
                     },
             } => {
-                assert_eq!(id, 1);
                 assert_eq!(account_id, 2);
                 assert_eq!(amount_minor, 1250);
                 assert_eq!(description, "Lunch");
@@ -768,8 +1544,6 @@ mod tests {
             "ledger_rs",
             "transaction",
             "add",
-            "--id",
-            "1",
             "--account-id",
             "2",
             "--kind",
@@ -796,8 +1570,6 @@ mod tests {
             "ledger_rs",
             "transaction",
             "add",
-            "--id",
-            "1",
             "--account-id",
             "2",
             "--kind",
@@ -824,8 +1596,6 @@ mod tests {
             "ledger_rs",
             "transaction",
             "add",
-            "--id",
-            "1",
             "--account-id",
             "2",
             "--kind",
@@ -857,7 +1627,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -908,7 +1677,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -943,7 +1711,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 2,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -975,7 +1742,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1000,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_error_for_duplicate_transaction_id() {
+    fn allocates_distinct_transaction_ids() {
         let temp_dir = tempfile::tempdir().unwrap();
         let database = temp_dir.path().join("ledger.db");
 
@@ -1010,7 +1776,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1023,7 +1788,7 @@ mod tests {
             },
         };
 
-        let _ = run(cli);
+        let first = run(cli).unwrap();
 
         let database = temp_dir.path().join("ledger.db");
 
@@ -1031,7 +1796,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1044,14 +1808,10 @@ mod tests {
             },
         };
 
-        let error = run(cli).unwrap_err();
+        let second = run(cli).unwrap();
 
-        assert_eq!(
-            error,
-            CliError::RecordTransaction(RecordTransactionError::Repository(
-                DuplicateTransactionId(TransactionId::new(1))
-            ))
-        );
+        assert!(first.starts_with("Recorded transaction 1 "));
+        assert!(second.starts_with("Recorded transaction 2 "));
     }
 
     #[test]
@@ -1078,7 +1838,6 @@ mod tests {
             database: database.clone(),
             command: Command::Account {
                 command: AccountCommand::Create {
-                    id: 1,
                     name: "Cash".to_string(),
                     currency: CurrencyArg::Cny,
                 },
@@ -1091,7 +1850,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Income,
                     amount_minor: 1_000,
@@ -1110,7 +1868,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 2,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 500,
@@ -1162,7 +1919,6 @@ mod tests {
             database: database.clone(),
             command: Command::Account {
                 command: AccountCommand::Create {
-                    id: 1,
                     name: "Cash".to_string(),
                     currency: CurrencyArg::Cny,
                 },
@@ -1175,7 +1931,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Income,
                     amount_minor: 1000,
@@ -1194,7 +1949,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 2,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 500,
@@ -1213,7 +1967,6 @@ mod tests {
             database: database.clone(),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 3,
                     account_id: 1,
                     kind: TransactionKindArg::ExpenseRefund,
                     amount_minor: 50,
@@ -1298,7 +2051,6 @@ mod tests {
             database,
             command: Command::Transaction {
                 command: TransactionCommand::Add {
-                    id: 1,
                     account_id: 1,
                     kind: TransactionKindArg::Expense,
                     amount_minor: 1_250,
@@ -1373,6 +2125,7 @@ mod tests {
                         from,
                         to,
                         time_zone,
+                        ..
                     },
             } => {
                 assert_eq!(account_id, 1);
@@ -1404,6 +2157,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1435,6 +2193,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1459,6 +2222,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1489,8 +2257,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let database = temp_dir.path().join("ledger.db");
 
-        run(create_account_cli(database.clone(), 2, "Bank")).unwrap();
         run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
+        run(create_account_cli(database.clone(), 2, "Bank")).unwrap();
 
         let cli = Cli {
             database,
@@ -1570,6 +2338,7 @@ mod tests {
                         from,
                         to,
                         time_zone: _,
+                        ..
                     },
             } => {
                 assert_eq!(account_id, 1);
@@ -1605,6 +2374,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1634,6 +2408,11 @@ mod tests {
                     from: None,
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1687,6 +2466,7 @@ mod tests {
                         from: _,
                         to: _,
                         time_zone,
+                        ..
                     },
             } => {
                 assert_eq!(account_id, 1);
@@ -1713,6 +2493,11 @@ mod tests {
                     from: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string()),
                     to: Some("2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string()),
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1741,6 +2526,11 @@ mod tests {
                     from: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".to_string()),
                     to: None,
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1770,6 +2560,11 @@ mod tests {
                     from: None,
                     to: Some("2026-08-16T12:00:00+08:00[Asia/Shanghai]".to_string()),
                     time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 50,
+                    cursor: None,
                 },
             },
         };
@@ -1861,6 +2656,795 @@ mod tests {
             Net Change: 500 (Cny)\n\
             Category: Food, Net Outflow: 500 (Cny)\n\
             Category: Salary, Net Outflow: -1000 (Cny)"
+        );
+    }
+
+    #[test]
+    fn shows_renames_and_deletes_account() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
+
+        let shown = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Show { id: 1 },
+            },
+        })
+        .unwrap();
+        assert_eq!(shown, "Account 1: Cash (Cny)");
+
+        let updated = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Update {
+                    id: 1,
+                    name: "Wallet".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(updated, "Updated account 1: Wallet (Cny)");
+
+        let deleted = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Delete { id: 1 },
+            },
+        })
+        .unwrap();
+        assert_eq!(deleted, "Deleted account 1");
+
+        assert_eq!(
+            run(Cli {
+                database,
+                command: Command::Account {
+                    command: AccountCommand::Show { id: 1 },
+                },
+            }),
+            Err(CliError::ManageAccount(
+                ManageAccountError::AccountNotFound(AccountId::new(1))
+            ))
+        );
+    }
+
+    #[test]
+    fn shows_updates_and_deletes_transaction() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
+        run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 100,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+
+        let shown = run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Show { id: 1 },
+            },
+        })
+        .unwrap();
+        assert!(shown.contains("Transaction 1"));
+        assert!(shown.contains("Lunch"));
+
+        let updated = run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Update {
+                    id: 1,
+                    account_id: None,
+                    kind: None,
+                    amount_minor: Some(250),
+                    currency: None,
+                    occurred_at: None,
+                    description: Some("Dinner".to_string()),
+                    category: None,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(updated, "Updated transaction 1");
+
+        let shown = run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Show { id: 1 },
+            },
+        })
+        .unwrap();
+        assert!(shown.contains("250(Cny)"));
+        assert!(shown.contains("Dinner"));
+
+        assert_eq!(
+            run(Cli {
+                database,
+                command: Command::Transaction {
+                    command: TransactionCommand::Delete { id: 1 },
+                },
+            }),
+            Ok("Deleted transaction 1".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_transaction_search_and_pagination_options() {
+        let cli = Cli::try_parse_from([
+            "ledger_rs",
+            "transaction",
+            "list",
+            "--account-id",
+            "1",
+            "--description-contains",
+            "lunch",
+            "--min-amount-minor",
+            "100",
+            "--max-amount-minor",
+            "500",
+            "--limit",
+            "10",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Transaction {
+                command:
+                    TransactionCommand::List {
+                        description_contains,
+                        min_amount_minor,
+                        max_amount_minor,
+                        limit,
+                        ..
+                    },
+            } => {
+                assert_eq!(description_contains.as_deref(), Some("lunch"));
+                assert_eq!(min_amount_minor, Some(100));
+                assert_eq!(max_amount_minor, Some(500));
+                assert_eq!(limit, 10);
+            }
+            _ => panic!("expected transaction list command"),
+        }
+    }
+
+    #[test]
+    fn paginates_transaction_list_with_returned_cursor() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let first = run(Cli {
+            database: database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 2,
+                    cursor: None,
+                },
+            },
+        })
+        .unwrap();
+        let cursor = first
+            .lines()
+            .find_map(|line| line.strip_prefix("Next cursor: "))
+            .unwrap()
+            .to_string();
+
+        let second = run(Cli {
+            database,
+            command: Command::Transaction {
+                command: TransactionCommand::List {
+                    account_id: 1,
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                    limit: 2,
+                    cursor: Some(cursor),
+                },
+            },
+        })
+        .unwrap();
+        assert!(second.starts_with("Transaction 1 | Income"));
+        assert!(!second.contains("Next cursor:"));
+    }
+
+    #[test]
+    fn manages_transfer_and_includes_it_in_balances() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        run(create_account_cli(database.clone(), 0, "Source")).unwrap();
+        run(create_account_cli(database.clone(), 0, "Destination")).unwrap();
+
+        let created = run(Cli {
+            database: database.clone(),
+            command: Command::Transfer {
+                command: TransferCommand::Add {
+                    source_account_id: 1,
+                    destination_account_id: 2,
+                    source_amount_minor: 100,
+                    source_currency: CurrencyArg::Cny,
+                    destination_amount_minor: 100,
+                    destination_currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Move".to_string(),
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(created, "Created transfer 1");
+
+        let source_balance = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 1 },
+            },
+        })
+        .unwrap();
+        let destination_balance = run(Cli {
+            database: database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 2 },
+            },
+        })
+        .unwrap();
+        assert_eq!(source_balance, "Account 1 balance: -100 (Cny)");
+        assert_eq!(destination_balance, "Account 2 balance: 100 (Cny)");
+
+        assert_eq!(
+            run(Cli {
+                database: database.clone(),
+                command: Command::Account {
+                    command: AccountCommand::Delete { id: 1 },
+                },
+            }),
+            Err(CliError::ManageAccount(ManageAccountError::HasTransfers(
+                AccountId::new(1)
+            )))
+        );
+
+        assert_eq!(
+            run(Cli {
+                database,
+                command: Command::Transfer {
+                    command: TransferCommand::Delete { id: 1 },
+                },
+            }),
+            Ok("Deleted transfer 1".to_string())
+        );
+    }
+
+    #[test]
+    fn manages_monthly_budget_and_restricts_account_deletion() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
+
+        let set = run(Cli {
+            database: database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Set {
+                    account_id: 1,
+                    category: CategoryArg::Food,
+                    year: 2026,
+                    month: 8,
+                    limit_minor: 1000,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(set, "Set budget 1");
+
+        let updated = run(Cli {
+            database: database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Set {
+                    account_id: 1,
+                    category: CategoryArg::Food,
+                    year: 2026,
+                    month: 8,
+                    limit_minor: 2000,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(updated, "Set budget 1");
+        let shown = run(Cli {
+            database: database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Show { id: 1 },
+            },
+        })
+        .unwrap();
+        assert!(shown.contains("2000(Cny)"));
+
+        let status = run(Cli {
+            database: database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Status {
+                    account_id: 1,
+                    year: 2026,
+                    month: 8,
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            status,
+            "Food | limit 2000 | used 0 | remaining 2000 | overrun false"
+        );
+
+        assert_eq!(
+            run(Cli {
+                database: database.clone(),
+                command: Command::Account {
+                    command: AccountCommand::Delete { id: 1 },
+                },
+            }),
+            Err(CliError::ManageAccount(ManageAccountError::HasBudgets(
+                AccountId::new(1)
+            )))
+        );
+        assert_eq!(
+            run(Cli {
+                database,
+                command: Command::Budget {
+                    command: BudgetCommand::Delete { id: 1 },
+                },
+            }),
+            Ok("Deleted budget 1".to_string())
+        );
+    }
+
+    #[test]
+    fn reports_monthly_trend_with_empty_month() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("ledger.db");
+        populate_database(database.clone());
+
+        let output = run(Cli {
+            database,
+            command: Command::Report {
+                command: ReportCommand::Trend {
+                    account_id: 1,
+                    from: "2026-08".to_string(),
+                    to: "2026-09".to_string(),
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+
+        assert!(output.contains("2026-08 | income 1000 | net expense 450 | net change 550"));
+        assert!(output.contains("2026-08 | Food | net outflow 450"));
+        assert!(output.contains("2026-09 | income 0 | net expense 0 | net change 0"));
+    }
+
+    #[test]
+    fn exports_and_imports_transactions_as_csv() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_database = temp_dir.path().join("source.db");
+        let target_database = temp_dir.path().join("target.db");
+        let csv_path = temp_dir.path().join("transactions.csv");
+        run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
+        run(create_account_cli(target_database.clone(), 0, "Cash")).unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "晚餐, \"朋友\"".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+
+        let exported = run(Cli {
+            database: source_database,
+            command: Command::Data {
+                command: DataCommand::ExportTransactions {
+                    account_id: 1,
+                    output: csv_path.clone(),
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            exported,
+            format!("Exported transactions to {}", csv_path.display())
+        );
+        assert!(
+            std::fs::read_to_string(&csv_path)
+                .unwrap()
+                .contains("\"晚餐, \"\"朋友\"\"\"")
+        );
+
+        let imported = run(Cli {
+            database: target_database.clone(),
+            command: Command::Data {
+                command: DataCommand::ImportTransactions {
+                    input: csv_path.clone(),
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(imported, "Imported 1 transactions");
+
+        let (_, transactions) = open_repositories(&target_database).unwrap();
+        let stored = transactions.find_by_account_id(AccountId::new(1)).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].description(), "晚餐, \"朋友\"");
+        assert_eq!(stored[0].id(), TransactionId::new(1));
+    }
+
+    #[test]
+    fn backs_up_and_restores_every_aggregate_with_original_ids() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_database = temp_dir.path().join("source.db");
+        let target_database = temp_dir.path().join("target.db");
+        let backup_path = temp_dir.path().join("ledger.json");
+        run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Create {
+                    name: "USD Bank".to_string(),
+                    currency: CurrencyArg::Usd,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 1250,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Dinner".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transfer {
+                command: TransferCommand::Add {
+                    source_account_id: 1,
+                    destination_account_id: 2,
+                    source_amount_minor: 700,
+                    source_currency: CurrencyArg::Cny,
+                    destination_amount_minor: 100,
+                    destination_currency: CurrencyArg::Usd,
+                    occurred_at: "2026-08-20T11:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Exchange".to_string(),
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Set {
+                    account_id: 1,
+                    category: CategoryArg::Food,
+                    year: 2026,
+                    month: 8,
+                    limit_minor: 5000,
+                },
+            },
+        })
+        .unwrap();
+
+        run(Cli {
+            database: source_database,
+            command: Command::Data {
+                command: DataCommand::Backup {
+                    output: backup_path.clone(),
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: target_database.clone(),
+            command: Command::Data {
+                command: DataCommand::Restore { input: backup_path },
+            },
+        })
+        .unwrap();
+
+        assert!(
+            run(Cli {
+                database: target_database.clone(),
+                command: Command::Transaction {
+                    command: TransactionCommand::Show { id: 1 },
+                },
+            })
+            .unwrap()
+            .contains("Dinner")
+        );
+        assert!(
+            run(Cli {
+                database: target_database.clone(),
+                command: Command::Transfer {
+                    command: TransferCommand::Show { id: 1 },
+                },
+            })
+            .unwrap()
+            .contains("Exchange")
+        );
+        assert!(
+            run(Cli {
+                database: target_database.clone(),
+                command: Command::Budget {
+                    command: BudgetCommand::Show { id: 1 },
+                },
+            })
+            .unwrap()
+            .contains("5000(Cny)")
+        );
+        let created = run(create_account_cli(target_database, 0, "Next")).unwrap();
+        assert!(created.starts_with("Created account 3:"));
+    }
+
+    #[test]
+    fn refuses_to_restore_into_a_nonempty_database() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_database = temp_dir.path().join("source.db");
+        let target_database = temp_dir.path().join("target.db");
+        let backup_path = temp_dir.path().join("empty.json");
+        run(Cli {
+            database: source_database,
+            command: Command::Data {
+                command: DataCommand::Backup {
+                    output: backup_path.clone(),
+                },
+            },
+        })
+        .unwrap();
+        run(create_account_cli(target_database.clone(), 0, "Existing")).unwrap();
+
+        assert_eq!(
+            run(Cli {
+                database: target_database,
+                command: Command::Data {
+                    command: DataCommand::Restore { input: backup_path },
+                },
+            }),
+            Err(CliError::Repository(RepositoryError::RestoreTargetNotEmpty))
+        );
+    }
+
+    #[test]
+    fn completes_the_full_pre_tui_cli_workflow_before_and_after_restore() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_database = temp_dir.path().join("workflow.db");
+        let restored_database = temp_dir.path().join("restored.db");
+        let source_csv = temp_dir.path().join("source.csv");
+        let restored_csv = temp_dir.path().join("restored.csv");
+        let backup_path = temp_dir.path().join("backup.json");
+        run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
+        run(create_account_cli(source_database.clone(), 0, "Bank")).unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transaction {
+                command: TransactionCommand::Add {
+                    account_id: 1,
+                    kind: TransactionKindArg::Expense,
+                    amount_minor: 400,
+                    currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T10:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Lunch".to_string(),
+                    category: CategoryArg::Food,
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Transfer {
+                command: TransferCommand::Add {
+                    source_account_id: 1,
+                    destination_account_id: 2,
+                    source_amount_minor: 100,
+                    source_currency: CurrencyArg::Cny,
+                    destination_amount_minor: 100,
+                    destination_currency: CurrencyArg::Cny,
+                    occurred_at: "2026-08-20T11:00:00+08:00[Asia/Shanghai]".to_string(),
+                    description: "Move savings".to_string(),
+                    time_zone: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Set {
+                    account_id: 1,
+                    category: CategoryArg::Food,
+                    year: 2026,
+                    month: 8,
+                    limit_minor: 1000,
+                },
+            },
+        })
+        .unwrap();
+
+        let original_balance = run(Cli {
+            database: source_database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 1 },
+            },
+        })
+        .unwrap();
+        let original_budget = run(Cli {
+            database: source_database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Status {
+                    account_id: 1,
+                    year: 2026,
+                    month: 8,
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        let original_trend = run(Cli {
+            database: source_database.clone(),
+            command: Command::Report {
+                command: ReportCommand::Trend {
+                    account_id: 1,
+                    from: "2026-08".to_string(),
+                    to: "2026-08".to_string(),
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database.clone(),
+            command: Command::Data {
+                command: DataCommand::ExportTransactions {
+                    account_id: 1,
+                    output: source_csv.clone(),
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: source_database,
+            command: Command::Data {
+                command: DataCommand::Backup {
+                    output: backup_path.clone(),
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: restored_database.clone(),
+            command: Command::Data {
+                command: DataCommand::Restore { input: backup_path },
+            },
+        })
+        .unwrap();
+
+        let restored_balance = run(Cli {
+            database: restored_database.clone(),
+            command: Command::Account {
+                command: AccountCommand::Balance { id: 1 },
+            },
+        })
+        .unwrap();
+        let restored_budget = run(Cli {
+            database: restored_database.clone(),
+            command: Command::Budget {
+                command: BudgetCommand::Status {
+                    account_id: 1,
+                    year: 2026,
+                    month: 8,
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        let restored_trend = run(Cli {
+            database: restored_database.clone(),
+            command: Command::Report {
+                command: ReportCommand::Trend {
+                    account_id: 1,
+                    from: "2026-08".to_string(),
+                    to: "2026-08".to_string(),
+                    time_zone: "Asia/Shanghai".to_string(),
+                },
+            },
+        })
+        .unwrap();
+        run(Cli {
+            database: restored_database,
+            command: Command::Data {
+                command: DataCommand::ExportTransactions {
+                    account_id: 1,
+                    output: restored_csv.clone(),
+                    category: None,
+                    kind: None,
+                    from: None,
+                    to: None,
+                    time_zone: None,
+                    description_contains: None,
+                    min_amount_minor: None,
+                    max_amount_minor: None,
+                },
+            },
+        })
+        .unwrap();
+
+        assert_eq!(original_balance, "Account 1 balance: -500 (Cny)");
+        assert_eq!(restored_balance, original_balance);
+        assert_eq!(
+            original_budget,
+            "Food | limit 1000 | used 400 | remaining 600 | overrun false"
+        );
+        assert_eq!(restored_budget, original_budget);
+        assert!(original_trend.contains("2026-08 | income 0 | net expense 400 | net change -400"));
+        assert_eq!(restored_trend, original_trend);
+        assert_eq!(
+            std::fs::read_to_string(restored_csv).unwrap(),
+            std::fs::read_to_string(source_csv).unwrap()
         );
     }
 }

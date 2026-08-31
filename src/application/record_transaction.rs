@@ -1,7 +1,7 @@
 use crate::application::repository::{AccountRepository, RepositoryError, TransactionRepository};
 use crate::domain::account::AccountId;
 use crate::domain::money::Currency;
-use crate::domain::transaction::Transaction;
+use crate::domain::transaction::{NewTransaction, Transaction};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecordTransactionError {
@@ -19,8 +19,8 @@ impl From<RepositoryError> for RecordTransactionError {
 pub fn record_transaction(
     account_repository: &impl AccountRepository,
     transaction_repository: &mut impl TransactionRepository,
-    transaction: Transaction,
-) -> Result<(), RecordTransactionError> {
+    transaction: NewTransaction,
+) -> Result<Transaction, RecordTransactionError> {
     let account = account_repository
         .find_by_id(transaction.account_id())?
         .ok_or(RecordTransactionError::AccountNotFound(
@@ -34,9 +34,7 @@ pub fn record_transaction(
         });
     }
 
-    transaction_repository.save(transaction)?;
-
-    Ok(())
+    Ok(transaction_repository.create(transaction)?)
 }
 
 #[cfg(test)]
@@ -45,10 +43,22 @@ mod tests {
 
     use crate::domain::account::{Account, AccountId};
     use crate::domain::money::{Currency, Money};
-    use crate::domain::transaction::{Category, Transaction, TransactionId, TransactionKind};
+    use crate::domain::transaction::{Category, NewTransaction, TransactionKind};
     use crate::infrastructure::in_memory::{
         InMemoryAccountRepository, InMemoryTransactionRepository,
     };
+
+    fn new_transaction(account_id: AccountId, currency: Currency) -> NewTransaction {
+        NewTransaction::new(
+            account_id,
+            TransactionKind::Income,
+            Money::from_minor_units(1000, currency),
+            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
+            String::from("Salary"),
+            Category::Salary,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn saves_valid_transaction() {
@@ -58,60 +68,25 @@ mod tests {
         let account = Account::new(account_id, String::from("Cash"), Currency::Cny).unwrap();
         account_repository.save(account).unwrap();
 
-        let transaction1 = Transaction::new(
-            TransactionId::new(1),
-            account_id,
-            TransactionKind::Income,
-            Money::from_minor_units(1000, Currency::Cny),
-            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
-            String::from("Salary"),
-            Category::Food,
+        let created = record_transaction(
+            &account_repository,
+            &mut transaction_repository,
+            new_transaction(account_id, Currency::Cny),
         )
         .unwrap();
-
-        let transaction2 = Transaction::new(
-            TransactionId::new(2),
-            account_id,
-            TransactionKind::Expense,
-            Money::from_minor_units(200, Currency::Cny),
-            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
-            String::from("Groceries"),
-            Category::Food,
-        )
-        .unwrap();
-
-        transaction_repository.save(transaction1).unwrap();
-
-        assert_eq!(
-            record_transaction(
-                &account_repository,
-                &mut transaction_repository,
-                transaction2.clone(),
-            ),
-            Ok(())
-        );
 
         let stored = transaction_repository
             .find_by_account_id(account_id)
             .unwrap();
 
-        assert!(stored.contains(&transaction2));
+        assert_eq!(stored, vec![created]);
     }
 
     #[test]
     fn rejects_transaction_for_unknown_account() {
         let account_repository = InMemoryAccountRepository::new();
         let mut transaction_repository = InMemoryTransactionRepository::new();
-        let transaction = Transaction::new(
-            TransactionId::new(1),
-            AccountId::new(1),
-            TransactionKind::Income,
-            Money::from_minor_units(1000, Currency::Cny),
-            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
-            String::from("Salary"),
-            Category::Food,
-        )
-        .unwrap();
+        let transaction = new_transaction(AccountId::new(1), Currency::Cny);
 
         assert_eq!(
             record_transaction(
@@ -130,22 +105,13 @@ mod tests {
         let account_id = AccountId::new(1);
         let account = Account::new(account_id, String::from("Cash"), Currency::Usd).unwrap();
         account_repository.save(account).unwrap();
-        let transaction = Transaction::new(
-            TransactionId::new(1),
-            AccountId::new(1),
-            TransactionKind::Income,
-            Money::from_minor_units(1000, Currency::Cny),
-            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
-            String::from("Salary"),
-            Category::Food,
-        )
-        .unwrap();
+        let transaction = new_transaction(AccountId::new(1), Currency::Cny);
 
         assert_eq!(
             record_transaction(
                 &account_repository,
                 &mut transaction_repository,
-                transaction.clone()
+                transaction
             ),
             Err(RecordTransactionError::CurrencyMismatch {
                 expected: Currency::Usd,
@@ -162,43 +128,25 @@ mod tests {
     }
 
     #[test]
-    fn returns_repository_error_for_duplicate_transaction_id() {
+    fn assigns_distinct_ids_to_recorded_transactions() {
         let mut account_repository = InMemoryAccountRepository::new();
         let mut transaction_repository = InMemoryTransactionRepository::new();
         let account_id = AccountId::new(1);
         let account = Account::new(account_id, String::from("Cash"), Currency::Cny).unwrap();
         account_repository.save(account).unwrap();
-        let transaction1 = Transaction::new(
-            TransactionId::new(1),
-            account_id,
-            TransactionKind::Income,
-            Money::from_minor_units(1000, Currency::Cny),
-            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
-            String::from("Salary"),
-            Category::Food,
+        let first = record_transaction(
+            &account_repository,
+            &mut transaction_repository,
+            new_transaction(account_id, Currency::Cny),
         )
         .unwrap();
-        let transaction2 = Transaction::new(
-            TransactionId::new(1),
-            account_id,
-            TransactionKind::Expense,
-            Money::from_minor_units(200, Currency::Cny),
-            "2026-08-11T18:30:00+08:00[Asia/Shanghai]".parse().unwrap(),
-            String::from("Groceries"),
-            Category::Food,
+        let second = record_transaction(
+            &account_repository,
+            &mut transaction_repository,
+            new_transaction(account_id, Currency::Cny),
         )
         .unwrap();
-        transaction_repository.save(transaction1).unwrap();
 
-        assert_eq!(
-            record_transaction(
-                &account_repository,
-                &mut transaction_repository,
-                transaction2.clone()
-            ),
-            Err(RecordTransactionError::Repository(
-                RepositoryError::DuplicateTransactionId(TransactionId::new(1))
-            ))
-        );
+        assert_ne!(first.id(), second.id());
     }
 }

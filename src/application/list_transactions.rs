@@ -13,6 +13,9 @@ pub enum ListTransactionsError {
     AccountNotFound(AccountId),
     Repository(RepositoryError),
     TimeRangeError { from: Zoned, to: Zoned },
+    InvalidDescriptionFilter,
+    InvalidAmountRange { min: Option<i64>, max: Option<i64> },
+    InvalidPageLimit { limit: usize, max: usize },
 }
 
 impl From<RepositoryError> for ListTransactionsError {
@@ -27,7 +30,30 @@ pub struct TransactionFilter {
     pub kind: Option<TransactionKind>,
     pub from: Option<Zoned>,
     pub to: Option<Zoned>,
+    pub description_contains: Option<String>,
+    pub min_amount_minor: Option<i64>,
+    pub max_amount_minor: Option<i64>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionCursor {
+    pub occurred_at: Zoned,
+    pub id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionPageRequest {
+    pub limit: usize,
+    pub cursor: Option<TransactionCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionPage {
+    pub items: Vec<Transaction>,
+    pub next_cursor: Option<TransactionCursor>,
+}
+
+pub const MAX_TRANSACTION_PAGE_SIZE: usize = 200;
 
 pub fn list_account_transactions(
     account_repository: &impl AccountRepository,
@@ -45,6 +71,38 @@ pub fn list_account_transactions(
     }
     if let Some(kind) = filter.kind {
         transactions.retain(|transaction| transaction.kind() == kind);
+    }
+
+    if let Some(description) = filter.description_contains {
+        let description = description.trim().to_lowercase();
+        if description.is_empty() {
+            return Err(ListTransactionsError::InvalidDescriptionFilter);
+        }
+        transactions.retain(|transaction| {
+            transaction
+                .description()
+                .to_lowercase()
+                .contains(&description)
+        });
+    }
+
+    if filter.min_amount_minor.is_some_and(|value| value <= 0)
+        || filter.max_amount_minor.is_some_and(|value| value <= 0)
+        || matches!(
+            (filter.min_amount_minor, filter.max_amount_minor),
+            (Some(min), Some(max)) if min > max
+        )
+    {
+        return Err(ListTransactionsError::InvalidAmountRange {
+            min: filter.min_amount_minor,
+            max: filter.max_amount_minor,
+        });
+    }
+    if let Some(min) = filter.min_amount_minor {
+        transactions.retain(|transaction| transaction.amount().minor_units() >= min);
+    }
+    if let Some(max) = filter.max_amount_minor {
+        transactions.retain(|transaction| transaction.amount().minor_units() <= max);
     }
 
     if let (Some(from), Some(to)) = (&filter.from, &filter.to)
@@ -71,6 +129,45 @@ pub fn list_account_transactions(
     });
 
     Ok(transactions)
+}
+
+pub fn list_account_transaction_page(
+    account_repository: &impl AccountRepository,
+    transaction_repository: &impl TransactionRepository,
+    account_id: AccountId,
+    filter: TransactionFilter,
+    request: TransactionPageRequest,
+) -> Result<TransactionPage, ListTransactionsError> {
+    if request.limit == 0 || request.limit > MAX_TRANSACTION_PAGE_SIZE {
+        return Err(ListTransactionsError::InvalidPageLimit {
+            limit: request.limit,
+            max: MAX_TRANSACTION_PAGE_SIZE,
+        });
+    }
+    let mut items = list_account_transactions(
+        account_repository,
+        transaction_repository,
+        account_id,
+        filter,
+    )?;
+    if let Some(cursor) = request.cursor {
+        items.retain(|transaction| {
+            transaction.occurred_at() < cursor.occurred_at
+                || (transaction.occurred_at() == cursor.occurred_at
+                    && transaction.id().value() < cursor.id)
+        });
+    }
+    let has_more = items.len() > request.limit;
+    items.truncate(request.limit);
+    let next_cursor = if has_more {
+        items.last().map(|last| TransactionCursor {
+            occurred_at: last.occurred_at().clone(),
+            id: last.id().value(),
+        })
+    } else {
+        None
+    };
+    Ok(TransactionPage { items, next_cursor })
 }
 
 #[cfg(test)]
@@ -351,6 +448,7 @@ mod tests {
             kind: None,
             from: None,
             to: None,
+            ..TransactionFilter::default()
         };
 
         let result = list_account_transactions(
@@ -414,6 +512,7 @@ mod tests {
             kind: Some(TransactionKind::Expense),
             from: None,
             to: None,
+            ..TransactionFilter::default()
         };
 
         let result = list_account_transactions(
@@ -477,6 +576,7 @@ mod tests {
             kind: Some(TransactionKind::Expense),
             from: None,
             to: None,
+            ..TransactionFilter::default()
         };
 
         let result = list_account_transactions(
@@ -506,6 +606,7 @@ mod tests {
             kind: Some(TransactionKind::Expense),
             from: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".parse().unwrap()),
             to: Some("2026-08-14T12:00:00+08:00[Asia/Shanghai]".parse().unwrap()),
+            ..TransactionFilter::default()
         };
 
         let result = list_account_transactions(
@@ -541,6 +642,7 @@ mod tests {
             kind: Some(TransactionKind::Expense),
             from: Some("2026-08-14T12:00:00+08:00[Asia/Shanghai]".parse().unwrap()),
             to: Some("2026-08-15T12:00:00+08:00[Asia/Shanghai]".parse().unwrap()),
+            ..TransactionFilter::default()
         };
 
         let result = list_account_transactions(
@@ -565,5 +667,124 @@ mod tests {
                 .unwrap(),
             ])
         );
+    }
+
+    #[test]
+    fn filters_by_description_and_amount_range() {
+        let (mut accounts, mut transactions) = in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        accounts
+            .save(Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let transactions = build_sample_transactions(&mut transactions, account_id);
+
+        let result = list_account_transactions(
+            &accounts,
+            transactions,
+            account_id,
+            TransactionFilter {
+                description_contains: Some("DIN".to_string()),
+                min_amount_minor: Some(400),
+                max_amount_minor: Some(600),
+                ..TransactionFilter::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|item| item.description() == "Dinner"));
+    }
+
+    #[test]
+    fn rejects_invalid_search_and_page_ranges() {
+        let (mut accounts, transactions) = in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        accounts
+            .save(Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+
+        assert_eq!(
+            list_account_transactions(
+                &accounts,
+                &transactions,
+                account_id,
+                TransactionFilter {
+                    min_amount_minor: Some(10),
+                    max_amount_minor: Some(5),
+                    ..TransactionFilter::default()
+                },
+            ),
+            Err(ListTransactionsError::InvalidAmountRange {
+                min: Some(10),
+                max: Some(5),
+            })
+        );
+        assert_eq!(
+            list_account_transaction_page(
+                &accounts,
+                &transactions,
+                account_id,
+                TransactionFilter::default(),
+                TransactionPageRequest {
+                    limit: 0,
+                    cursor: None,
+                },
+            ),
+            Err(ListTransactionsError::InvalidPageLimit {
+                limit: 0,
+                max: MAX_TRANSACTION_PAGE_SIZE,
+            })
+        );
+    }
+
+    #[test]
+    fn pages_with_stable_time_and_id_cursor() {
+        let (mut accounts, mut transactions) = in_memory_repositories().unwrap();
+        let account_id = AccountId::new(1);
+        accounts
+            .save(Account::new(account_id, "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        build_sample_transactions(&mut transactions, account_id);
+
+        let first = list_account_transaction_page(
+            &accounts,
+            &transactions,
+            account_id,
+            TransactionFilter::default(),
+            TransactionPageRequest {
+                limit: 2,
+                cursor: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|item| item.id().value())
+                .collect::<Vec<_>>(),
+            vec![4, 3]
+        );
+
+        let second = list_account_transaction_page(
+            &accounts,
+            &transactions,
+            account_id,
+            TransactionFilter::default(),
+            TransactionPageRequest {
+                limit: 2,
+                cursor: first.next_cursor,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            second
+                .items
+                .iter()
+                .map(|item| item.id().value())
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert_eq!(second.next_cursor, None);
     }
 }

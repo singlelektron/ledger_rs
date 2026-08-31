@@ -50,12 +50,35 @@ SQLite persistence layer are implemented and tested:
 - An application-level transaction-recording use case that rejects unknown
   accounts and currency mismatches before saving through the transaction
   repository
+- Repository-allocated account and transaction IDs, so interfaces do not need
+  to invent persistent identifiers
+- Account detail, rename, and restricted deletion use cases exposed through the
+  CLI; accounts with transactions cannot be deleted
+- Transaction detail, partial update, reassignment, and deletion use cases with
+  account and currency validation
+- Transaction description and amount-range search plus stable cursor pagination
+  ordered by occurrence time and transaction ID
+- Atomic same-currency and cross-currency transfers with user-locked source and
+  destination amounts, CRUD commands, balance integration, and unified account
+  activity queries
+- Monthly category budgets with repository-assigned IDs, positive limits in the
+  account currency, unique account/category/month scopes, and CLI management
+- Time-zone-aware monthly budget execution reports with signed usage,
+  remaining amount, and explicit overrun status
+- Monthly cash-flow and category trends across inclusive month ranges, including
+  explicit zero rows for months without transactions
+- Atomic CSV transaction import and filtered export using a fixed, ID-free
+  exchange format with quoting, Unicode, and original zoned timestamps
+- Version 1 JSON backup and empty-database restore for accounts, transactions,
+  transfers, and budgets, preserving IDs, relationships, and IANA time zones
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
   newest-first order, with optional filtering by transaction category, kind,
   and occurrence-time range
 - SQLite support through `rusqlite`, including repeatable schema initialization
   for account and transaction tables with foreign-key enforcement enabled
+- Versioned, transactional SQLite schema migrations that adopt existing
+  pre-migration databases without deleting their data
 - A SQLite account repository that saves, queries, and lists accounts while
   reporting duplicate IDs, unsupported ID ranges, and invalid stored data
 - A SQLite transaction repository that shares its connection with the account
@@ -65,23 +88,21 @@ SQLite persistence layer are implemented and tested:
   categories, timestamps, and original IANA time-zone names
 - File-backed SQLite repositories that preserve stored accounts after the
   repositories are closed and reopened
-- A `clap`-based CLI entry point with `account create`, `account list`,
-  `transaction add`, `transaction list`, `account balance`, and
-  `report category` and `report summary` commands, case-insensitive enum
-  parsing, configurable database paths, and nonzero exit status on application
-  errors
+- A `clap`-based CLI entry point covering account, transaction, transfer,
+  budget, report, and CSV data workflows, with case-insensitive enum parsing,
+  configurable database paths, and nonzero exit status on application errors
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
+- 199 passing unit and workflow tests, including a shared in-memory/SQLite
+  repository contract and a complete CLI backup/restore verification scenario
 
-The project now provides both in-memory storage and file-backed SQLite account
-and transaction repositories. Its CLI can create accounts and record
-time-zone-aware transactions in a persistent SQLite database, then calculate
-an account balance or display category net outflow from the stored
-transactions. It can also display a validated account's transaction history in
-stable newest-first order, optionally filter that history by category and
-transaction kind or time range, list all accounts in ascending ID order, and
-display a cash-flow and category summary for a requested zoned time range.
+The pre-TUI application core is complete. In-memory and file-backed SQLite
+repositories implement the same account, transaction, transfer, budget, and
+pagination behavior. The CLI exercises all shared workflows, including CRUD,
+balances, activity, reports, CSV exchange, and full JSON recovery. The next
+product milestone is a TUI that calls these application use cases without
+duplicating their business rules.
 
 ## Goals
 
@@ -232,10 +253,10 @@ silently choosing a timestamp.
 Transaction lists are not sorted by the domain entity. The application-level
 transaction-history query orders them by `occurred_at` from newest to oldest
 and uses descending transaction ID as a deterministic tie-breaker. Optional
-category, transaction-kind, and occurrence-time filters are applied in the
-application layer. Time ranges are left-closed and right-open, so `from` is
-included while `to` is excluded. Pagination will be added later as a separate
-application concern.
+category, transaction-kind, description, amount, and occurrence-time filters
+are applied in the application layer. Time ranges are left-closed and
+right-open, so `from` is included while `to` is excluded. Stable cursor
+pagination uses the same `(occurred_at, id)` ordering.
 
 `ExpenseRefund` represents money that reverses part of an earlier expense. For
 example, when one person pays a restaurant bill and friends later reimburse
@@ -267,29 +288,28 @@ category breakdown from the same selected transactions. This supports monthly,
 yearly, and custom reporting periods without separate calculation rules. CLI
 presentation for ranged summaries is implemented with stable category ordering.
 
-## Scope of the First Complete Workflow
+## Completed Pre-TUI Scope
 
-The first complete version will:
+The shared application core now:
 
 1. Represent currency-aware money safely with integers
-2. Create accounts with a single currency
-3. Record time-zone-aware income, expense, and expense-refund transactions
-4. Calculate an account balance from its transactions
-5. Store data in memory or a persistent SQLite database
-6. Expose the workflow through a simple CLI
+2. Manage accounts, transactions, transfers, and monthly category budgets
+3. Preserve time-zone-aware occurrence times and generate budget and trend
+   reports for explicit IANA time zones
+4. Search and page stable transaction history
+5. Store data in memory or a migration-managed SQLite database
+6. Exchange transactions through atomic CSV import and filtered export
+7. Back up and atomically restore the complete aggregate graph through
+   versioned JSON
+8. Expose every workflow through the CLI for reuse by the next TUI milestone
 
-It will not initially include:
+The current scope does not include:
 
 - TUI or Web interfaces
 - Authentication and authorization
-- Exchange rates or automatic currency conversion
-- Cross-currency transfers
+- External exchange-rate lookup or automatic currency conversion
 - Automatic time-zone detection or daylight-saving-time input resolution
-- Budgets or advanced reports
 - Data synchronization
-
-Keeping the first version small allows the core business rules to be tested
-before interfaces and infrastructure add more complexity.
 
 ## Design Principles
 
@@ -330,25 +350,36 @@ split into crates such as `core`, `cli`, and `database`.
 src/
 ├── application/
 │   ├── account_balance.rs
+│   ├── backup.rs
+│   ├── budget_report.rs
 │   ├── category_report.rs
 │   ├── create_account.rs
+│   ├── csv_exchange.rs
 │   ├── list_accounts.rs
 │   ├── list_transactions.rs
+│   ├── manage_account.rs
+│   ├── manage_budget.rs
+│   ├── manage_transaction.rs
+│   ├── manage_transfer.rs
 │   ├── mod.rs
+│   ├── monthly_trend.rs
 │   ├── ranged_summary.rs
 │   ├── record_transaction.rs
 │   └── repository.rs
 ├── domain/
 │   ├── account.rs
 │   ├── balance.rs
+│   ├── budget.rs
 │   ├── category_report.rs
 │   ├── mod.rs
 │   ├── money.rs
 │   ├── summary.rs
-│   └── transaction.rs
+│   ├── transaction.rs
+│   └── transfer.rs
 ├── infrastructure/
 │   ├── in_memory.rs
 │   ├── mod.rs
+│   ├── repository_contract_tests.rs
 │   └── sqlite.rs
 ├── cli.rs
 ├── lib.rs
@@ -405,10 +436,10 @@ results, and returning the process exit status.
 - Open file-backed repositories and preserve data after closing and reopening
   the SQLite connection
 
-Database schema migrations are not implemented yet. During the current
-pre-release development stage there is no existing user database to preserve,
-so a development database should be deleted and recreated after an incompatible
-schema change.
+SQLite schema migrations use `PRAGMA user_version`. Existing databases created
+before migrations were introduced are adopted as version 1 without deleting
+their account or transaction rows. Databases from a newer unsupported schema
+version are rejected explicitly.
 
 ### Milestone 5: CLI - Completed
 
@@ -482,14 +513,28 @@ schema change.
 - Parse a reporting range and display the summary through the CLI - Completed
 - Display category rows in stable order - Completed
 
+### Milestone 10: Complete Pre-TUI Business Workflows - Completed
+
+- Repository IDs, account and transaction CRUD - Completed
+- Search and stable cursor pagination - Completed
+- Transfers and unified account activity - Completed
+- Monthly category budgets, execution status, and trend reports - Completed
+- Atomic CSV transaction import and filtered export - Completed
+- Versioned JSON backup and restore - Completed
+
 ### Later Milestones
 
-- TUI
+#### Next: TUI
+
+- Render account activity, balances, budgets, and reports from the shared
+  application layer
+- Keep terminal state and keyboard handling outside domain and repository code
+
+#### After TUI
+
 - Web API
-- Budgets
-- Additional reports and data import/export
-- Additional transaction filters and pagination
-- Exchange rates and cross-currency transfers
+- Authentication and synchronization
+- External exchange-rate services
 
 ## Local Development
 
@@ -505,7 +550,6 @@ Create an account in the default `ledger.db` database:
 
 ```bash
 cargo run -- account create \
-  --id 1 \
   --name Cash \
   --currency cny
 ```
@@ -516,14 +560,12 @@ Use a different SQLite database file:
 cargo run -- \
   --database data/ledger.db \
   account create \
-  --id 1 \
   --name Cash \
   --currency cny
 ```
 
 Currency input is case-insensitive. Supported values are `cny`, `usd`, `eur`,
-`hkd`, and `myr`. Account IDs are supplied explicitly during this first CLI
-stage.
+`hkd`, and `myr`. The repository allocates and returns each account ID.
 
 List all stored accounts:
 
@@ -534,11 +576,86 @@ cargo run -- account list
 Accounts are displayed in ascending ID order. An empty database returns an
 explicit message instead of empty output.
 
+Show, rename, or delete an empty account:
+
+```bash
+cargo run -- account show --id 1
+cargo run -- account update --id 1 --name Wallet
+cargo run -- account delete --id 1
+```
+
+An account's currency is immutable. Deletion is rejected while the account has
+transactions or transfers, preserving its accounting history.
+
+Create and inspect a transfer between two accounts:
+
+```bash
+cargo run -- transfer add \
+  --source-account-id 1 \
+  --destination-account-id 2 \
+  --source-amount-minor 700 \
+  --source-currency cny \
+  --destination-amount-minor 100 \
+  --destination-currency usd \
+  --occurred-at '2026-08-20T10:00:00+08:00[Asia/Shanghai]' \
+  --description Exchange
+cargo run -- transfer list --account-id 1
+cargo run -- transfer show --id 1
+```
+
+The two amounts are positive and locked when the transfer is recorded. For a
+same-currency transfer they must be equal. Transfers affect both account
+balances but are excluded from income, expense, category, and cash-flow totals.
+
+Set, list, inspect, or delete a monthly category budget:
+
+```bash
+cargo run -- budget set \
+  --account-id 1 \
+  --category food \
+  --year 2026 \
+  --month 8 \
+  --limit-minor 100000
+cargo run -- budget list --account-id 1
+cargo run -- budget show --id 1
+cargo run -- budget delete --id 1
+```
+
+Setting the same account, category, and month again updates the existing budget
+without changing its ID. The limit uses the account currency, so no separate
+currency argument is accepted. Accounts with budgets cannot be deleted.
+
+Report budget execution in an explicit IANA time zone:
+
+```bash
+cargo run -- budget status \
+  --account-id 1 \
+  --year 2026 \
+  --month 8 \
+  --time-zone Asia/Shanghai
+```
+
+Usage is `Expense - ExpenseRefund`; income and transfers are ignored. Refunds
+may make usage negative and remaining funds greater than the original limit.
+
+Display monthly cash-flow and category trends:
+
+```bash
+cargo run -- report trend \
+  --account-id 1 \
+  --from 2026-01 \
+  --to 2026-12 \
+  --time-zone Asia/Shanghai
+```
+
+The month range is inclusive. Each month is selected in the supplied IANA time
+zone, empty months are retained with zero totals, and category rows use stable
+ordering. Transfers remain excluded from these cash-flow trends.
+
 Record a transaction for an existing account:
 
 ```bash
 cargo run -- transaction add \
-  --id 1 \
   --account-id 1 \
   --kind expense \
   --amount-minor 1250 \
@@ -559,7 +676,6 @@ arguments:
 
 ```bash
 cargo run -- transaction add \
-  --id 2 \
   --account-id 1 \
   --kind expense \
   --amount-minor 500 \
@@ -580,6 +696,17 @@ List an account's stored transactions:
 ```bash
 cargo run -- transaction list --account-id 1
 ```
+
+Show, partially update, or delete a transaction:
+
+```bash
+cargo run -- transaction show --id 1
+cargo run -- transaction update --id 1 --amount-minor 1500 --description Dinner
+cargo run -- transaction delete --id 1
+```
+
+An update keeps omitted fields unchanged. Moving a transaction to another
+account requires its amount currency to match the destination account.
 
 Transactions are displayed from newest to oldest. If multiple transactions
 have the same occurrence time, the higher transaction ID is displayed first so
@@ -612,6 +739,21 @@ Category and transaction-kind input is case-insensitive. When a filter is
 omitted, it does not restrict the results. When no transaction matches the
 selected filters, the command returns the same explicit empty-list message.
 
+Search descriptions case-insensitively, constrain positive amount bounds, and
+page through a stable newest-first result:
+
+```bash
+cargo run -- transaction list \
+  --account-id 1 \
+  --description-contains lunch \
+  --min-amount-minor 500 \
+  --max-amount-minor 5000 \
+  --limit 20
+```
+
+When another page exists, the output includes an opaque `Next cursor` value.
+Pass it unchanged with `--cursor`. Page sizes must be between 1 and 200.
+
 Filter transactions by a zoned occurrence-time range:
 
 ```bash
@@ -639,6 +781,49 @@ cargo run -- transaction list \
 Either boundary may be omitted. `--time-zone` is accepted only when at least
 one of `--from` or `--to` is present. As with transaction creation, unknown
 time zones and ambiguous or nonexistent local times are rejected.
+
+Export filtered transactions to the fixed CSV exchange format:
+
+```bash
+cargo run -- data export-transactions \
+  --account-id 1 \
+  --category food \
+  --output transactions.csv
+```
+
+Import all CSV rows atomically into existing accounts:
+
+```bash
+cargo run -- data import-transactions --input transactions.csv
+```
+
+The columns are
+`account_id,kind,amount_minor,currency,occurred_at,description,category`.
+Internal transaction IDs are deliberately omitted and allocated by the target
+repository. The importer parses and validates every row before writing; an
+invalid row leaves the database unchanged. Re-importing the same file creates
+new transactions and is not idempotent.
+
+Create a complete, identity-preserving JSON backup:
+
+```bash
+cargo run -- data backup --output ledger-backup.json
+```
+
+Restore it into an empty target database:
+
+```bash
+cargo run -- \
+  --database restored.db \
+  data restore \
+  --input ledger-backup.json
+```
+
+The top-level `format_version` is currently `1`. Unlike CSV exchange, JSON
+backup preserves account, transaction, transfer, and budget IDs as well as all
+references and original zoned timestamps. Restore validates the entire backup
+before opening one SQLite transaction and refuses any database that already
+contains ledger data.
 
 Query the balance calculated from an account's stored transactions:
 
@@ -694,8 +879,11 @@ After changing Rust code, run:
 
 ```bash
 cargo fmt
-cargo clippy --all-targets --all-features
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
+cargo test --workspace -- --list
+git diff --check
 ```
 
 ## Development Workflow

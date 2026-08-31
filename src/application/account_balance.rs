@@ -1,4 +1,6 @@
-use crate::application::repository::{AccountRepository, RepositoryError, TransactionRepository};
+use crate::application::repository::{
+    AccountRepository, RepositoryError, TransactionRepository, TransferRepository,
+};
 use crate::domain::account::AccountId;
 use crate::domain::balance::{BalanceError, calculate_balance};
 use crate::domain::money::Money;
@@ -37,14 +39,37 @@ pub fn get_account_balance(
     Ok(balance)
 }
 
+pub fn get_account_balance_with_transfers(
+    account_repository: &impl AccountRepository,
+    transaction_repository: &impl TransactionRepository,
+    transfer_repository: &impl TransferRepository,
+    account_id: AccountId,
+) -> Result<Money, GetAccountBalanceError> {
+    let mut balance = get_account_balance(account_repository, transaction_repository, account_id)?;
+    for transfer in transfer_repository.find_by_account_id(account_id)? {
+        if transfer.source_account_id() == account_id {
+            balance = balance
+                .sub(transfer.source_amount())
+                .map_err(BalanceError::from)?;
+        } else {
+            balance = balance
+                .add(transfer.destination_amount())
+                .map_err(BalanceError::from)?;
+        }
+    }
+    Ok(balance)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::repository::TransferRepository;
     use crate::domain::account::{Account, AccountId};
     use crate::domain::money::{Currency, Money};
     use crate::domain::transaction::{Category, Transaction, TransactionId, TransactionKind};
+    use crate::domain::transfer::NewTransfer;
     use crate::infrastructure::in_memory::{
-        InMemoryAccountRepository, InMemoryTransactionRepository,
+        InMemoryAccountRepository, InMemoryTransactionRepository, InMemoryTransferRepository,
     };
 
     #[test]
@@ -70,6 +95,45 @@ mod tests {
         account_repository.save(account).unwrap();
         let result = get_account_balance(&account_repository, &transaction_repository, account_id);
         assert_eq!(result, Ok(Money::from_minor_units(0, Currency::Cny)));
+    }
+
+    #[test]
+    fn includes_transfer_outflow_and_inflow() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let source = Account::new(AccountId::new(1), "Source".to_string(), Currency::Cny).unwrap();
+        let destination =
+            Account::new(AccountId::new(2), "Destination".to_string(), Currency::Cny).unwrap();
+        accounts.save(source.clone()).unwrap();
+        accounts.save(destination.clone()).unwrap();
+        let mut transfers = InMemoryTransferRepository::new();
+        transfers
+            .create(
+                NewTransfer::new(
+                    source.id(),
+                    destination.id(),
+                    Money::from_minor_units(100, Currency::Cny),
+                    Money::from_minor_units(100, Currency::Cny),
+                    "2026-08-20T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "Move".to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            get_account_balance_with_transfers(&accounts, &transactions, &transfers, source.id()),
+            Ok(Money::from_minor_units(-100, Currency::Cny))
+        );
+        assert_eq!(
+            get_account_balance_with_transfers(
+                &accounts,
+                &transactions,
+                &transfers,
+                destination.id()
+            ),
+            Ok(Money::from_minor_units(100, Currency::Cny))
+        );
     }
 
     #[test]

@@ -1,8 +1,17 @@
+pub mod account_activity;
 pub mod account_balance;
+pub mod backup;
+pub mod budget_report;
 pub mod category_report;
 pub mod create_account;
+pub mod csv_exchange;
 pub mod list_accounts;
 pub mod list_transactions;
+pub mod manage_account;
+pub mod manage_budget;
+pub mod manage_transaction;
+pub mod manage_transfer;
+pub mod monthly_trend;
 pub mod ranged_summary;
 pub mod record_transaction;
 pub mod repository;
