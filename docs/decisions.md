@@ -1,5 +1,15 @@
 # Architecture Decisions
 
+## Platform data directory for the default database
+
+The CLI resolves its default SQLite file from the current user's conventional
+platform data directory and creates the parent directory on first use. The
+`--database` option remains an explicit override. This gives an installed or
+downloaded binary one stable ledger regardless of its launch directory and
+keeps mutable data outside replaceable release files. If no platform home/data
+environment variable exists, `ledger.db` in the current directory is the
+last-resort fallback.
+
 ## Versioned SQLite migrations
 
 SQLite schema changes use `PRAGMA user_version` and transactional, ordered

@@ -1,4 +1,5 @@
 use crate::{
+    app_paths::{create_database_parent, default_database_path},
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
         backup::{BackupError, create_json_backup, validate_json_backup},
@@ -42,8 +43,14 @@ use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
+#[command(version, about = "A local-first personal accounting CLI")]
 pub struct Cli {
-    #[arg(long, default_value = "ledger.db")]
+    #[arg(
+        long,
+        default_value_os_t = default_database_path(),
+        value_name = "PATH",
+        help = "SQLite database path"
+    )]
     pub database: PathBuf,
 
     #[command(subcommand)]
@@ -686,6 +693,11 @@ fn parse_budget_month(input: &str) -> Result<BudgetMonth, CliError> {
 }
 
 pub fn run(cli: Cli) -> Result<String, CliError> {
+    create_database_parent(&cli.database).map_err(|error| CliError::Io {
+        path: cli.database.clone(),
+        message: error.to_string(),
+    })?;
+
     let (
         mut account_repository,
         mut transaction_repository,
@@ -1398,6 +1410,13 @@ mod tests {
     }
 
     #[test]
+    fn uses_platform_database_path_by_default() {
+        let cli = Cli::try_parse_from(["ledger_rs", "account", "list"]).unwrap();
+
+        assert_eq!(cli.database, default_database_path());
+    }
+
+    #[test]
     fn parses_currency_case_insensitively() {
         let cli = Cli::try_parse_from([
             "ledger_rs",
@@ -1465,6 +1484,21 @@ mod tests {
         assert_eq!(stored.id(), AccountId::new(1));
         assert_eq!(stored.name(), "Cash");
         assert_eq!(stored.currency(), Currency::Cny);
+    }
+
+    #[test]
+    fn creates_missing_database_directories() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir
+            .path()
+            .join("application-data")
+            .join("ledger_rs")
+            .join("ledger.db");
+
+        let result = run(create_account_cli(database.clone(), 1, "Cash"));
+
+        assert_eq!(result, Ok("Created account 1: Cash (Cny)".to_string()));
+        assert!(database.is_file());
     }
 
     #[test]

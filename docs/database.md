@@ -3,6 +3,16 @@
 SQLite is the durable store. Foreign-key enforcement is enabled for every opened
 connection.
 
+When the CLI is run without `--database`, it stores `ledger.db` under the
+current user's platform data directory: `$XDG_DATA_HOME/ledger_rs` on Linux
+(falling back to `$HOME/.local/share/ledger_rs`),
+`$HOME/Library/Application Support/ledger_rs` on macOS, and
+`%LOCALAPPDATA%\ledger_rs` on Windows (falling back to `%APPDATA%\ledger_rs`).
+The CLI creates the directory on first use. Keeping mutable user data outside
+the executable or extracted release directory makes upgrades independent from
+the ledger. An explicit `--database PATH` overrides this location and its
+parent directory is also created when needed.
+
 Schema changes are applied sequentially using SQLite's `PRAGMA user_version`.
 Schema version 1 contains `accounts` and `transactions`; version 2 adds atomic
 transfer aggregates with foreign keys to both participating accounts; version 3
