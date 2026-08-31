@@ -7,6 +7,14 @@ use crate::{
     },
     domain::{account::Account, money::Money, transaction::Transaction},
 };
+use crossterm::event::KeyCode;
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table},
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadError {
@@ -58,6 +66,13 @@ impl AccountOverview {
 pub struct App {
     accounts: Vec<AccountOverview>,
     selected: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Continue,
+    Reload,
+    Quit,
 }
 
 impl App {
@@ -121,6 +136,174 @@ impl App {
                 .unwrap_or(self.accounts.len() - 1);
         }
     }
+
+    pub fn handle_key(&mut self, key: KeyCode) -> Action {
+        match key {
+            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+            KeyCode::Char('r') => Action::Reload,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.select_previous();
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+pub fn render(frame: &mut Frame, app: &App) {
+    let [header_area, content_area, footer_area] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area());
+    let [accounts_area, transactions_area] = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .areas(content_area);
+
+    let selected_name = app
+        .selected_account()
+        .map(|overview| overview.account().name())
+        .unwrap_or("No account selected");
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" ledger_rs "),
+            Span::styled(
+                selected_name.to_string(),
+                Style::default().fg(Color::Cyan).bold(),
+            ),
+        ]))
+        .block(Block::default().borders(Borders::ALL).title(" Dashboard ")),
+        header_area,
+    );
+
+    render_accounts(frame, app, accounts_area);
+    render_transactions(frame, app, transactions_area);
+    frame.render_widget(
+        Paragraph::new("↑/k previous  ↓/j next  r refresh  q/Esc quit")
+            .style(Style::default().fg(Color::DarkGray)),
+        footer_area,
+    );
+}
+
+fn render_accounts(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let items = if app.accounts().is_empty() {
+        vec![ListItem::new("No accounts. Create one with the CLI.")]
+    } else {
+        app.accounts()
+            .iter()
+            .map(|overview| {
+                ListItem::new(format!(
+                    "{}  {}",
+                    overview.account().name(),
+                    format_money(overview.balance())
+                ))
+            })
+            .collect()
+    };
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" Accounts "))
+        .highlight_symbol("▶ ")
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let mut state = ListState::default().with_selected(app.selected_index());
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_transactions(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(account) = app.selected_account() else {
+        frame.render_widget(
+            Paragraph::new("No transactions to display").block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Transactions "),
+            ),
+            area,
+        );
+        return;
+    };
+
+    let rows = account.transactions().iter().map(|transaction| {
+        Row::new(vec![
+            Cell::from(transaction.occurred_at().to_string()),
+            Cell::from(kind_label(transaction.kind())),
+            Cell::from(format_transaction_amount(transaction)),
+            Cell::from(transaction.description().to_string()),
+        ])
+    });
+    let header = Row::new(["Occurred at", "Kind", "Amount", "Description"])
+        .style(Style::default().fg(Color::Cyan).bold());
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(24),
+            Constraint::Length(8),
+            Constraint::Length(15),
+            Constraint::Min(12),
+        ],
+    )
+    .header(header)
+    .column_spacing(1)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Transactions ({}) ", account.transactions().len())),
+    );
+    frame.render_widget(table, area);
+}
+
+fn kind_label(kind: crate::domain::transaction::TransactionKind) -> &'static str {
+    use crate::domain::transaction::TransactionKind;
+    match kind {
+        TransactionKind::Income => "Income",
+        TransactionKind::Expense => "Expense",
+        TransactionKind::ExpenseRefund => "Refund",
+    }
+}
+
+fn format_transaction_amount(transaction: &Transaction) -> String {
+    use crate::domain::transaction::TransactionKind;
+    let sign = match transaction.kind() {
+        TransactionKind::Income | TransactionKind::ExpenseRefund => "+",
+        TransactionKind::Expense => "-",
+    };
+    format!("{sign}{}", format_money(transaction.amount()))
+}
+
+fn format_money(money: &Money) -> String {
+    let absolute = money.minor_units().unsigned_abs();
+    format!(
+        "{}{}.{:02} {}",
+        if money.minor_units().is_negative() {
+            "-"
+        } else {
+            ""
+        },
+        absolute / 100,
+        absolute % 100,
+        currency_code(money.currency())
+    )
+}
+
+fn currency_code(currency: crate::domain::money::Currency) -> &'static str {
+    use crate::domain::money::Currency;
+    match currency {
+        Currency::Cny => "CNY",
+        Currency::Usd => "USD",
+        Currency::Eur => "EUR",
+        Currency::Hkd => "HKD",
+        Currency::Myr => "MYR",
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +321,7 @@ mod tests {
             InMemoryAccountRepository, InMemoryTransactionRepository, InMemoryTransferRepository,
         },
     };
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn loads_accounts_balances_and_newest_first_transactions() {
@@ -226,5 +410,48 @@ mod tests {
         assert_eq!(app.selected_index(), Some(1));
         app.select_next();
         assert_eq!(app.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn key_bindings_navigate_reload_and_quit() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts
+            .save(Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        assert_eq!(app.handle_key(KeyCode::Char('j')), Action::Continue);
+        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(app.handle_key(KeyCode::Up), Action::Continue);
+        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.handle_key(KeyCode::Char('r')), Action::Reload);
+        assert_eq!(app.handle_key(KeyCode::Esc), Action::Quit);
+    }
+
+    #[test]
+    fn renders_empty_dashboard_and_loaded_account() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let empty = App::load(&accounts, &transactions, &transfers).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &empty)).unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("No accounts"));
+
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let loaded = App::load(&accounts, &transactions, &transfers).unwrap();
+        terminal.draw(|frame| render(frame, &loaded)).unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Cash"));
+        assert!(screen.contains("0.00 CNY"));
+        assert!(screen.contains("Transactions (0)"));
     }
 }
