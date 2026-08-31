@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -65,7 +65,9 @@ impl AccountOverview {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
     accounts: Vec<AccountOverview>,
-    selected: usize,
+    selected_account: usize,
+    selected_transaction: usize,
+    focus: Focus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +75,12 @@ pub enum Action {
     Continue,
     Reload,
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Accounts,
+    Transactions,
 }
 
 impl App {
@@ -106,7 +114,9 @@ impl App {
 
         Ok(Self {
             accounts,
-            selected: 0,
+            selected_account: 0,
+            selected_transaction: 0,
+            focus: Focus::Accounts,
         })
     }
 
@@ -115,25 +125,70 @@ impl App {
     }
 
     pub fn selected_index(&self) -> Option<usize> {
-        (!self.accounts.is_empty()).then_some(self.selected)
+        (!self.accounts.is_empty()).then_some(self.selected_account)
     }
 
     pub fn selected_account(&self) -> Option<&AccountOverview> {
-        self.accounts.get(self.selected)
+        self.accounts.get(self.selected_account)
+    }
+
+    pub fn selected_transaction_index(&self) -> Option<usize> {
+        self.selected_account()
+            .filter(|account| !account.transactions().is_empty())
+            .map(|_| self.selected_transaction)
+    }
+
+    pub fn selected_transaction(&self) -> Option<&Transaction> {
+        self.selected_account()?
+            .transactions()
+            .get(self.selected_transaction)
+    }
+
+    pub fn focus(&self) -> Focus {
+        self.focus
     }
 
     pub fn select_next(&mut self) {
-        if !self.accounts.is_empty() {
-            self.selected = (self.selected + 1) % self.accounts.len();
+        match self.focus {
+            Focus::Accounts if !self.accounts.is_empty() => {
+                self.selected_account = (self.selected_account + 1) % self.accounts.len();
+                self.selected_transaction = 0;
+            }
+            Focus::Transactions => {
+                if let Some(count) = self
+                    .selected_account()
+                    .map(|account| account.transactions().len())
+                    .filter(|count| *count > 0)
+                {
+                    self.selected_transaction = (self.selected_transaction + 1) % count;
+                }
+            }
+            Focus::Accounts => {}
         }
     }
 
     pub fn select_previous(&mut self) {
-        if !self.accounts.is_empty() {
-            self.selected = self
-                .selected
-                .checked_sub(1)
-                .unwrap_or(self.accounts.len() - 1);
+        match self.focus {
+            Focus::Accounts if !self.accounts.is_empty() => {
+                self.selected_account = self
+                    .selected_account
+                    .checked_sub(1)
+                    .unwrap_or(self.accounts.len() - 1);
+                self.selected_transaction = 0;
+            }
+            Focus::Transactions => {
+                if let Some(count) = self
+                    .selected_account()
+                    .map(|account| account.transactions().len())
+                    .filter(|count| *count > 0)
+                {
+                    self.selected_transaction = self
+                        .selected_transaction
+                        .checked_sub(1)
+                        .unwrap_or(count - 1);
+                }
+            }
+            Focus::Accounts => {}
         }
     }
 
@@ -141,6 +196,21 @@ impl App {
         match key {
             KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
             KeyCode::Char('r') => Action::Reload,
+            KeyCode::Tab => {
+                self.focus = match self.focus {
+                    Focus::Accounts => Focus::Transactions,
+                    Focus::Transactions => Focus::Accounts,
+                };
+                Action::Continue
+            }
+            KeyCode::Left => {
+                self.focus = Focus::Accounts;
+                Action::Continue
+            }
+            KeyCode::Right => {
+                self.focus = Focus::Transactions;
+                Action::Continue
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.select_next();
                 Action::Continue
@@ -187,7 +257,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_accounts(frame, app, accounts_area);
     render_transactions(frame, app, transactions_area);
     frame.render_widget(
-        Paragraph::new("↑/k previous  ↓/j next  r refresh  q/Esc quit")
+        Paragraph::new("Tab/←/→ focus  ↑/k previous  ↓/j next  r refresh  q/Esc quit")
             .style(Style::default().fg(Color::DarkGray)),
         footer_area,
     );
@@ -209,7 +279,12 @@ fn render_accounts(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .collect()
     };
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Accounts "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focus_border(app.focus() == Focus::Accounts))
+                .title(" Accounts "),
+        )
         .highlight_symbol("▶ ")
         .highlight_style(
             Style::default()
@@ -254,12 +329,28 @@ fn render_transactions(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     )
     .header(header)
     .column_spacing(1)
+    .row_highlight_style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol("▶ ")
     .block(
         Block::default()
             .borders(Borders::ALL)
+            .border_style(focus_border(app.focus() == Focus::Transactions))
             .title(format!(" Transactions ({}) ", account.transactions().len())),
     );
-    frame.render_widget(table, area);
+    let mut state = TableState::default().with_selected(app.selected_transaction_index());
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn focus_border(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    }
 }
 
 fn kind_label(kind: crate::domain::transaction::TransactionKind) -> &'static str {
@@ -410,6 +501,11 @@ mod tests {
         assert_eq!(app.selected_index(), Some(1));
         app.select_next();
         assert_eq!(app.selected_index(), Some(0));
+
+        app.handle_key(KeyCode::Right);
+        assert_eq!(app.focus(), Focus::Transactions);
+        app.select_next();
+        assert_eq!(app.selected_transaction_index(), None);
     }
 
     #[test]
@@ -431,6 +527,43 @@ mod tests {
         assert_eq!(app.selected_index(), Some(0));
         assert_eq!(app.handle_key(KeyCode::Char('r')), Action::Reload);
         assert_eq!(app.handle_key(KeyCode::Esc), Action::Quit);
+    }
+
+    #[test]
+    fn selects_transactions_independently_from_accounts() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        for id in 1..=2 {
+            transactions
+                .save(
+                    Transaction::new(
+                        TransactionId::new(id),
+                        account.id(),
+                        TransactionKind::Expense,
+                        Money::from_minor_units(100, Currency::Cny),
+                        format!("2026-08-30T10:00:0{id}+08:00[Asia/Shanghai]")
+                            .parse()
+                            .unwrap(),
+                        format!("Expense {id}"),
+                        Category::Food,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        assert_eq!(app.handle_key(KeyCode::Tab), Action::Continue);
+        assert_eq!(app.focus(), Focus::Transactions);
+        assert_eq!(app.selected_transaction().unwrap().id().value(), 2);
+        app.select_next();
+        assert_eq!(app.selected_transaction().unwrap().id().value(), 1);
+        app.select_next();
+        assert_eq!(app.selected_transaction().unwrap().id().value(), 2);
+        assert_eq!(app.selected_index(), Some(0));
     }
 
     #[test]
