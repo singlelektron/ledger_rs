@@ -4,7 +4,9 @@
 
 This project is a personal accounting system written in Rust.
 
-The goal is not only to build a working application, but also to learn professional Rust software engineering practices.
+The primary goal is to deliver a correct, reliable, and maintainable accounting application using professional Rust software engineering practices.
+
+Codex is expected to complete requested project work rigorously and autonomously. It must also explain the reasons, value, and relevant tradeoffs behind important decisions so the developer can understand and evaluate the result.
 
 The application should eventually support:
 
@@ -20,16 +22,21 @@ The project should be designed as a maintainable long-term software project, not
 
 # Development Philosophy
 
-This is a learning-oriented project.
+This is a delivery-oriented project. Correctness, completeness, maintainability, and verifiable results take priority.
 
-When modifying or adding code:
+When modifying or adding code, Codex should:
 
-- Prefer explaining design decisions before implementation.
-- Do not generate large amounts of code without explanation.
-- For core Rust concepts, guide the developer to implement them first.
-- Prefer hints, explanations, and code review over immediately providing complete solutions.
+- Inspect the existing code, architecture, tests, documentation, and repository state before deciding on a solution.
+- Implement the requested change completely when the scope is clear, including necessary tests and documentation updates.
+- Make focused changes and avoid unrelated redesign or speculative abstractions.
+- Preserve existing behavior unless the request or a confirmed defect requires changing it.
+- Explain important design decisions, including why the chosen approach fits the project, what value it provides, and what tradeoffs were considered.
+- Surface assumptions, risks, and unresolved limitations instead of silently hiding them.
+- Verify the result with the strongest relevant checks available and report exactly what was and was not verified.
 
-The developer is learning Rust. Important concepts should be explained when encountered:
+Explanations should support the delivered work rather than replace it. Do not stop at hints, a tutorial, or instructions for the developer when Codex can safely complete the requested work itself.
+
+Important Rust concepts should be explained when they materially affect the implementation or its review:
 
 - ownership and borrowing
 - lifetimes
@@ -41,16 +48,7 @@ The developer is learning Rust. Important concepts should be explained when enco
 - type design
 - concurrency
 
-However, repetitive engineering tasks may be automated.
-
-Examples of acceptable direct generation:
-
-- configuration files
-- boilerplate
-- repetitive CRUD code
-- test templates
-- CI configuration
-- formatting fixes
+Keep explanations proportional to the decision. Routine implementation details may be summarized, while domain rules, public API changes, error semantics, persistence behavior, concurrency, and architectural boundaries require explicit reasoning.
 
 ---
 
@@ -165,7 +163,7 @@ Avoid:
 - overly generic code
 - complex lifetime tricks unless necessary
 
-Code should be readable for someone learning Rust.
+Code should be clear to future maintainers and understandable without relying on hidden context.
 
 ---
 
@@ -436,9 +434,10 @@ Explain:
 
 1. What is wrong.
 2. Why it is wrong.
-3. Possible solutions.
+3. How it should be fixed and why that solution is appropriate.
+4. What risk or value the fix carries.
 
-Do not rewrite everything automatically.
+When the user requests a review, report findings before editing unless they also requested fixes. When fixes are requested, implement confirmed fixes completely and add regression coverage where practical.
 
 ---
 
@@ -458,15 +457,18 @@ Inspect:
 
 ## Step 2: Design
 
-Explain:
+Determine:
 
 - data structures
 - interfaces
-- possible tradeoffs
+- domain invariants
+- error behavior
+- compatibility and migration concerns
+- relevant tradeoffs
 
 ## Step 3: Implement
 
-Make small changes.
+Complete the requested behavior with focused, coherent changes.
 
 Avoid huge unrelated modifications.
 
@@ -488,22 +490,21 @@ Check:
 - Is ownership handled correctly?
 - Are errors handled properly?
 - Are tests sufficient?
+- Were documentation and public interfaces updated where necessary?
+- Are remaining risks or limitations clearly reported?
 
 ---
 
-# Learning Mode Reminder
+# Delivery and Explanation Standard
 
-The purpose of this project is both:
+The default outcome is a completed, validated project change, not a lesson plan or a partial exercise.
 
-1. Building a useful accounting application.
-2. Becoming proficient in Rust.
+For each substantive task, Codex should communicate:
 
-When there are multiple solutions:
+1. What changed and whether the requested outcome is complete.
+2. Why the chosen design is appropriate for this project.
+3. What practical value it provides, such as correctness, safety, maintainability, performance, or extensibility.
+4. What tradeoffs, assumptions, risks, or follow-up work remain.
+5. Which checks were run and their results.
 
-Prefer explaining the tradeoffs instead of silently choosing one.
-
-When introducing advanced Rust features:
-
-Explain the simpler solution first.
-
-Do not hide complexity behind abstractions the developer does not understand.
+When there are multiple reasonable solutions, choose one based on project evidence and explain the meaningful tradeoffs. Do not introduce advanced Rust features or abstractions merely for educational value; use them only when they improve the implementation.
