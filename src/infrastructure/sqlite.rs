@@ -139,6 +139,74 @@ fn transaction_from_stored(
     })
 }
 
+type StoredTransfer = (i64, i64, i64, i64, String, i64, String, String, String);
+
+fn transfer_from_stored(stored: StoredTransfer) -> Result<Transfer, RepositoryError> {
+    let (
+        id,
+        source,
+        destination,
+        source_minor,
+        source_currency,
+        destination_minor,
+        destination_currency,
+        occurred_at,
+        description,
+    ) = stored;
+    let id =
+        TransferId::new(u64::try_from(id).map_err(|_| {
+            RepositoryError::InvalidStoredData(format!("invalid transfer id: {id}"))
+        })?);
+    let source = AccountId::new(u64::try_from(source).map_err(|_| {
+        RepositoryError::InvalidStoredData("invalid transfer source account id".to_string())
+    })?);
+    let destination = AccountId::new(u64::try_from(destination).map_err(|_| {
+        RepositoryError::InvalidStoredData("invalid transfer destination account id".to_string())
+    })?);
+    let occurred_at: Zoned = occurred_at.parse().map_err(|error| {
+        RepositoryError::InvalidStoredData(format!("invalid transfer occurred_at: {error}"))
+    })?;
+
+    Transfer::new(
+        id,
+        source,
+        destination,
+        Money::from_minor_units(source_minor, currency_from_code(&source_currency)?),
+        Money::from_minor_units(
+            destination_minor,
+            currency_from_code(&destination_currency)?,
+        ),
+        occurred_at,
+        description,
+    )
+    .map_err(|error| RepositoryError::InvalidStoredData(format!("invalid transfer: {error:?}")))
+}
+
+type StoredBudget = (i64, i64, String, i32, u8, i64, String);
+
+fn budget_from_stored(stored: StoredBudget) -> Result<Budget, RepositoryError> {
+    let (id, account, category, year, month, limit, currency) = stored;
+    let id = BudgetId::new(
+        u64::try_from(id)
+            .map_err(|_| RepositoryError::InvalidStoredData(format!("invalid budget id: {id}")))?,
+    );
+    let account = AccountId::new(u64::try_from(account).map_err(|_| {
+        RepositoryError::InvalidStoredData("invalid budget account id".to_string())
+    })?);
+    let month = BudgetMonth::new(year, month).map_err(|error| {
+        RepositoryError::InvalidStoredData(format!("invalid budget month: {error:?}"))
+    })?;
+
+    Budget::new(
+        id,
+        account,
+        category_from_code(&category)?,
+        month,
+        Money::from_minor_units(limit, currency_from_code(&currency)?),
+    )
+    .map_err(|error| RepositoryError::InvalidStoredData(format!("invalid budget: {error:?}")))
+}
+
 pub struct SqliteAccountRepository {
     connection: Rc<Connection>,
 }
@@ -701,7 +769,7 @@ impl TransferRepository for SqliteTransferRepository {
         let stored = self
             .connection
             .query_row(
-                "SELECT source_account_id, destination_account_id, source_amount_minor,
+                "SELECT id, source_account_id, destination_account_id, source_amount_minor,
                         source_currency, destination_amount_minor, destination_currency,
                         occurred_at, description FROM transfers WHERE id = ?1",
                 params![id_value],
@@ -710,84 +778,52 @@ impl TransferRepository for SqliteTransferRepository {
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
                     ))
                 },
             )
             .optional()
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
-        stored
-            .map(
-                |(
-                    source,
-                    destination,
-                    source_minor,
-                    source_currency,
-                    destination_minor,
-                    destination_currency,
-                    occurred,
-                    description,
-                )| {
-                    let source = AccountId::new(u64::try_from(source).map_err(|_| {
-                        RepositoryError::InvalidStoredData(
-                            "invalid transfer source account id".to_string(),
-                        )
-                    })?);
-                    let destination = AccountId::new(u64::try_from(destination).map_err(|_| {
-                        RepositoryError::InvalidStoredData(
-                            "invalid transfer destination account id".to_string(),
-                        )
-                    })?);
-                    Transfer::new(
-                        id,
-                        source,
-                        destination,
-                        Money::from_minor_units(
-                            source_minor,
-                            currency_from_code(&source_currency)?,
-                        ),
-                        Money::from_minor_units(
-                            destination_minor,
-                            currency_from_code(&destination_currency)?,
-                        ),
-                        occurred.parse().map_err(|error| {
-                            RepositoryError::InvalidStoredData(format!(
-                                "invalid transfer occurred_at: {error}"
-                            ))
-                        })?,
-                        description,
-                    )
-                    .map_err(|error| {
-                        RepositoryError::InvalidStoredData(format!("invalid transfer: {error:?}"))
-                    })
-                },
-            )
-            .transpose()
+        stored.map(transfer_from_stored).transpose()
     }
 
     fn find_by_account_id(&self, id: AccountId) -> Result<Vec<Transfer>, RepositoryError> {
         let id_value =
             i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
-        let mut statement = self.connection.prepare(
-            "SELECT id FROM transfers WHERE source_account_id = ?1 OR destination_account_id = ?1",
-        ).map_err(|error| RepositoryError::Storage(error.to_string()))?;
-        let ids = statement
-            .query_map(params![id_value], |row| row.get::<_, i64>(0))
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, source_account_id, destination_account_id, source_amount_minor,
+                        source_currency, destination_amount_minor, destination_currency,
+                        occurred_at, description
+                 FROM transfers
+                 WHERE source_account_id = ?1 OR destination_account_id = ?1",
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let stored_transfers = statement
+            .query_map(params![id_value], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            })
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
         let mut transfers = Vec::new();
-        for stored_id in ids {
-            let stored_id =
-                stored_id.map_err(|error| RepositoryError::Storage(error.to_string()))?;
-            let transfer_id = TransferId::new(u64::try_from(stored_id).map_err(|_| {
-                RepositoryError::InvalidStoredData(format!("invalid transfer id: {stored_id}"))
-            })?);
-            if let Some(transfer) = self.find_by_id(transfer_id)? {
-                transfers.push(transfer);
-            }
+        for stored in stored_transfers {
+            let stored = stored.map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            transfers.push(transfer_from_stored(stored)?);
         }
         Ok(transfers)
     }
@@ -905,30 +941,11 @@ impl BudgetRepository for SqliteBudgetRepository {
         let id_value =
             i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
         let stored = self.connection.query_row(
-            "SELECT account_id, category, year, month, limit_minor, currency FROM budgets WHERE id=?1",
+            "SELECT id, account_id, category, year, month, limit_minor, currency FROM budgets WHERE id=?1",
             params![id_value],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i32>(2)?, row.get::<_, u8>(3)?, row.get::<_, i64>(4)?, row.get::<_, String>(5)?)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i32>(3)?, row.get::<_, u8>(4)?, row.get::<_, i64>(5)?, row.get::<_, String>(6)?)),
         ).optional().map_err(|error| RepositoryError::Storage(error.to_string()))?;
-        stored
-            .map(|(account, category, year, month, limit, currency)| {
-                let account = AccountId::new(u64::try_from(account).map_err(|_| {
-                    RepositoryError::InvalidStoredData("invalid budget account id".to_string())
-                })?);
-                let month = BudgetMonth::new(year, month).map_err(|error| {
-                    RepositoryError::InvalidStoredData(format!("invalid budget month: {error:?}"))
-                })?;
-                Budget::new(
-                    id,
-                    account,
-                    category_from_code(&category)?,
-                    month,
-                    Money::from_minor_units(limit, currency_from_code(&currency)?),
-                )
-                .map_err(|error| {
-                    RepositoryError::InvalidStoredData(format!("invalid budget: {error:?}"))
-                })
-            })
-            .transpose()
+        stored.map(budget_from_stored).transpose()
     }
 
     fn find_by_account_id(&self, id: AccountId) -> Result<Vec<Budget>, RepositoryError> {
@@ -936,20 +953,28 @@ impl BudgetRepository for SqliteBudgetRepository {
             i64::try_from(id.value()).map_err(|_| RepositoryError::InvalidId(id.value()))?;
         let mut statement = self
             .connection
-            .prepare("SELECT id FROM budgets WHERE account_id=?1")
+            .prepare(
+                "SELECT id, account_id, category, year, month, limit_minor, currency
+                 FROM budgets WHERE account_id=?1",
+            )
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
-        let ids = statement
-            .query_map(params![id_value], |row| row.get::<_, i64>(0))
+        let stored_budgets = statement
+            .query_map(params![id_value], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, u8>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
         let mut budgets = Vec::new();
-        for stored in ids {
+        for stored in stored_budgets {
             let stored = stored.map_err(|error| RepositoryError::Storage(error.to_string()))?;
-            let id = BudgetId::new(u64::try_from(stored).map_err(|_| {
-                RepositoryError::InvalidStoredData(format!("invalid budget id: {stored}"))
-            })?);
-            if let Some(budget) = self.find_by_id(id)? {
-                budgets.push(budget);
-            }
+            budgets.push(budget_from_stored(stored)?);
         }
         Ok(budgets)
     }
@@ -962,20 +987,33 @@ impl BudgetRepository for SqliteBudgetRepository {
     ) -> Result<Option<Budget>, RepositoryError> {
         let account = i64::try_from(account_id.value())
             .map_err(|_| RepositoryError::InvalidId(account_id.value()))?;
-        let id = self.connection.query_row(
-            "SELECT id FROM budgets WHERE account_id=?1 AND category=?2 AND year=?3 AND month=?4",
-            params![account, category_to_code(category), month.year(), month.month()],
-            |row| row.get::<_, i64>(0),
-        ).optional().map_err(|error| RepositoryError::Storage(error.to_string()))?;
-        id.map(|value| {
-            let id = BudgetId::new(u64::try_from(value).map_err(|_| {
-                RepositoryError::InvalidStoredData(format!("invalid budget id: {value}"))
-            })?);
-            self.find_by_id(id)?.ok_or_else(|| {
-                RepositoryError::InvalidStoredData("budget disappeared during lookup".to_string())
-            })
-        })
-        .transpose()
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT id, account_id, category, year, month, limit_minor, currency
+                 FROM budgets
+                 WHERE account_id=?1 AND category=?2 AND year=?3 AND month=?4",
+                params![
+                    account,
+                    category_to_code(category),
+                    month.year(),
+                    month.month()
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i32>(3)?,
+                        row.get::<_, u8>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        stored.map(budget_from_stored).transpose()
     }
 
     fn delete(&mut self, id: BudgetId) -> Result<bool, RepositoryError> {

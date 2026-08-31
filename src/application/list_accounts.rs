@@ -66,6 +66,15 @@ mod tests {
         }
 
         impl AccountRepository for FailingAccountRepository {
+            fn create(
+                &mut self,
+                _account: crate::domain::account::NewAccount,
+            ) -> Result<Account, RepositoryError> {
+                Err(RepositoryError::Storage(
+                    "Failed to create account".to_string(),
+                ))
+            }
+
             fn find_all(&self) -> Result<Vec<Account>, RepositoryError> {
                 Err(RepositoryError::Storage(
                     "Failed to fetch accounts".to_string(),
@@ -81,6 +90,18 @@ mod tests {
             fn save(&mut self, _account: Account) -> Result<(), RepositoryError> {
                 Err(RepositoryError::Storage(
                     "Failed to save account".to_string(),
+                ))
+            }
+
+            fn update(&mut self, _account: Account) -> Result<bool, RepositoryError> {
+                Err(RepositoryError::Storage(
+                    "Failed to update account".to_string(),
+                ))
+            }
+
+            fn delete(&mut self, _id: AccountId) -> Result<bool, RepositoryError> {
+                Err(RepositoryError::Storage(
+                    "Failed to delete account".to_string(),
                 ))
             }
         }
