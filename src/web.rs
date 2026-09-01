@@ -479,6 +479,7 @@ fn escape_html(value: &str) -> String {
 
 fn page(title: &str, content: &str) -> String {
     let title = escape_html(title);
+    let style = include_str!("web_style.css");
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -486,60 +487,10 @@ fn page(title: &str, content: &str) -> String {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title} · ledger_rs</title>
-  <style>
-    :root {{ color-scheme: light; --ink: #18221c; --muted: #657168; --paper: #f5f2e9; --card: #fffdf7; --line: #dcd8cb; --accent: #176b4d; }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 system-ui, sans-serif; }}
-    header {{ border-bottom: 1px solid var(--line); background: rgba(255,253,247,.88); }}
-    nav {{ max-width: 1080px; margin: auto; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; }}
-    .brand {{ color: var(--ink); font-weight: 800; letter-spacing: -.03em; text-decoration: none; }}
-    .status {{ color: var(--muted); font-size: .875rem; }}
-    main {{ max-width: 1080px; margin: auto; padding: 4rem 1.5rem; }}
-    .hero {{ max-width: 720px; }}
-    .eyebrow {{ color: var(--accent); font-size: .78rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }}
-    h1 {{ margin: .35rem 0 1rem; max-width: 650px; font-family: Georgia, serif; font-size: clamp(2.6rem, 7vw, 5.4rem); line-height: .98; letter-spacing: -.045em; }}
-    h2 {{ margin: 0 0 .35rem; font-size: 1.35rem; }}
-    h1.compact {{ font-size: clamp(2rem, 5vw, 3.6rem); }}
-    .lede, .empty-state p {{ color: var(--muted); }}
-    .empty-state {{ margin-top: 4rem; padding: 2rem; border: 1px solid var(--line); border-radius: 18px; background: var(--card); box-shadow: 0 16px 45px rgba(35, 45, 38, .06); }}
-    .dashboard {{ display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, .8fr); gap: 2rem; margin-top: 4rem; align-items: start; }}
-    .section-heading {{ display: flex; justify-content: space-between; align-items: end; margin-bottom: 1rem; }}
-    .section-heading p {{ margin: 0; }}
-    .count {{ display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%; background: #e0eadf; color: var(--accent); font-weight: 800; }}
-    .account-list {{ display: grid; gap: .75rem; }}
-    .account-card {{ display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1.2rem 1.35rem; border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink); text-decoration: none; transition: transform .15s, border-color .15s; }}
-    .account-card:hover {{ transform: translateY(-2px); border-color: #9ba99f; }}
-    .account-card span {{ display: grid; }}
-    .account-card small {{ color: var(--muted); }}
-    .account-card b {{ font-variant-numeric: tabular-nums; }}
-    .form-card {{ padding: 1.5rem; border-radius: 18px; background: #183b2d; color: #fffdf7; }}
-    .form-card .eyebrow {{ margin: 0; color: #91d5b6; }}
-    form {{ display: grid; gap: 1rem; margin-top: 1.5rem; }}
-    label {{ display: grid; gap: .4rem; font-size: .82rem; font-weight: 700; }}
-    input, select {{ width: 100%; border: 1px solid #b9c3ba; border-radius: 9px; padding: .72rem .8rem; background: #fff; color: var(--ink); font: inherit; }}
-    button, .button {{ display: inline-block; border: 0; border-radius: 9px; padding: .78rem 1rem; background: #c7f0d9; color: #123b2b; font: inherit; font-weight: 800; text-align: center; text-decoration: none; cursor: pointer; }}
-    .button.secondary {{ background: var(--ink); color: white; }}
-    .back {{ display: inline-block; margin-bottom: 2rem; color: var(--accent); font-weight: 700; text-decoration: none; }}
-    .account-hero {{ display: flex; justify-content: space-between; align-items: end; gap: 2rem; }}
-    .account-hero h1 {{ margin-bottom: 0; }}
-    .balance {{ display: grid; justify-items: end; flex: none; }}
-    .balance small {{ color: var(--muted); }}
-    .balance strong {{ font-family: Georgia, serif; font-size: clamp(1.8rem, 4vw, 3rem); font-variant-numeric: tabular-nums; }}
-    .transaction-list {{ display: grid; gap: .15rem; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--card); }}
-    .transaction-row {{ display: flex; justify-content: space-between; gap: 1rem; padding: 1rem 1.2rem; border-bottom: 1px solid var(--line); }}
-    .transaction-row:last-child {{ border-bottom: 0; }}
-    .transaction-row div {{ display: grid; }}
-    .transaction-row small {{ color: var(--muted); }}
-    .transaction-row b {{ align-self: center; font-variant-numeric: tabular-nums; }}
-    .transaction-row .expense {{ color: #a33a2d; }}
-    .transaction-row .income {{ color: var(--accent); }}
-    .empty-state.inline {{ margin: 0; }}
-    @media (max-width: 760px) {{ main {{ padding-top: 2.5rem; }} .dashboard {{ grid-template-columns: 1fr; margin-top: 2.75rem; }} .account-card {{ align-items: start; flex-direction: column; }} }}
-    @media (max-width: 560px) {{ .account-hero {{ align-items: start; flex-direction: column; }} .balance {{ justify-items: start; }} .transaction-row {{ align-items: start; flex-direction: column; }} }}
-  </style>
+  <style>{style}</style>
 </head>
 <body>
-  <header><nav><a class="brand" href="/">ledger_rs</a><span class="status">Local · SQLite</span></nav></header>
+  <header><nav><a class="brand" href="/"><span class="brand-mark">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><span class="status"><i></i> LOCAL NODE</span></nav></header>
   <main>{content}</main>
 </body>
 </html>"#
