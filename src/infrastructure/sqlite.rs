@@ -1,6 +1,8 @@
+use crate::application::audit_log::{AuditEntity, AuditLogEntry, AuditOperation};
 use crate::application::backup::ValidatedBackup;
 use crate::application::repository::{
-    AccountRepository, BudgetRepository, RepositoryError, TransactionRepository, TransferRepository,
+    AccountRepository, AuditLogRepository, BudgetRepository, RepositoryError,
+    TransactionRepository, TransferRepository,
 };
 use crate::domain::account::{Account, AccountId, NewAccount};
 use crate::domain::budget::{Budget, BudgetId, BudgetMonth, NewBudget};
@@ -218,6 +220,112 @@ pub struct SqliteTransferRepository {
 }
 pub struct SqliteBudgetRepository {
     connection: Rc<Connection>,
+}
+pub struct SqliteAuditLogRepository {
+    connection: Rc<Connection>,
+}
+
+fn audit_entity_from_code(code: &str) -> Result<AuditEntity, RepositoryError> {
+    match code {
+        "account" => Ok(AuditEntity::Account),
+        "transaction" => Ok(AuditEntity::Transaction),
+        "transfer" => Ok(AuditEntity::Transfer),
+        "budget" => Ok(AuditEntity::Budget),
+        other => Err(RepositoryError::InvalidStoredData(format!(
+            "unsupported audit entity type: {other}"
+        ))),
+    }
+}
+
+fn audit_operation_from_code(code: &str) -> Result<AuditOperation, RepositoryError> {
+    match code {
+        "create" => Ok(AuditOperation::Create),
+        "update" => Ok(AuditOperation::Update),
+        "delete" => Ok(AuditOperation::Delete),
+        other => Err(RepositoryError::InvalidStoredData(format!(
+            "unsupported audit operation: {other}"
+        ))),
+    }
+}
+
+impl AuditLogRepository for SqliteAuditLogRepository {
+    fn list_recent(&self, limit: usize) -> Result<Vec<AuditLogEntry>, RepositoryError> {
+        let limit = i64::try_from(limit).map_err(|_| RepositoryError::InvalidId(limit as u64))?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, changed_at, entity_type, entity_id, operation,
+                        before_state, after_state
+                 FROM audit_log
+                 ORDER BY id DESC
+                 LIMIT ?1",
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let stored = statement
+            .query_map(params![limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+        let mut entries = Vec::new();
+        for row in stored {
+            let (id, changed_at, entity, entity_id, operation, before_state, after_state) =
+                row.map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            let id = u64::try_from(id).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!("invalid audit log id: {id}"))
+            })?;
+            let entity_id = u64::try_from(entity_id).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!(
+                    "invalid audit log entity id: {entity_id}"
+                ))
+            })?;
+            let changed_at = changed_at.parse().map_err(|error| {
+                RepositoryError::InvalidStoredData(format!(
+                    "invalid audit log changed_at: {changed_at}, error: {error}"
+                ))
+            })?;
+            let parse_state = |state: Option<String>| {
+                state
+                    .map(|value| {
+                        serde_json::from_str(&value).map_err(|error| {
+                            RepositoryError::InvalidStoredData(format!(
+                                "invalid audit log JSON snapshot: {error}"
+                            ))
+                        })
+                    })
+                    .transpose()
+            };
+            entries.push(AuditLogEntry::from_stored(
+                id,
+                changed_at,
+                audit_entity_from_code(&entity)?,
+                entity_id,
+                audit_operation_from_code(&operation)?,
+                parse_state(before_state)?,
+                parse_state(after_state)?,
+            ));
+        }
+        Ok(entries)
+    }
+}
+
+pub fn open_audit_log_repository(
+    path: impl AsRef<Path>,
+) -> Result<SqliteAuditLogRepository, RepositoryError> {
+    let connection =
+        Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    Ok(SqliteAuditLogRepository {
+        connection: Rc::new(connection),
+    })
 }
 
 pub fn in_memory_repositories()
@@ -1634,6 +1742,38 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn lists_recent_audit_entries_newest_first_with_a_limit() {
+        let connection = Rc::new(Connection::open_in_memory().unwrap());
+        initialize_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (1, 'Cash', 'CNY')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE accounts SET name = 'Wallet' WHERE id = 1", [])
+            .unwrap();
+
+        let repository = SqliteAuditLogRepository { connection };
+        let entries = repository.list_recent(1).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id(), 2);
+        assert_eq!(entries[0].entity(), AuditEntity::Account);
+        assert_eq!(entries[0].entity_id(), 1);
+        assert_eq!(entries[0].operation(), AuditOperation::Update);
+        assert_eq!(
+            entries[0].before_state(),
+            Some(&serde_json::json!({"id": 1, "name": "Cash", "currency": "CNY"}))
+        );
+        assert_eq!(
+            entries[0].after_state(),
+            Some(&serde_json::json!({"id": 1, "name": "Wallet", "currency": "CNY"}))
+        );
     }
 
     #[test]

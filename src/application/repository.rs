@@ -1,8 +1,13 @@
+use crate::application::audit_log::AuditLogEntry;
 use crate::domain::account::{Account, AccountId, NewAccount};
 use crate::domain::budget::{Budget, BudgetId, BudgetMonth, NewBudget};
 use crate::domain::transaction::Category;
 use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
 use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
+
+pub trait AuditLogRepository {
+    fn list_recent(&self, limit: usize) -> Result<Vec<AuditLogEntry>, RepositoryError>;
+}
 
 pub trait AccountRepository {
     fn create(&mut self, account: NewAccount) -> Result<Account, RepositoryError>;
