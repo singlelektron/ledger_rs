@@ -654,6 +654,22 @@ replacing the executable therefore does not replace or delete the ledger.
 
 Install a stable Rust toolchain that supports Rust 2024 edition.
 
+The default Cargo feature set enables both interactive interfaces, preserving
+the usual `cargo build`, `cargo test`, and `cargo run --bin ...` workflow. To
+compile only one interface and its dependencies, disable default features and
+select the corresponding build profile:
+
+```bash
+cargo build --no-default-features --features tui --bins
+cargo build --no-default-features --features web --bins
+cargo build --no-default-features --features tui,web --bins
+```
+
+Every profile includes the `ledger_rs` CLI. The `tui` profile additionally
+builds `ledger_tui`, the `web` profile builds `ledger_web`, and the combined
+profile builds all three executables. A core-only CLI build remains available
+with `cargo build --no-default-features --bin ledger_rs`.
+
 Start the local Web UI with the default `ledger.db` database:
 
 ```bash
