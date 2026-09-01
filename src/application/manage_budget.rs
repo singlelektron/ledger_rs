@@ -12,6 +12,17 @@ pub enum ManageBudgetError {
     Repository(RepositoryError),
 }
 
+impl std::fmt::Display for ManageBudgetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::BudgetNotFound(id) => write!(f, "budget {id} not found"),
+            Self::Budget(error) => write!(f, "{error}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
 impl From<BudgetError> for ManageBudgetError {
     fn from(error: BudgetError) -> Self {
         Self::Budget(error)

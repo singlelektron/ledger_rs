@@ -17,6 +17,17 @@ pub enum GetRangedSummaryError {
     Summary(SummaryError),
 }
 
+impl std::fmt::Display for GetRangedSummaryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::InvalidTimeRange { from, to } => write!(f, "invalid time range: {from} to {to}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+            Self::Summary(error) => write!(f, "{error}"),
+        }
+    }
+}
+
 impl From<RepositoryError> for GetRangedSummaryError {
     fn from(error: RepositoryError) -> Self {
         GetRangedSummaryError::Repository(error)

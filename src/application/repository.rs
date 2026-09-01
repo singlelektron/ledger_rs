@@ -81,3 +81,19 @@ pub enum RepositoryError {
     Storage(String),
     InvalidStoredData(String),
 }
+
+impl std::fmt::Display for RepositoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateAccountId(id) => write!(f, "duplicate account id {id}"),
+            Self::DuplicateTransactionId(id) => write!(f, "duplicate transaction id {id}"),
+            Self::DuplicateTransferId(id) => write!(f, "duplicate transfer id {id}"),
+            Self::DuplicateBudgetId(id) => write!(f, "duplicate budget id {id}"),
+            Self::InvalidId(id) => write!(f, "invalid repository id {id}"),
+            Self::IdExhausted => write!(f, "repository exhausted its id space"),
+            Self::RestoreTargetNotEmpty => write!(f, "restore target is not empty"),
+            Self::Storage(message) => write!(f, "storage error: {message}"),
+            Self::InvalidStoredData(message) => write!(f, "invalid stored data: {message}"),
+        }
+    }
+}

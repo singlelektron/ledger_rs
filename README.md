@@ -93,18 +93,61 @@ SQLite persistence layer are implemented and tested:
 - A `clap`-based CLI entry point covering account, transaction, transfer,
   budget, report, and CSV data workflows, with case-insensitive enum parsing,
   configurable database paths, and nonzero exit status on application errors
+- An interactive TUI that opens the same SQLite database, shows balances
+  including transfers, manages accounts, transactions, transfers, and budgets,
+  and presents unified activity plus category, ranged-summary, and monthly-trend
+  reports through the shared application use cases
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 220 passing unit and workflow tests, including a shared in-memory/SQLite
+- 251 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract and a complete CLI backup/restore verification scenario
 
-The pre-TUI application core is complete. In-memory and file-backed SQLite
+The shared application core and first TUI milestone are complete. In-memory and file-backed SQLite
 repositories implement the same account, transaction, transfer, budget, and
 pagination behavior. The CLI exercises all shared workflows, including CRUD,
-balances, activity, reports, CSV exchange, and full JSON recovery. The next
-product milestone is a TUI that calls these application use cases without
-duplicating their business rules.
+balances, activity, reports, CSV exchange, and full JSON recovery. The TUI calls
+the same application use cases for interactive account, transaction, transfer,
+budget, activity, and report workflows without duplicating their business rules.
+
+## TUI
+
+Start the dashboard with the platform-specific default database:
+
+```bash
+cargo run --bin ledger_tui
+```
+
+The TUI uses the same platform data directory, legacy-file compatibility, and
+file protections as the CLI. To open another database, use the shared override:
+
+```bash
+cargo run --bin ledger_tui -- --database path/to/ledger.db
+```
+
+Use number keys to switch pages: `1` for the ledger, `2` for unified activity,
+`3` for reports, `4` for budgets, and `5` for transfers. On the ledger, budgets,
+and transfers pages, use Tab or the left/right arrows to focus the account or
+detail pane, then use the up/down arrows or `k`/`j` to move the selection. The
+activity and reports pages keep focus on the account pane because their content
+is read-only.
+
+On the ledger page, press `a` to create an account and `n` to create a
+transaction. On the transfer page, `n` creates a transfer. Press `e` or `d` to
+edit or delete the focused item. The report page uses `c` for category net
+outflow, `s` for a ranged summary, and `t` for a monthly trend. The budget page
+uses `l` to list limits, `b` to set or update a monthly category limit, and `u`
+to calculate monthly usage. Forms use Tab to move between fields, arrows to
+change enum values, Delete to clear text, Enter to submit, and Escape to cancel.
+Enter validates the form first; invalid input keeps the form open with an
+inline error message so the typed values are preserved.
+Press `r` to reload data, `q` or Ctrl+C to quit. Reloading keeps the current
+page, focus, and selection instead of resetting to the ledger page.
+
+CSV exchange and full-database JSON backup/restore remain CLI batch operations.
+They require explicit file paths, and restore intentionally operates only on an
+empty target database, so keeping them outside the interactive terminal state
+machine preserves a clearer and safer recovery boundary.
 
 ## Goals
 
@@ -290,7 +333,7 @@ category breakdown from the same selected transactions. This supports monthly,
 yearly, and custom reporting periods without separate calculation rules. CLI
 presentation for ranged summaries is implemented with stable category ordering.
 
-## Completed Pre-TUI Scope
+## Completed Shared Core Scope
 
 The shared application core now:
 
@@ -307,7 +350,7 @@ The shared application core now:
 
 The current scope does not include:
 
-- TUI or Web interfaces
+- Web interfaces
 - Authentication and authorization
 - External exchange-rate lookup or automatic currency conversion
 - Automatic time-zone detection or daylight-saving-time input resolution
@@ -524,15 +567,16 @@ version are rejected explicitly.
 - Atomic CSV transaction import and filtered export - Completed
 - Versioned JSON backup and restore - Completed
 
-### Later Milestones
+### Milestone 11: Interactive TUI Workflows - Completed
 
-#### Next: TUI
-
-- Render account activity, balances, budgets, and reports from the shared
-  application layer
+- Render accounts, balances, transaction history, and unified transfer activity
+  from the shared application layer
+- Create, edit, and delete accounts, transactions, transfers, and budgets
+  through application use cases
+- Present category reports, ranged summaries, monthly trends, and budget status
 - Keep terminal state and keyboard handling outside domain and repository code
 
-#### After TUI
+### Later Milestones
 
 - Web API
 - Authentication and synchronization

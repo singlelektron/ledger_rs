@@ -24,6 +24,18 @@ pub enum BudgetReportError {
     Repository(RepositoryError),
 }
 
+impl std::fmt::Display for BudgetReportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::InvalidTimeZone(value) => write!(f, "invalid time zone {value:?}"),
+            Self::InvalidMonthBoundary(value) => write!(f, "invalid month boundary: {value}"),
+            Self::Money(error) => write!(f, "{error}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
 impl From<MoneyError> for BudgetReportError {
     fn from(error: MoneyError) -> Self {
         Self::Money(error)
