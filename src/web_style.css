@@ -216,6 +216,8 @@ h2 {
 
 form { display: grid; gap: 13px; margin-top: 22px; }
 
+.field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
 label {
   display: grid;
   gap: 6px;
@@ -399,6 +401,18 @@ button:hover,
 .transaction-end { display: flex; align-items: center; gap: 14px; }
 .transaction-end a { color: var(--muted); font: 650 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-decoration: none; text-transform: uppercase; }
 .transaction-end a:hover { color: var(--accent); }
+
+.row-form { display: block; margin: 0; }
+.row-form button {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--negative);
+  font: 650 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-transform: uppercase;
+}
 
 .editor-shell {
   display: grid;

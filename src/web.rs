@@ -7,6 +7,7 @@ use crate::{
         manage_account::{
             ManageAccountError, delete_account_with_dependencies, get_account, rename_account,
         },
+        manage_budget::{ManageBudgetError, delete_budget, get_budget, list_budgets, set_budget},
         manage_transaction::{
             ManageTransactionError, TransactionChanges, delete_transaction, get_transaction,
             update_transaction,
@@ -19,6 +20,7 @@ use crate::{
     },
     domain::{
         account::AccountId,
+        budget::{BudgetId, BudgetMonth},
         money::{Currency, Money},
         transaction::{Category, NewTransaction, TransactionId, TransactionKind},
         transfer::{NewTransfer, TransferId},
@@ -88,6 +90,8 @@ pub fn router(database_path: PathBuf) -> Router {
             "/transfers/{transfer_id}/delete",
             post(delete_transfer_handler),
         )
+        .route("/accounts/{account_id}/budgets", post(set_budget_handler))
+        .route("/budgets/{budget_id}/delete", post(delete_budget_handler))
         .with_state(WebState::new(database_path))
 }
 
@@ -186,6 +190,14 @@ struct UpdateTransferForm {
     description: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SetBudgetForm {
+    category: String,
+    year: i32,
+    month: u8,
+    limit: String,
+}
+
 async fn home(State(state): State<WebState>) -> Result<Html<String>, WebError> {
     let (account_repository, transaction_repository, transfer_repository) =
         open_all_repositories(state.database_path())
@@ -270,8 +282,9 @@ async fn account_detail(
     Query(query): Query<TransactionQuery>,
 ) -> Result<Html<String>, WebError> {
     let account_id = AccountId::new(account_id);
-    let (accounts, transactions, transfers) = open_all_repositories(state.database_path())
-        .map_err(|error| WebError::internal("open database", error))?;
+    let (accounts, transactions, transfers, budgets) =
+        open_complete_repositories(state.database_path())
+            .map_err(|error| WebError::internal("open database", error))?;
     let account = get_account(&accounts, account_id).map_err(map_account_error)?;
     let all_accounts =
         list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
@@ -280,6 +293,8 @@ async fn account_detail(
             .map_err(|error| WebError::internal("calculate account balance", error))?;
     let account_transfers =
         list_account_transfers(&accounts, &transfers, account_id).map_err(map_transfer_error)?;
+    let account_budgets =
+        list_budgets(&accounts, &budgets, account_id).map_err(map_budget_error)?;
     let selected_kind = query
         .kind
         .as_deref()
@@ -406,6 +421,40 @@ async fn account_detail(
         )
     };
 
+    let budget_rows = if account_budgets.is_empty() {
+        String::from(
+            r#"<div class="empty-state inline"><h2>No budgets yet</h2><p>Set a monthly category limit to track planned spending.</p></div>"#,
+        )
+    } else {
+        account_budgets
+            .iter()
+            .map(|budget| {
+                format!(
+                    r#"<article class="transaction-row"><div><strong>{}</strong><small>{:04}-{:02}</small></div><span class="transaction-end"><b>{}</b><form class="row-form" method="post" action="/budgets/{}/delete"><button type="submit">Delete</button></form></span></article>"#,
+                    category_label(budget.category()),
+                    budget.month().year(),
+                    budget.month().month(),
+                    format_money(budget.limit()),
+                    budget.id().value(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let budget_form = format!(
+        r#"<div class="form-card"><p class="eyebrow">Monthly budget</p><h2>Set a category limit</h2>
+        <form method="post" action="/accounts/{account_id}/budgets">
+          <label>Category<select name="category">{category_options}</select></label>
+          <div class="field-pair"><label>Year<input name="year" type="number" required min="1" max="9999" value="2026"></label><label>Month<input name="month" type="number" required min="1" max="12" value="9"></label></div>
+          <label>Limit ({currency})<input name="limit" required inputmode="decimal" placeholder="0.00"></label>
+          <button type="submit">Set budget</button>
+        </form></div>"#,
+        account_id = account_id.value(),
+        category_options = category_options(),
+        currency = currency_code(account.currency()),
+    );
+
     let content = format!(
         r#"
         <a class="back" href="/">← All accounts</a>
@@ -439,6 +488,8 @@ async fn account_detail(
             <div class="transaction-list">{transaction_rows}</div>
             <div class="subsection-heading"><div><p class="eyebrow">Movement</p><h2>Transfers</h2></div><span class="count">{transfer_count}</span></div>
             <div class="transaction-list">{transfer_rows}</div>
+            <div class="subsection-heading"><div><p class="eyebrow">Planning</p><h2>Budgets</h2></div><span class="count">{budget_count}</span></div>
+            <div class="transaction-list">{budget_rows}</div>
           </section>
           <aside class="action-stack">
             <div class="form-card">
@@ -454,6 +505,7 @@ async fn account_detail(
               </form>
             </div>
             {transfer_form}
+            {budget_form}
           </aside>
         </div>
         "#,
@@ -465,6 +517,9 @@ async fn account_detail(
         transfer_count = account_transfers.len(),
         transfer_rows = transfer_rows,
         transfer_form = transfer_form,
+        budget_count = account_budgets.len(),
+        budget_rows = budget_rows,
+        budget_form = budget_form,
         category_options = category_options(),
         search_query = escape_html(query.q.as_deref().unwrap_or_default()),
         kind_filter_options = transaction_kind_options(selected_kind, true),
@@ -793,6 +848,49 @@ async fn delete_transfer_handler(
     )))
 }
 
+async fn set_budget_handler(
+    State(state): State<WebState>,
+    Path(account_id): Path<u64>,
+    Form(input): Form<SetBudgetForm>,
+) -> Result<Redirect, WebError> {
+    let account_id = AccountId::new(account_id);
+    let category = parse_category(&input.category)
+        .ok_or_else(|| WebError::bad_request("Choose a supported category."))?;
+    let month = BudgetMonth::new(input.year, input.month)
+        .map_err(|error| WebError::bad_request(format!("Invalid budget month: {error:?}")))?;
+    let limit_minor = parse_major_amount(&input.limit)
+        .ok_or_else(|| WebError::bad_request("Enter a valid positive budget limit."))?;
+    let (accounts, _, _, mut budgets) = open_complete_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    set_budget(
+        &accounts,
+        &mut budgets,
+        account_id,
+        category,
+        month,
+        limit_minor,
+    )
+    .map_err(map_budget_error)?;
+
+    Ok(Redirect::to(&format!("/accounts/{}", account_id.value())))
+}
+
+async fn delete_budget_handler(
+    State(state): State<WebState>,
+    Path(budget_id): Path<u64>,
+) -> Result<Redirect, WebError> {
+    let budget_id = BudgetId::new(budget_id);
+    let (_, _, _, mut budgets) = open_complete_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let current = get_budget(&budgets, budget_id).map_err(map_budget_error)?;
+    delete_budget(&mut budgets, budget_id).map_err(map_budget_error)?;
+
+    Ok(Redirect::to(&format!(
+        "/accounts/{}",
+        current.account_id().value()
+    )))
+}
+
 fn map_account_error(error: ManageAccountError) -> WebError {
     match error {
         ManageAccountError::AccountNotFound(id) => {
@@ -833,6 +931,19 @@ fn map_transfer_error(error: ManageTransferError) -> WebError {
         }
         ManageTransferError::Repository(error) => WebError::internal("manage transfer", error),
         other => WebError::bad_request(format!("Invalid transfer: {other:?}")),
+    }
+}
+
+fn map_budget_error(error: ManageBudgetError) -> WebError {
+    match error {
+        ManageBudgetError::AccountNotFound(id) => {
+            WebError::not_found(format!("Account {} does not exist.", id.value()))
+        }
+        ManageBudgetError::BudgetNotFound(id) => {
+            WebError::not_found(format!("Budget {} does not exist.", id.value()))
+        }
+        ManageBudgetError::Repository(error) => WebError::internal("manage budget", error),
+        other => WebError::bad_request(format!("Invalid budget: {other:?}")),
     }
 }
 
@@ -1474,5 +1585,54 @@ mod tests {
                 .unwrap();
         assert!(!after_delete.0.contains("Updated exchange"));
         assert!(after_delete.0.contains("No transfers yet"));
+    }
+
+    #[tokio::test]
+    async fn budget_management_sets_updates_lists_and_deletes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+        for limit in ["500.00", "650.00"] {
+            let _redirect = set_budget_handler(
+                State(state.clone()),
+                Path(1),
+                Form(SetBudgetForm {
+                    category: String::from("food"),
+                    year: 2026,
+                    month: 9,
+                    limit: String::from(limit),
+                }),
+            )
+            .await
+            .unwrap();
+        }
+
+        let detail = account_detail(
+            State(state.clone()),
+            Path(1),
+            Query(TransactionQuery::default()),
+        )
+        .await
+        .unwrap();
+        assert!(detail.0.contains("Food"));
+        assert!(detail.0.contains("650.00 CNY"));
+        assert!(!detail.0.contains("500.00 CNY"));
+
+        let _redirect = delete_budget_handler(State(state.clone()), Path(1))
+            .await
+            .unwrap();
+        let after_delete =
+            account_detail(State(state), Path(1), Query(TransactionQuery::default()))
+                .await
+                .unwrap();
+        assert!(after_delete.0.contains("No budgets yet"));
     }
 }
