@@ -74,6 +74,10 @@ nav {
 
 .brand-dim { color: #52617a; }
 
+.nav-links { display: flex; gap: 6px; }
+.nav-links a { padding: 8px 10px; border-radius: 6px; color: var(--muted); font-size: .75rem; text-decoration: none; }
+.nav-links a:hover { background: var(--surface); color: var(--ink); }
+
 .status {
   display: inline-flex;
   align-items: center;
@@ -421,6 +425,40 @@ button:hover,
   align-items: start;
 }
 
+.compact-hero { max-width: 560px; }
+
+.report-controls {
+  display: grid;
+  grid-template-columns: 1.2fr .75fr .75fr 1fr auto;
+  gap: 10px;
+  margin: 38px 0 28px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(12, 18, 29, .88);
+  align-items: end;
+}
+
+.report-controls button { height: 42px; }
+.report-results { margin-top: 34px; }
+
+.table-shell { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(12, 18, 29, .9); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 13px 16px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font: 650 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .06em; text-transform: uppercase; }
+td { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .78rem; }
+tbody tr:last-child td { border-bottom: 0; }
+.positive { color: var(--positive); }
+.negative { color: var(--negative); }
+
+.metric-list { display: grid; gap: 8px; }
+.metric-row { display: flex; padding: 15px 17px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(12, 18, 29, .9); align-items: center; justify-content: space-between; gap: 18px; }
+.metric-row > div { display: grid; gap: 3px; }
+.metric-row > div:last-child { justify-items: end; }
+.metric-row small, .metric-row span { color: var(--muted); font-size: .72rem; }
+.metric-row b { font: 650 .76rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
 .delete-form {
   margin-top: 14px;
   padding-top: 14px;
@@ -437,6 +475,8 @@ button:hover,
   .editor-shell { grid-template-columns: 1fr; gap: 30px; }
   .filter-bar { grid-template-columns: 1fr 1fr; }
   .filter-bar input { grid-column: 1 / -1; }
+  .report-controls { grid-template-columns: 1fr 1fr; }
+  .report-controls label:first-child, .report-controls label:nth-child(4), .report-controls button { grid-column: 1 / -1; }
 }
 
 @media (max-width: 560px) {
@@ -447,4 +487,7 @@ button:hover,
   .transaction-row { align-items: start; flex-direction: column; }
   .transaction-end { width: 100%; justify-content: space-between; }
   .status { font-size: 9px; }
+  .nav-links { display: none; }
+  .metric-row { align-items: start; flex-direction: column; }
+  .metric-row > div:last-child { justify-items: start; }
 }

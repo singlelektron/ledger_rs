@@ -1,6 +1,7 @@
 use crate::{
     application::{
         account_balance::get_account_balance_with_transfers,
+        budget_report::get_budget_statuses,
         create_account::create_account,
         list_accounts::list_accounts,
         list_transactions::{TransactionFilter, list_account_transactions},
@@ -16,6 +17,7 @@ use crate::{
             ManageTransferError, TransferChanges, create_transfer, delete_transfer, get_transfer,
             list_account_transfers, update_transfer,
         },
+        monthly_trend::get_monthly_trend,
         record_transaction::record_transaction,
     },
     domain::{
@@ -92,6 +94,7 @@ pub fn router(database_path: PathBuf) -> Router {
         )
         .route("/accounts/{account_id}/budgets", post(set_budget_handler))
         .route("/budgets/{budget_id}/delete", post(delete_budget_handler))
+        .route("/reports", get(reports))
         .with_state(WebState::new(database_path))
 }
 
@@ -198,6 +201,14 @@ struct SetBudgetForm {
     limit: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ReportQuery {
+    account_id: Option<u64>,
+    from: Option<String>,
+    to: Option<String>,
+    time_zone: Option<String>,
+}
+
 async fn home(State(state): State<WebState>) -> Result<Html<String>, WebError> {
     let (account_repository, transaction_repository, transfer_repository) =
         open_all_repositories(state.database_path())
@@ -260,6 +271,118 @@ async fn home(State(state): State<WebState>) -> Result<Html<String>, WebError> {
     );
 
     Ok(Html(page("Overview", &content)))
+}
+
+async fn reports(
+    State(state): State<WebState>,
+    Query(query): Query<ReportQuery>,
+) -> Result<Html<String>, WebError> {
+    let (accounts, transactions, _, budgets) = open_complete_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let all_accounts =
+        list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
+    let selected_account = query.account_id.map(AccountId::new);
+    let time_zone = query.time_zone.as_deref().unwrap_or("Asia/Shanghai");
+
+    let results = match (selected_account, query.from.as_deref(), query.to.as_deref()) {
+        (Some(account_id), Some(from), Some(to)) if !from.is_empty() && !to.is_empty() => {
+            let account = get_account(&accounts, account_id).map_err(map_account_error)?;
+            let from = parse_budget_month(from)?;
+            let to = parse_budget_month(to)?;
+            let trends =
+                get_monthly_trend(&accounts, &transactions, account_id, from, to, time_zone)
+                    .map_err(|error| {
+                        WebError::bad_request(format!("Could not build trend: {error:?}"))
+                    })?;
+            let statuses = get_budget_statuses(
+                &accounts,
+                &transactions,
+                &budgets,
+                account_id,
+                to,
+                time_zone,
+            )
+            .map_err(|error| {
+                WebError::bad_request(format!("Could not build budget status: {error:?}"))
+            })?;
+
+            let trend_rows = trends
+                .iter()
+                .map(|trend| {
+                    let net_class = if trend.summary.net_change().minor_units() < 0 {
+                        "negative"
+                    } else {
+                        "positive"
+                    };
+                    format!(
+                        r#"<tr><td>{:04}-{:02}</td><td>{}</td><td>{}</td><td class="{}">{}</td></tr>"#,
+                        trend.month.year(),
+                        trend.month.month(),
+                        format_money(trend.summary.income_total()),
+                        format_money(trend.summary.net_expense_total()),
+                        net_class,
+                        format_money(trend.summary.net_change()),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            let budget_rows = if statuses.is_empty() {
+                String::from(
+                    r#"<div class="empty-state inline"><h2>No budgets in the ending month</h2><p>Set one from the account page to compare plan and actual spending.</p></div>"#,
+                )
+            } else {
+                statuses
+                    .iter()
+                    .map(|status| {
+                        let state_class = if status.overrun { "negative" } else { "positive" };
+                        let state_label = if status.overrun { "Over" } else { "On track" };
+                        format!(
+                            r#"<article class="metric-row"><div><strong>{}</strong><small>Limit {}</small></div><div><span>Used {}</span><b class="{}">{} · {}</b></div></article>"#,
+                            category_label(status.budget.category()),
+                            format_money(status.budget.limit()),
+                            format_money(&status.used),
+                            state_class,
+                            state_label,
+                            format_money(&status.remaining),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            };
+            format!(
+                r#"<section class="report-results"><div class="section-heading"><div><p class="eyebrow">Monthly trend</p><h2>{} · {} to {}</h2></div></div><div class="table-shell"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>{}</tbody></table></div><div class="subsection-heading"><div><p class="eyebrow">Budget execution</p><h2>Ending month status</h2></div></div><div class="metric-list">{}</div></section>"#,
+                escape_html(account.name()),
+                format_budget_month(from),
+                format_budget_month(to),
+                trend_rows,
+                budget_rows,
+            )
+        }
+        _ => String::from(
+            r#"<section class="empty-state"><h2>Choose a reporting range</h2><p>Monthly rows include zero-activity months and use the selected IANA time zone.</p></section>"#,
+        ),
+    };
+
+    let content = format!(
+        r#"
+        <section class="hero compact-hero"><p class="eyebrow">Analytics</p><h1 class="compact">Reports</h1><p class="lede">Inspect cash flow trends and monthly budget execution from local ledger data.</p></section>
+        <form class="report-controls" method="get" action="/reports">
+          <label>Account<select name="account_id" required>{account_options}</select></label>
+          <label>From<input type="month" name="from" required value="{from}"></label>
+          <label>To<input type="month" name="to" required value="{to}"></label>
+          <label>Time zone<input name="time_zone" required value="{time_zone}"></label>
+          <button type="submit">Run report</button>
+        </form>
+        {results}
+        "#,
+        account_options = account_options(&all_accounts, None, selected_account),
+        from = escape_html(query.from.as_deref().unwrap_or_default()),
+        to = escape_html(query.to.as_deref().unwrap_or_default()),
+        time_zone = escape_html(time_zone),
+        results = results,
+    );
+
+    Ok(Html(page("Reports", &content)))
 }
 
 async fn create_account_handler(
@@ -986,6 +1109,24 @@ fn parse_local_zoned(value: &str, time_zone_name: &str) -> Result<jiff::Zoned, W
         .map_err(|_| WebError::bad_request("That local time is ambiguous or does not exist."))
 }
 
+fn parse_budget_month(value: &str) -> Result<BudgetMonth, WebError> {
+    let (year, month) = value
+        .split_once('-')
+        .ok_or_else(|| WebError::bad_request("Enter a valid reporting month."))?;
+    let year = year
+        .parse::<i32>()
+        .map_err(|_| WebError::bad_request("Enter a valid reporting year."))?;
+    let month = month
+        .parse::<u8>()
+        .map_err(|_| WebError::bad_request("Enter a valid reporting month."))?;
+    BudgetMonth::new(year, month)
+        .map_err(|error| WebError::bad_request(format!("Invalid month: {error:?}")))
+}
+
+fn format_budget_month(month: BudgetMonth) -> String {
+    format!("{:04}-{:02}", month.year(), month.month())
+}
+
 fn parse_transaction_kind(value: &str) -> Option<TransactionKind> {
     match value {
         "income" => Some(TransactionKind::Income),
@@ -1195,7 +1336,7 @@ fn page(title: &str, content: &str) -> String {
   <style>{style}</style>
 </head>
 <body>
-  <header><nav><a class="brand" href="/"><span class="brand-mark">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><span class="status"><i></i> LOCAL NODE</span></nav></header>
+  <header><nav><a class="brand" href="/"><span class="brand-mark">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><div class="nav-links"><a href="/">Overview</a><a href="/reports">Reports</a></div><span class="status"><i></i> LOCAL NODE</span></nav></header>
   <main>{content}</main>
 </body>
 </html>"#
@@ -1634,5 +1775,69 @@ mod tests {
                 .await
                 .unwrap();
         assert!(after_delete.0.contains("No budgets yet"));
+    }
+
+    #[tokio::test]
+    async fn reports_render_monthly_cash_flow_and_budget_status() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+        for (kind, amount, description, category) in [
+            ("income", "100.00", "Salary", "salary"),
+            ("expense", "20.00", "Lunch", "food"),
+        ] {
+            let _redirect = create_transaction_handler(
+                State(state.clone()),
+                Path(1),
+                Form(CreateTransactionForm {
+                    kind: String::from(kind),
+                    amount: String::from(amount),
+                    occurred_at: String::from("2026-09-01T12:00"),
+                    time_zone: String::from("Asia/Shanghai"),
+                    description: String::from(description),
+                    category: String::from(category),
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let _redirect = set_budget_handler(
+            State(state.clone()),
+            Path(1),
+            Form(SetBudgetForm {
+                category: String::from("food"),
+                year: 2026,
+                month: 9,
+                limit: String::from("50.00"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = reports(
+            State(state),
+            Query(ReportQuery {
+                account_id: Some(1),
+                from: Some(String::from("2026-09")),
+                to: Some(String::from("2026-09")),
+                time_zone: Some(String::from("Asia/Shanghai")),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.0.contains("100.00 CNY"));
+        assert!(response.0.contains("20.00 CNY"));
+        assert!(response.0.contains("80.00 CNY"));
+        assert!(response.0.contains("Limit 50.00 CNY"));
+        assert!(response.0.contains("On track · 30.00 CNY"));
     }
 }
