@@ -1,5 +1,6 @@
 use crate::{
     application::{
+        account_activity::{AccountActivity, AccountActivityError, list_account_activity},
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
@@ -37,6 +38,7 @@ pub enum LoadError {
     Accounts(ListAccountsError),
     Balance(GetAccountBalanceError),
     Transactions(ListTransactionsError),
+    Activity(AccountActivityError),
 }
 
 impl From<ListAccountsError> for LoadError {
@@ -57,11 +59,18 @@ impl From<ListTransactionsError> for LoadError {
     }
 }
 
+impl From<AccountActivityError> for LoadError {
+    fn from(error: AccountActivityError) -> Self {
+        Self::Activity(error)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountOverview {
     account: Account,
     balance: Money,
     transactions: Vec<Transaction>,
+    activity: Vec<AccountActivity>,
 }
 
 impl AccountOverview {
@@ -76,6 +85,10 @@ impl AccountOverview {
     pub fn transactions(&self) -> &[Transaction] {
         &self.transactions
     }
+
+    pub fn activity(&self) -> &[AccountActivity] {
+        &self.activity
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +97,7 @@ pub struct App {
     selected_account: usize,
     selected_transaction: usize,
     focus: Focus,
+    page: Page,
     mode: Mode,
     status: Option<Status>,
 }
@@ -118,6 +132,12 @@ pub enum Action {
 pub enum Focus {
     Accounts,
     Transactions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Ledger,
+    Activity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,10 +363,17 @@ impl App {
                     account.id(),
                     TransactionFilter::default(),
                 )?;
+                let activity = list_account_activity(
+                    account_repository,
+                    transaction_repository,
+                    transfer_repository,
+                    account.id(),
+                )?;
                 Ok(AccountOverview {
                     account,
                     balance,
                     transactions,
+                    activity,
                 })
             })
             .collect::<Result<Vec<_>, LoadError>>()?;
@@ -356,6 +383,7 @@ impl App {
             selected_account: 0,
             selected_transaction: 0,
             focus: Focus::Accounts,
+            page: Page::Ledger,
             mode: Mode::Browse,
             status: None,
         })
@@ -387,6 +415,10 @@ impl App {
 
     pub fn focus(&self) -> Focus {
         self.focus
+    }
+
+    pub fn page(&self) -> Page {
+        self.page
     }
 
     pub fn set_status(&mut self, message: impl Into<String>, is_error: bool) {
@@ -478,6 +510,15 @@ impl App {
         match key {
             KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
             KeyCode::Char('r') => Action::Reload,
+            KeyCode::Char('1') => {
+                self.page = Page::Ledger;
+                Action::Continue
+            }
+            KeyCode::Char('2') => {
+                self.page = Page::Activity;
+                self.focus = Focus::Accounts;
+                Action::Continue
+            }
             KeyCode::Char('a') => {
                 self.mode = Mode::AccountForm(AccountForm {
                     kind: AccountFormKind::Create,
@@ -784,7 +825,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             Constraint::Length(2),
         ])
         .areas(frame.area());
-    let [accounts_area, transactions_area] = Layout::default()
+    let [accounts_area, detail_area] = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
         .areas(content_area);
@@ -800,20 +841,31 @@ pub fn render(frame: &mut Frame, app: &App) {
                 selected_name.to_string(),
                 Style::default().fg(Color::Cyan).bold(),
             ),
+            Span::raw("  "),
+            Span::styled(
+                match app.page() {
+                    Page::Ledger => "Ledger",
+                    Page::Activity => "Activity",
+                },
+                Style::default().fg(Color::Magenta).bold(),
+            ),
         ]))
         .block(Block::default().borders(Borders::ALL).title(" Dashboard ")),
         header_area,
     );
 
     render_accounts(frame, app, accounts_area);
-    render_transactions(frame, app, transactions_area);
+    match app.page() {
+        Page::Ledger => render_transactions(frame, app, detail_area),
+        Page::Activity => render_activity(frame, app, detail_area),
+    }
     render_footer(frame, app, footer_area);
     render_mode(frame, app);
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines = vec![Line::from(
-        "Tab/←/→ focus  ↑/k previous  ↓/j next  a account  n transaction  e edit  d delete  r refresh  q quit",
+        "1 ledger  2 activity  Tab/←/→ focus  ↑/k ↓/j move  a account  n transaction  e edit  d delete  r refresh  q quit",
     )];
     if let Some(status) = &app.status {
         lines.push(Line::styled(
@@ -1062,6 +1114,60 @@ fn render_transactions(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     frame.render_stateful_widget(table, area, &mut state);
 }
 
+fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(account) = app.selected_account() else {
+        frame.render_widget(
+            Paragraph::new("No activity to display")
+                .block(Block::default().borders(Borders::ALL).title(" Activity ")),
+            area,
+        );
+        return;
+    };
+
+    let account_id = account.account().id();
+    let rows = account.activity().iter().map(|activity| match activity {
+        AccountActivity::Transaction(transaction) => Row::new(vec![
+            Cell::from(transaction.occurred_at().to_string()),
+            Cell::from(kind_label(transaction.kind())),
+            Cell::from(format_transaction_amount(transaction)),
+            Cell::from(transaction.description().to_string()),
+        ]),
+        AccountActivity::Transfer(transfer) => {
+            let (kind, sign, amount) = if transfer.source_account_id() == account_id {
+                ("Transfer out", "-", transfer.source_amount())
+            } else {
+                ("Transfer in", "+", transfer.destination_amount())
+            };
+            Row::new(vec![
+                Cell::from(transfer.occurred_at().to_string()),
+                Cell::from(kind),
+                Cell::from(format!("{sign}{}", format_money(amount))),
+                Cell::from(transfer.description().to_string()),
+            ])
+        }
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(24),
+            Constraint::Length(13),
+            Constraint::Length(15),
+            Constraint::Min(12),
+        ],
+    )
+    .header(
+        Row::new(["Occurred at", "Activity", "Amount", "Description"])
+            .style(Style::default().fg(Color::Cyan).bold()),
+    )
+    .column_spacing(1)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Activity ({}) ", account.activity().len())),
+    );
+    frame.render_widget(table, area);
+}
+
 fn focus_border(focused: bool) -> Style {
     if focused {
         Style::default().fg(Color::Cyan)
@@ -1214,6 +1320,10 @@ mod tests {
             app.accounts()[1].balance(),
             &Money::from_minor_units(100, Currency::Cny)
         );
+        assert!(matches!(
+            app.accounts()[0].activity()[0],
+            AccountActivity::Transfer(_)
+        ));
     }
 
     #[test]
@@ -1263,6 +1373,10 @@ mod tests {
         assert_eq!(app.handle_key(KeyCode::Up), Action::Continue);
         assert_eq!(app.selected_index(), Some(0));
         assert_eq!(app.handle_key(KeyCode::Char('r')), Action::Reload);
+        assert_eq!(app.handle_key(KeyCode::Char('2')), Action::Continue);
+        assert_eq!(app.page(), Page::Activity);
+        assert_eq!(app.handle_key(KeyCode::Char('1')), Action::Continue);
+        assert_eq!(app.page(), Page::Ledger);
         assert_eq!(app.handle_key(KeyCode::Esc), Action::Quit);
     }
 
@@ -1323,6 +1437,55 @@ mod tests {
         assert!(screen.contains("Cash"));
         assert!(screen.contains("0.00 CNY"));
         assert!(screen.contains("Transactions (0)"));
+    }
+
+    #[test]
+    fn renders_transactions_and_transfers_in_activity_page() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let mut transfers = InMemoryTransferRepository::new();
+        let source = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        let target = Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap();
+        accounts.save(source.clone()).unwrap();
+        accounts.save(target.clone()).unwrap();
+        transactions
+            .save(
+                Transaction::new(
+                    TransactionId::new(1),
+                    source.id(),
+                    TransactionKind::Income,
+                    Money::from_minor_units(500, Currency::Cny),
+                    "2026-08-30T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "Salary".to_string(),
+                    Category::Salary,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        transfers
+            .create(
+                NewTransfer::new(
+                    source.id(),
+                    target.id(),
+                    Money::from_minor_units(100, Currency::Cny),
+                    Money::from_minor_units(100, Currency::Cny),
+                    "2026-08-31T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "Savings".to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('2'));
+        let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Activity (2)"));
+        assert!(screen.contains("Transfer out"));
+        assert!(screen.contains("-1.00 CNY"));
+        assert!(screen.contains("Salary"));
     }
 
     #[test]
