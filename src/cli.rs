@@ -1,4 +1,5 @@
 use crate::{
+    app_paths::{prepare_database_parent, resolve_database_path, secure_database_file},
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
         backup::{BackupError, create_json_backup, validate_json_backup},
@@ -42,9 +43,14 @@ use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
+#[command(version, about = "A local-first personal accounting CLI")]
 pub struct Cli {
-    #[arg(long, default_value = "ledger.db")]
-    pub database: PathBuf,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "SQLite database path (defaults to the platform user data directory)"
+    )]
+    pub database: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -686,12 +692,32 @@ fn parse_budget_month(input: &str) -> Result<BudgetMonth, CliError> {
 }
 
 pub fn run(cli: Cli) -> Result<String, CliError> {
+    let database = resolve_database_path(cli.database);
+    if database.uses_legacy_current_directory()
+        && let Some(migration_target) = database.migration_target()
+    {
+        eprintln!(
+            "Warning: using legacy database at {}; move it to {} while ledger_rs is not running to migrate",
+            database.path().display(),
+            migration_target.display()
+        );
+    }
+
+    prepare_database_parent(&database).map_err(|error| CliError::Io {
+        path: database.path().to_path_buf(),
+        message: error.to_string(),
+    })?;
+
     let (
         mut account_repository,
         mut transaction_repository,
         mut transfer_repository,
         mut budget_repository,
-    ) = open_complete_repositories(&cli.database)?;
+    ) = open_complete_repositories(database.path())?;
+    secure_database_file(&database).map_err(|error| CliError::Io {
+        path: database.path().to_path_buf(),
+        message: error.to_string(),
+    })?;
 
     match cli.command {
         Command::Account { command } => match command {
@@ -1296,7 +1322,7 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     message: error.to_string(),
                 })?;
                 let backup = validate_json_backup(&contents)?;
-                restore_backup(&cli.database, &backup)?;
+                restore_backup(database.path(), &backup)?;
                 Ok(format!("Restored backup from {}", input.display()))
             }
             DataCommand::ImportTransactions { input } => {
@@ -1358,7 +1384,7 @@ mod tests {
 
     fn create_account_cli(database: PathBuf, _legacy_id: u64, name: &str) -> Cli {
         Cli {
-            database,
+            database: Some(database),
             command: Command::Account {
                 command: AccountCommand::Create {
                     name: name.to_string(),
@@ -1383,7 +1409,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(cli.database, PathBuf::from("test.db"));
+        assert_eq!(cli.database, Some(PathBuf::from("test.db")));
 
         match cli.command {
             Command::Account {
@@ -1395,6 +1421,13 @@ mod tests {
 
             _ => panic!("expected account command"),
         }
+    }
+
+    #[test]
+    fn uses_platform_database_path_by_default() {
+        let cli = Cli::try_parse_from(["ledger_rs", "account", "list"]).unwrap();
+
+        assert_eq!(cli.database, None);
     }
 
     #[test]
@@ -1465,6 +1498,21 @@ mod tests {
         assert_eq!(stored.id(), AccountId::new(1));
         assert_eq!(stored.name(), "Cash");
         assert_eq!(stored.currency(), Currency::Cny);
+    }
+
+    #[test]
+    fn creates_missing_database_directories() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir
+            .path()
+            .join("application-data")
+            .join("ledger_rs")
+            .join("ledger.db");
+
+        let result = run(create_account_cli(database.clone(), 1, "Cash"));
+
+        assert_eq!(result, Ok("Created account 1: Cash (Cny)".to_string()));
+        assert!(database.is_file());
     }
 
     #[test]
@@ -1624,7 +1672,7 @@ mod tests {
         run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
 
         let cli = Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1674,7 +1722,7 @@ mod tests {
         run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1708,7 +1756,7 @@ mod tests {
         run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 2,
@@ -1739,7 +1787,7 @@ mod tests {
         run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1773,7 +1821,7 @@ mod tests {
         run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1793,7 +1841,7 @@ mod tests {
         let database = temp_dir.path().join("ledger.db");
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1835,7 +1883,7 @@ mod tests {
         let database = temp_dir.path().join("ledger.db");
 
         let cli = Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Account {
                 command: AccountCommand::Create {
                     name: "Cash".to_string(),
@@ -1847,7 +1895,7 @@ mod tests {
         let _ = run(cli).unwrap();
 
         let cli = Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1865,7 +1913,7 @@ mod tests {
         let _ = run(cli).unwrap();
 
         let cli = Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1883,7 +1931,7 @@ mod tests {
         let _ = run(cli).unwrap();
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Account {
                 command: AccountCommand::Balance { id: 1 },
             },
@@ -1900,7 +1948,7 @@ mod tests {
         let database = temp_dir.path().join("ledger.db");
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Account {
                 command: AccountCommand::Balance { id: 99 },
             },
@@ -1916,7 +1964,7 @@ mod tests {
 
     fn populate_database(database: PathBuf) {
         let cli = Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Account {
                 command: AccountCommand::Create {
                     name: "Cash".to_string(),
@@ -1928,7 +1976,7 @@ mod tests {
         let _ = run(cli).unwrap();
 
         let cli = Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1946,7 +1994,7 @@ mod tests {
         let _ = run(cli).unwrap();
 
         let cli = Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1964,7 +2012,7 @@ mod tests {
         let _ = run(cli).unwrap();
 
         let cli = Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -1990,7 +2038,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Report {
                 command: ReportCommand::Category { account_id: 1 },
             },
@@ -2012,7 +2060,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Report {
                 command: ReportCommand::Category { account_id: 2 },
             },
@@ -2048,7 +2096,7 @@ mod tests {
         let database = temp_dir.path().join("ledger.db");
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -2148,7 +2196,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2184,7 +2232,7 @@ mod tests {
         run(create_account_cli(database.clone(), 1, "Cash")).unwrap();
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2213,7 +2261,7 @@ mod tests {
         let database = temp_dir.path().join("ledger.db");
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 999,
@@ -2261,7 +2309,7 @@ mod tests {
         run(create_account_cli(database.clone(), 2, "Bank")).unwrap();
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Account {
                 command: AccountCommand::List,
             },
@@ -2282,7 +2330,7 @@ mod tests {
         let database = temp_dir.path().join("ledger.db");
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Account {
                 command: AccountCommand::List,
             },
@@ -2365,7 +2413,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2399,7 +2447,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2484,7 +2532,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2517,7 +2565,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2551,7 +2599,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2636,7 +2684,7 @@ mod tests {
         populate_database(database.clone());
 
         let cli = Cli {
-            database,
+            database: Some(database),
             command: Command::Report {
                 command: ReportCommand::Summary {
                     account_id: 1,
@@ -2666,7 +2714,7 @@ mod tests {
         run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
 
         let shown = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Account {
                 command: AccountCommand::Show { id: 1 },
             },
@@ -2675,7 +2723,7 @@ mod tests {
         assert_eq!(shown, "Account 1: Cash (Cny)");
 
         let updated = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Account {
                 command: AccountCommand::Update {
                     id: 1,
@@ -2687,7 +2735,7 @@ mod tests {
         assert_eq!(updated, "Updated account 1: Wallet (Cny)");
 
         let deleted = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Account {
                 command: AccountCommand::Delete { id: 1 },
             },
@@ -2697,7 +2745,7 @@ mod tests {
 
         assert_eq!(
             run(Cli {
-                database,
+                database: Some(database),
                 command: Command::Account {
                     command: AccountCommand::Show { id: 1 },
                 },
@@ -2714,7 +2762,7 @@ mod tests {
         let database = temp_dir.path().join("ledger.db");
         run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
         run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -2731,7 +2779,7 @@ mod tests {
         .unwrap();
 
         let shown = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Show { id: 1 },
             },
@@ -2741,7 +2789,7 @@ mod tests {
         assert!(shown.contains("Lunch"));
 
         let updated = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Update {
                     id: 1,
@@ -2760,7 +2808,7 @@ mod tests {
         assert_eq!(updated, "Updated transaction 1");
 
         let shown = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Show { id: 1 },
             },
@@ -2771,7 +2819,7 @@ mod tests {
 
         assert_eq!(
             run(Cli {
-                database,
+                database: Some(database),
                 command: Command::Transaction {
                     command: TransactionCommand::Delete { id: 1 },
                 },
@@ -2826,7 +2874,7 @@ mod tests {
         populate_database(database.clone());
 
         let first = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2851,7 +2899,7 @@ mod tests {
             .to_string();
 
         let second = run(Cli {
-            database,
+            database: Some(database),
             command: Command::Transaction {
                 command: TransactionCommand::List {
                     account_id: 1,
@@ -2881,7 +2929,7 @@ mod tests {
         run(create_account_cli(database.clone(), 0, "Destination")).unwrap();
 
         let created = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Transfer {
                 command: TransferCommand::Add {
                     source_account_id: 1,
@@ -2900,14 +2948,14 @@ mod tests {
         assert_eq!(created, "Created transfer 1");
 
         let source_balance = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Account {
                 command: AccountCommand::Balance { id: 1 },
             },
         })
         .unwrap();
         let destination_balance = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Account {
                 command: AccountCommand::Balance { id: 2 },
             },
@@ -2918,7 +2966,7 @@ mod tests {
 
         assert_eq!(
             run(Cli {
-                database: database.clone(),
+                database: Some(database.clone()),
                 command: Command::Account {
                     command: AccountCommand::Delete { id: 1 },
                 },
@@ -2930,7 +2978,7 @@ mod tests {
 
         assert_eq!(
             run(Cli {
-                database,
+                database: Some(database),
                 command: Command::Transfer {
                     command: TransferCommand::Delete { id: 1 },
                 },
@@ -2946,7 +2994,7 @@ mod tests {
         run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
 
         let set = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Budget {
                 command: BudgetCommand::Set {
                     account_id: 1,
@@ -2961,7 +3009,7 @@ mod tests {
         assert_eq!(set, "Set budget 1");
 
         let updated = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Budget {
                 command: BudgetCommand::Set {
                     account_id: 1,
@@ -2975,7 +3023,7 @@ mod tests {
         .unwrap();
         assert_eq!(updated, "Set budget 1");
         let shown = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Budget {
                 command: BudgetCommand::Show { id: 1 },
             },
@@ -2984,7 +3032,7 @@ mod tests {
         assert!(shown.contains("2000(Cny)"));
 
         let status = run(Cli {
-            database: database.clone(),
+            database: Some(database.clone()),
             command: Command::Budget {
                 command: BudgetCommand::Status {
                     account_id: 1,
@@ -3002,7 +3050,7 @@ mod tests {
 
         assert_eq!(
             run(Cli {
-                database: database.clone(),
+                database: Some(database.clone()),
                 command: Command::Account {
                     command: AccountCommand::Delete { id: 1 },
                 },
@@ -3013,7 +3061,7 @@ mod tests {
         );
         assert_eq!(
             run(Cli {
-                database,
+                database: Some(database),
                 command: Command::Budget {
                     command: BudgetCommand::Delete { id: 1 },
                 },
@@ -3029,7 +3077,7 @@ mod tests {
         populate_database(database.clone());
 
         let output = run(Cli {
-            database,
+            database: Some(database),
             command: Command::Report {
                 command: ReportCommand::Trend {
                     account_id: 1,
@@ -3055,7 +3103,7 @@ mod tests {
         run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
         run(create_account_cli(target_database.clone(), 0, "Cash")).unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -3072,7 +3120,7 @@ mod tests {
         .unwrap();
 
         let exported = run(Cli {
-            database: source_database,
+            database: Some(source_database),
             command: Command::Data {
                 command: DataCommand::ExportTransactions {
                     account_id: 1,
@@ -3100,7 +3148,7 @@ mod tests {
         );
 
         let imported = run(Cli {
-            database: target_database.clone(),
+            database: Some(target_database.clone()),
             command: Command::Data {
                 command: DataCommand::ImportTransactions {
                     input: csv_path.clone(),
@@ -3125,7 +3173,7 @@ mod tests {
         let backup_path = temp_dir.path().join("ledger.json");
         run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Account {
                 command: AccountCommand::Create {
                     name: "USD Bank".to_string(),
@@ -3135,7 +3183,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -3151,7 +3199,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Transfer {
                 command: TransferCommand::Add {
                     source_account_id: 1,
@@ -3168,7 +3216,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Budget {
                 command: BudgetCommand::Set {
                     account_id: 1,
@@ -3182,7 +3230,7 @@ mod tests {
         .unwrap();
 
         run(Cli {
-            database: source_database,
+            database: Some(source_database),
             command: Command::Data {
                 command: DataCommand::Backup {
                     output: backup_path.clone(),
@@ -3191,7 +3239,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: target_database.clone(),
+            database: Some(target_database.clone()),
             command: Command::Data {
                 command: DataCommand::Restore { input: backup_path },
             },
@@ -3200,7 +3248,7 @@ mod tests {
 
         assert!(
             run(Cli {
-                database: target_database.clone(),
+                database: Some(target_database.clone()),
                 command: Command::Transaction {
                     command: TransactionCommand::Show { id: 1 },
                 },
@@ -3210,7 +3258,7 @@ mod tests {
         );
         assert!(
             run(Cli {
-                database: target_database.clone(),
+                database: Some(target_database.clone()),
                 command: Command::Transfer {
                     command: TransferCommand::Show { id: 1 },
                 },
@@ -3220,7 +3268,7 @@ mod tests {
         );
         assert!(
             run(Cli {
-                database: target_database.clone(),
+                database: Some(target_database.clone()),
                 command: Command::Budget {
                     command: BudgetCommand::Show { id: 1 },
                 },
@@ -3239,7 +3287,7 @@ mod tests {
         let target_database = temp_dir.path().join("target.db");
         let backup_path = temp_dir.path().join("empty.json");
         run(Cli {
-            database: source_database,
+            database: Some(source_database),
             command: Command::Data {
                 command: DataCommand::Backup {
                     output: backup_path.clone(),
@@ -3251,7 +3299,7 @@ mod tests {
 
         assert_eq!(
             run(Cli {
-                database: target_database,
+                database: Some(target_database),
                 command: Command::Data {
                     command: DataCommand::Restore { input: backup_path },
                 },
@@ -3271,7 +3319,7 @@ mod tests {
         run(create_account_cli(source_database.clone(), 0, "Cash")).unwrap();
         run(create_account_cli(source_database.clone(), 0, "Bank")).unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Transaction {
                 command: TransactionCommand::Add {
                     account_id: 1,
@@ -3287,7 +3335,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Transfer {
                 command: TransferCommand::Add {
                     source_account_id: 1,
@@ -3304,7 +3352,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Budget {
                 command: BudgetCommand::Set {
                     account_id: 1,
@@ -3318,14 +3366,14 @@ mod tests {
         .unwrap();
 
         let original_balance = run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Account {
                 command: AccountCommand::Balance { id: 1 },
             },
         })
         .unwrap();
         let original_budget = run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Budget {
                 command: BudgetCommand::Status {
                     account_id: 1,
@@ -3337,7 +3385,7 @@ mod tests {
         })
         .unwrap();
         let original_trend = run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Report {
                 command: ReportCommand::Trend {
                     account_id: 1,
@@ -3349,7 +3397,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: source_database.clone(),
+            database: Some(source_database.clone()),
             command: Command::Data {
                 command: DataCommand::ExportTransactions {
                     account_id: 1,
@@ -3367,7 +3415,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: source_database,
+            database: Some(source_database),
             command: Command::Data {
                 command: DataCommand::Backup {
                     output: backup_path.clone(),
@@ -3376,7 +3424,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: restored_database.clone(),
+            database: Some(restored_database.clone()),
             command: Command::Data {
                 command: DataCommand::Restore { input: backup_path },
             },
@@ -3384,14 +3432,14 @@ mod tests {
         .unwrap();
 
         let restored_balance = run(Cli {
-            database: restored_database.clone(),
+            database: Some(restored_database.clone()),
             command: Command::Account {
                 command: AccountCommand::Balance { id: 1 },
             },
         })
         .unwrap();
         let restored_budget = run(Cli {
-            database: restored_database.clone(),
+            database: Some(restored_database.clone()),
             command: Command::Budget {
                 command: BudgetCommand::Status {
                     account_id: 1,
@@ -3403,7 +3451,7 @@ mod tests {
         })
         .unwrap();
         let restored_trend = run(Cli {
-            database: restored_database.clone(),
+            database: Some(restored_database.clone()),
             command: Command::Report {
                 command: ReportCommand::Trend {
                     account_id: 1,
@@ -3415,7 +3463,7 @@ mod tests {
         })
         .unwrap();
         run(Cli {
-            database: restored_database,
+            database: Some(restored_database),
             command: Command::Data {
                 command: DataCommand::ExportTransactions {
                     account_id: 1,

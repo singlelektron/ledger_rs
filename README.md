@@ -94,7 +94,7 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 199 passing unit and workflow tests, including a shared in-memory/SQLite
+- 210 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract and a complete CLI backup/restore verification scenario
 
 The pre-TUI application core is complete. In-memory and file-backed SQLite
@@ -536,6 +536,52 @@ version are rejected explicitly.
 - Authentication and synchronization
 - External exchange-rate services
 
+## Running a Prebuilt Binary
+
+Release artifacts can contain the compiled `ledger_rs` executable without a
+Rust installation or any separate SQLite library. After extracting an artifact,
+show the available commands:
+
+```bash
+./ledger_rs --help
+```
+
+On Windows, run `ledger_rs.exe --help` instead. The executable reports its
+release version with `ledger_rs --version`.
+
+Unless `--database PATH` is supplied, the application stores its SQLite database
+in the current user's platform data directory:
+
+| Platform | Default database path |
+| --- | --- |
+| Linux | `$XDG_DATA_HOME/ledger_rs/ledger.db`, or `$HOME/.local/share/ledger_rs/ledger.db` when `XDG_DATA_HOME` is unset or relative |
+| macOS | `$HOME/Library/Application Support/ledger_rs/ledger.db` |
+| Windows | `%LOCALAPPDATA%\ledger_rs\ledger.db`, falling back to `%APPDATA%\ledger_rs\ledger.db` |
+
+The parent directory and database are created on first use. In the unusual case
+that none of the platform home/data environment variables is available, the
+fallback is `ledger.db` in the current directory. `--database` always overrides
+the default, which is useful for portable or isolated data sets:
+
+```bash
+./ledger_rs --database ./data/ledger.db account list
+```
+
+Versions before this storage change used `./ledger.db` by default. During an
+upgrade, if that legacy file exists and the platform database does not, the
+application continues using the legacy file and prints its recommended migration
+destination. To migrate, exit every `ledger_rs` process, create the destination
+directory if necessary, and move `ledger.db` to the displayed path. Once the
+platform database exists, it becomes the default. An explicit `--database` path
+always takes precedence over both locations.
+
+On Unix systems, the application-owned default directory is restricted to mode
+`0700` and its database to `0600`. Explicit database locations retain the
+permissions selected by the user and operating system.
+
+The database is user data and must not be placed inside a release artifact;
+replacing the executable therefore does not replace or delete the ledger.
+
 ## Local Development
 
 Install a stable Rust toolchain that supports Rust 2024 edition.
@@ -546,7 +592,7 @@ Show the available commands:
 cargo run -- --help
 ```
 
-Create an account in the default `ledger.db` database:
+Create an account in the platform-specific default database:
 
 ```bash
 cargo run -- account create \
