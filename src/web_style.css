@@ -271,6 +271,13 @@ button:hover,
   color: var(--ink);
 }
 
+.button.danger {
+  border-color: #7d3442;
+  background: #3d1821;
+  box-shadow: none;
+  color: #ff9ba8;
+}
+
 .empty-state {
   margin-top: 36px;
   padding: 28px;
@@ -300,6 +307,34 @@ button:hover,
 }
 
 .account-hero h1 { margin-bottom: 0; }
+
+.manage-panel {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(10, 16, 25, .72);
+}
+
+.manage-panel summary {
+  padding: 12px 15px;
+  color: var(--muted);
+  font: 650 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.manage-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  padding: 4px 15px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.manage-grid form { align-content: end; }
+.manage-grid p { display: grid; gap: 4px; margin: 0; }
+.manage-grid p small { color: var(--muted); font-size: .72rem; }
 
 .balance { display: grid; flex: none; gap: 5px; justify-items: end; }
 .balance small { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; }
@@ -333,6 +368,7 @@ button:hover,
   main { padding-top: 42px; }
   .dashboard { grid-template-columns: 1fr; margin-top: 42px; }
   .account-card { align-items: start; flex-direction: column; }
+  .manage-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {

@@ -4,7 +4,9 @@ use crate::{
         create_account::create_account,
         list_accounts::list_accounts,
         list_transactions::{TransactionFilter, list_account_transactions},
-        manage_account::{ManageAccountError, get_account},
+        manage_account::{
+            ManageAccountError, delete_account_with_dependencies, get_account, rename_account,
+        },
         record_transaction::record_transaction,
     },
     domain::{
@@ -12,7 +14,7 @@ use crate::{
         money::{Currency, Money},
         transaction::{Category, NewTransaction, TransactionKind},
     },
-    infrastructure::sqlite::open_all_repositories,
+    infrastructure::sqlite::{open_all_repositories, open_complete_repositories},
 };
 use axum::{
     Form, Router,
@@ -45,6 +47,14 @@ pub fn router(database_path: PathBuf) -> Router {
         .route("/", get(home))
         .route("/accounts", post(create_account_handler))
         .route("/accounts/{account_id}", get(account_detail))
+        .route(
+            "/accounts/{account_id}/rename",
+            post(rename_account_handler),
+        )
+        .route(
+            "/accounts/{account_id}/delete",
+            post(delete_account_handler),
+        )
         .route(
             "/accounts/{account_id}/transactions",
             post(create_transaction_handler),
@@ -102,6 +112,11 @@ impl IntoResponse for WebError {
 struct CreateAccountForm {
     name: String,
     currency: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RenameAccountForm {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,6 +259,19 @@ async fn account_detail(
           <div><p class="eyebrow">{currency}</p><h1 class="compact">{name}</h1></div>
           <div class="balance"><small>Current balance</small><strong>{balance}</strong></div>
         </section>
+        <details class="manage-panel">
+          <summary>Account settings</summary>
+          <div class="manage-grid">
+            <form method="post" action="/accounts/{account_id}/rename">
+              <label>Account name<input name="name" required maxlength="80" value="{name}"></label>
+              <button class="button secondary" type="submit">Rename account</button>
+            </form>
+            <form method="post" action="/accounts/{account_id}/delete">
+              <p><strong>Delete account</strong><small>Only an account without transactions, transfers, or budgets can be deleted.</small></p>
+              <button class="button danger" type="submit">Delete empty account</button>
+            </form>
+          </div>
+        </details>
         <div class="dashboard">
           <section>
             <div class="section-heading"><div><p class="eyebrow">History</p><h2>Transactions</h2></div><span class="count">{transaction_count}</span></div>
@@ -272,6 +300,39 @@ async fn account_detail(
     );
 
     Ok(Html(page(account.name(), &content)))
+}
+
+async fn rename_account_handler(
+    State(state): State<WebState>,
+    Path(account_id): Path<u64>,
+    Form(input): Form<RenameAccountForm>,
+) -> Result<Redirect, WebError> {
+    let account_id = AccountId::new(account_id);
+    let (mut accounts, _, _) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    rename_account(&mut accounts, account_id, input.name).map_err(map_account_error)?;
+
+    Ok(Redirect::to(&format!("/accounts/{}", account_id.value())))
+}
+
+async fn delete_account_handler(
+    State(state): State<WebState>,
+    Path(account_id): Path<u64>,
+) -> Result<Redirect, WebError> {
+    let account_id = AccountId::new(account_id);
+    let (mut accounts, transactions, transfers, budgets) =
+        open_complete_repositories(state.database_path())
+            .map_err(|error| WebError::internal("open database", error))?;
+    delete_account_with_dependencies(
+        &mut accounts,
+        &transactions,
+        &transfers,
+        &budgets,
+        account_id,
+    )
+    .map_err(map_account_error)?;
+
+    Ok(Redirect::to("/"))
 }
 
 async fn create_transaction_handler(
@@ -311,6 +372,18 @@ fn map_account_error(error: ManageAccountError) -> WebError {
     match error {
         ManageAccountError::AccountNotFound(id) => {
             WebError::not_found(format!("Account {} does not exist.", id.value()))
+        }
+        ManageAccountError::HasTransactions(_) => {
+            WebError::bad_request("Delete the account's transactions first.")
+        }
+        ManageAccountError::HasTransfers(_) => {
+            WebError::bad_request("Delete transfers linked to this account first.")
+        }
+        ManageAccountError::HasBudgets(_) => {
+            WebError::bad_request("Delete budgets linked to this account first.")
+        }
+        ManageAccountError::Account(error) => {
+            WebError::bad_request(format!("Invalid account: {error:?}"))
         }
         other => WebError::internal("load account", other),
     }
@@ -596,5 +669,75 @@ mod tests {
         let error = account_detail(State(state), Path(99)).await.unwrap_err();
 
         assert_eq!(error.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn account_management_renames_and_deletes_empty_account() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Old name"),
+                currency: String::from("USD"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let _redirect = rename_account_handler(
+            State(state.clone()),
+            Path(1),
+            Form(RenameAccountForm {
+                name: String::from("New name"),
+            }),
+        )
+        .await
+        .unwrap();
+        let detail = account_detail(State(state.clone()), Path(1)).await.unwrap();
+        assert!(detail.0.contains("New name"));
+
+        let _redirect = delete_account_handler(State(state.clone()), Path(1))
+            .await
+            .unwrap();
+        let overview = home(State(state)).await.unwrap();
+        assert!(!overview.0.contains("New name"));
+        assert!(overview.0.contains("No accounts yet"));
+    }
+
+    #[tokio::test]
+    async fn account_delete_preserves_account_with_transactions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+        let _redirect = create_transaction_handler(
+            State(state.clone()),
+            Path(1),
+            Form(CreateTransactionForm {
+                kind: String::from("income"),
+                amount: String::from("1.00"),
+                occurred_at: String::from("2026-09-01T09:00"),
+                time_zone: String::from("Asia/Shanghai"),
+                description: String::from("Opening"),
+                category: String::from("other"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let error = delete_account_handler(State(state.clone()), Path(1))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(account_detail(State(state), Path(1)).await.is_ok());
     }
 }
