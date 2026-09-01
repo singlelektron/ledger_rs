@@ -230,6 +230,7 @@ struct TransactionForm {
     description: String,
     category: Category,
     field: TransactionField,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +287,30 @@ pub enum TransactionInputError {
     InvalidAmount(String),
     InvalidOccurredAt(String),
     Transaction(TransactionError),
+}
+
+impl std::fmt::Display for TransactionInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidAmount(value) => {
+                write!(
+                    f,
+                    "invalid amount {value:?}; expected a whole number of minor units"
+                )
+            }
+            Self::InvalidOccurredAt(value) => write!(
+                f,
+                "invalid timestamp {value:?}; expected a zoned timestamp like \
+                 2026-08-31T12:00:00+08:00[Asia/Shanghai]"
+            ),
+            Self::Transaction(TransactionError::InvalidAmount) => {
+                write!(f, "amount must be greater than zero")
+            }
+            Self::Transaction(TransactionError::EmptyDescription) => {
+                write!(f, "description must not be empty")
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -768,6 +793,22 @@ pub enum BudgetActionError {
     Report(BudgetReportError),
 }
 
+impl std::fmt::Display for BudgetActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidMonth(value) => {
+                write!(f, "invalid budget month {value:?}; expected YYYY-MM")
+            }
+            Self::InvalidLimit(value) => write!(
+                f,
+                "invalid budget limit {value:?}; expected a whole number of minor units"
+            ),
+            Self::Manage(error) => write!(f, "budget operation failed: {error:?}"),
+            Self::Report(error) => write!(f, "budget report failed: {error:?}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BudgetField {
     Category,
@@ -1092,10 +1133,12 @@ impl App {
         }
 
         match key {
-            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+            KeyCode::Char('q') => Action::Quit,
             KeyCode::Char('r') => Action::Reload,
             KeyCode::Char('1') => {
                 self.page = Page::Ledger;
+                self.focus = Focus::Accounts;
+                self.selected_transaction = 0;
                 Action::Continue
             }
             KeyCode::Char('2') => {
@@ -1261,6 +1304,7 @@ impl App {
                         description: String::new(),
                         category: Category::Food,
                         field: TransactionField::Amount,
+                        error: None,
                     });
                 }
                 Action::Continue
@@ -1290,6 +1334,7 @@ impl App {
                         description: transaction.description().to_string(),
                         category: transaction.category(),
                         field: TransactionField::Description,
+                        error: None,
                     });
                 }
                 Action::Continue
@@ -1613,12 +1658,25 @@ fn handle_transaction_form_key(mut form: TransactionForm, key: KeyCode) -> (Mode
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
         KeyCode::Enter => {
             let form_kind = form.form_kind;
-            let input = form.into_input();
-            let action = match form_kind {
-                TransactionFormKind::Create => Action::CreateTransaction(input),
-                TransactionFormKind::Edit(id) => Action::UpdateTransaction { id, input },
-            };
-            return (Mode::Browse, action);
+            match form.clone().into_input().into_new_transaction() {
+                Ok(_) => {
+                    let input = form.into_input();
+                    let action = match form_kind {
+                        TransactionFormKind::Create => Action::CreateTransaction(input),
+                        TransactionFormKind::Edit(id) => Action::UpdateTransaction { id, input },
+                    };
+                    return (Mode::Browse, action);
+                }
+                Err(error) => {
+                    return (
+                        Mode::TransactionForm(TransactionForm {
+                            error: Some(error.to_string()),
+                            ..form
+                        }),
+                        Action::Continue,
+                    );
+                }
+            }
         }
         KeyCode::Tab => form.field = next_transaction_field(form.field),
         KeyCode::BackTab => form.field = previous_transaction_field(form.field),
@@ -1651,6 +1709,7 @@ fn handle_transaction_form_key(mut form: TransactionForm, key: KeyCode) -> (Mode
         }
         _ => {}
     }
+    form.error = None;
     (Mode::TransactionForm(form), Action::Continue)
 }
 
@@ -2163,7 +2222,7 @@ fn render_trend_report_form(frame: &mut Frame, form: &TrendReportForm) {
 fn render_transaction_form(frame: &mut Frame, form: &TransactionForm) {
     let area = centered_rect(frame.area(), 78, 11);
     frame.render_widget(Clear, area);
-    let lines = vec![
+    let mut lines = vec![
         Line::from(format!(
             "Account: {} ({})",
             form.account_id.value(),
@@ -2197,6 +2256,12 @@ fn render_transaction_form(frame: &mut Frame, form: &TransactionForm) {
         Line::from("Tab/Shift-Tab changes field; arrows change kind/category."),
         Line::from("Delete clears text; Enter saves; Esc cancels."),
     ];
+    if let Some(error) = &form.error {
+        lines.push(Line::from(Span::styled(
+            error.as_str(),
+            Style::default().fg(Color::Red),
+        )));
+    }
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
             match form.form_kind {
@@ -2906,7 +2971,51 @@ mod tests {
         assert_eq!(app.page(), Page::Activity);
         assert_eq!(app.handle_key(KeyCode::Char('1')), Action::Continue);
         assert_eq!(app.page(), Page::Ledger);
-        assert_eq!(app.handle_key(KeyCode::Esc), Action::Quit);
+        assert_eq!(app.handle_key(KeyCode::Esc), Action::Continue);
+        assert_eq!(app.handle_key(KeyCode::Char('q')), Action::Quit);
+    }
+
+    #[test]
+    fn returning_to_ledger_resets_detail_focus_and_selection() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        for id in 1..=2 {
+            transactions
+                .save(
+                    Transaction::new(
+                        TransactionId::new(id),
+                        account.id(),
+                        TransactionKind::Expense,
+                        Money::from_minor_units(100, Currency::Cny),
+                        format!("2026-08-30T10:00:0{id}+08:00[Asia/Shanghai]")
+                            .parse()
+                            .unwrap(),
+                        format!("Expense {id}"),
+                        Category::Food,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_transaction().unwrap().id().value(), 1);
+        app.handle_key(KeyCode::Char('1'));
+        assert_eq!(app.page(), Page::Ledger);
+        assert_eq!(app.focus(), Focus::Accounts);
+        assert_eq!(app.selected_transaction_index(), Some(0));
+
+        app.handle_key(KeyCode::Char('5'));
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.focus(), Focus::Transactions);
+        app.handle_key(KeyCode::Char('1'));
+        assert_eq!(app.page(), Page::Ledger);
+        assert_eq!(app.focus(), Focus::Accounts);
     }
 
     #[test]
@@ -3046,6 +3155,18 @@ mod tests {
             Action::RunReport(ReportRequest::Trend { account_id, .. })
                 if account_id == account.id()
         ));
+    }
+
+    #[test]
+    fn budget_action_error_displays_clear_messages() {
+        assert_eq!(
+            BudgetActionError::InvalidLimit("abc".to_string()).to_string(),
+            "invalid budget limit \"abc\"; expected a whole number of minor units"
+        );
+        assert_eq!(
+            BudgetActionError::InvalidMonth("13".to_string()).to_string(),
+            "invalid budget month \"13\"; expected YYYY-MM"
+        );
     }
 
     #[test]
@@ -3455,6 +3576,72 @@ mod tests {
                 TransactionError::InvalidAmount
             ))
         );
+    }
+
+    #[test]
+    fn invalid_transaction_input_keeps_form_open_and_retains_values() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "not-a-number".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Delete);
+        for character in "2026-08-31T12:00:00+08:00[Asia/Shanghai]".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        for character in "Lunch".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+
+        assert_eq!(app.handle_key(KeyCode::Enter), Action::Continue);
+
+        app.handle_key(KeyCode::BackTab);
+        app.handle_key(KeyCode::BackTab);
+        app.handle_key(KeyCode::Delete);
+        for character in "250".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+
+        let Action::CreateTransaction(input) = app.handle_key(KeyCode::Enter) else {
+            panic!("expected create transaction action after fixing the amount");
+        };
+        let created = input.into_new_transaction().unwrap();
+        assert_eq!(created.amount().minor_units(), 250);
+        assert_eq!(
+            created.occurred_at().to_string(),
+            "2026-08-31T12:00:00+08:00[Asia/Shanghai]"
+        );
+        assert_eq!(created.description(), "Lunch");
+    }
+
+    #[test]
+    fn renders_transaction_form_validation_error() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "abc".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("invalid amount \"abc\"; expected a whole number of minor units"));
     }
 
     #[test]

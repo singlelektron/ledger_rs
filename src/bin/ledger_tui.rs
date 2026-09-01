@@ -64,7 +64,7 @@ fn main() -> io::Result<()> {
                     Action::RunBudget(request) => {
                         match execute_budget(request, &accounts, &transactions, &mut budgets) {
                             Ok(result) => app.set_budget(result),
-                            Err(error) => app.set_status(format!("Budget failed: {error:?}"), true),
+                            Err(error) => app.set_status(format!("Budget failed: {error}"), true),
                         }
                     }
                     action => match execute_action(
