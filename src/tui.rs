@@ -1093,6 +1093,9 @@ impl App {
     /// A successful reload preserves the current page, focus, account and row
     /// selections (clamped if rows disappeared), and any loaded report or
     /// budget result, so refresh and post-mutation reloads do not reset the UI.
+    /// Report and budget results are keyed to the selected account, so they
+    /// are dropped when clamping moved the account selection (or no account
+    /// remains) instead of showing data for the wrong account.
     pub fn reload(
         &mut self,
         accounts: &impl AccountRepository,
@@ -1172,8 +1175,22 @@ impl App {
         } else {
             state.selected_account.min(self.accounts.len() - 1)
         };
-        self.report = state.report;
-        self.budget = state.budget;
+        // Loaded report/budget results describe the account that was selected
+        // when they were produced; if clamping moved the selection to a
+        // different account (or none remains), keeping them would show stale
+        // data under the wrong account header.
+        let keep_loaded_results =
+            !self.accounts.is_empty() && self.selected_account == state.selected_account;
+        self.report = if keep_loaded_results {
+            state.report
+        } else {
+            None
+        };
+        self.budget = if keep_loaded_results {
+            state.budget
+        } else {
+            None
+        };
         self.selected_transaction = match self.selectable_row_count() {
             0 => 0,
             count => state.selected_transaction.min(count - 1),
@@ -3809,6 +3826,35 @@ mod tests {
         app.handle_key(KeyCode::Up);
         assert_eq!(app.selected_index(), Some(0));
         assert!(app.report.is_none());
+    }
+
+    #[test]
+    fn reload_drops_loaded_results_when_account_selection_is_clamped() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts
+            .save(Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char('3'));
+        app.set_report(ReportResult::Category(vec![]));
+        app.set_budget(BudgetResult::List(vec![]));
+
+        let mut shrunk_accounts = InMemoryAccountRepository::new();
+        shrunk_accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        app.reload(&shrunk_accounts, &transactions, &transfers, None);
+
+        assert_eq!(app.selected_index(), Some(0));
+        assert!(app.report.is_none());
+        assert!(app.budget.is_none());
     }
 
     #[test]
