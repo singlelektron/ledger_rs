@@ -1231,8 +1231,8 @@ async fn transfer_edit(
         source_account_id = source.id().value(),
         source_name = escape_html(source.name()),
         transfer_id = transfer.id().value(),
-        source_options = account_options(&all_accounts, None, Some(source.id())),
-        destination_options = account_options(&all_accounts, None, Some(destination.id())),
+        source_options = account_options(&all_accounts, Some(destination.id()), Some(source.id())),
+        destination_options = account_options(&all_accounts, Some(source.id()), Some(destination.id())),
         source_currency = currency_code(source.currency()),
         destination_currency = currency_code(destination.currency()),
         source_amount = format_major_input(transfer.source_amount().minor_units()),
@@ -2239,6 +2239,12 @@ mod tests {
 
         let edit = transfer_edit(State(state.clone()), Path(1)).await.unwrap();
         assert!(edit.0.contains("Edit transfer"));
+        assert!(edit.0.contains(
+            r#"<select name="source_account_id"><option value="1" selected>CNY Wallet · CNY</option></select>"#
+        ));
+        assert!(edit.0.contains(
+            r#"<select name="destination_account_id"><option value="2" selected>USD Wallet · USD</option></select>"#
+        ));
         let _redirect = update_transfer_handler(
             State(state.clone()),
             Path(1),
