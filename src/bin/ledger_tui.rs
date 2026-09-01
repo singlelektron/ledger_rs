@@ -2,7 +2,7 @@ use crossterm::event::{self, Event, KeyEventKind};
 use ledger_rs::{
     app_paths::{prepare_database_parent, resolve_database_path, secure_database_file},
     infrastructure::sqlite::open_complete_repositories,
-    tui::{Action, App, execute_action, execute_report, render},
+    tui::{Action, App, execute_action, execute_budget, execute_report, render},
 };
 use std::{io, path::PathBuf};
 
@@ -32,7 +32,7 @@ fn main() -> io::Result<()> {
         );
     }
     prepare_database_parent(&database)?;
-    let (mut accounts, mut transactions, transfers, budgets) =
+    let (mut accounts, mut transactions, transfers, mut budgets) =
         open_complete_repositories(database.path())
             .map_err(|error| io::Error::other(format!("failed to open database: {error:?}")))?;
     secure_database_file(&database)?;
@@ -59,6 +59,12 @@ fn main() -> io::Result<()> {
                         match execute_report(request, &accounts, &transactions) {
                             Ok(report) => app.set_report(report),
                             Err(error) => app.set_status(format!("Report failed: {error:?}"), true),
+                        }
+                    }
+                    Action::RunBudget(request) => {
+                        match execute_budget(request, &accounts, &transactions, &mut budgets) {
+                            Ok(result) => app.set_budget(result),
+                            Err(error) => app.set_status(format!("Budget failed: {error:?}"), true),
                         }
                     }
                     action => match execute_action(

@@ -2,11 +2,13 @@ use crate::{
     application::{
         account_activity::{AccountActivity, AccountActivityError, list_account_activity},
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
+        budget_report::{BudgetReportError, BudgetStatus, get_budget_statuses},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
         list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
         manage_account::{ManageAccountError, delete_account_with_dependencies, rename_account},
+        manage_budget::{ManageBudgetError, delete_budget, list_budgets, set_budget},
         manage_transaction::{
             ManageTransactionError, TransactionChanges, delete_transaction, update_transaction,
         },
@@ -19,7 +21,7 @@ use crate::{
     },
     domain::{
         account::{Account, AccountId},
-        budget::BudgetMonth,
+        budget::{Budget, BudgetId, BudgetMonth},
         money::{Currency, Money},
         summary::SummaryReport,
         transaction::{
@@ -107,6 +109,7 @@ pub struct App {
     mode: Mode,
     status: Option<Status>,
     report: Option<ReportResult>,
+    budget: Option<BudgetResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +137,7 @@ pub enum Action {
         id: TransactionId,
     },
     RunReport(ReportRequest),
+    RunBudget(BudgetRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +151,7 @@ pub enum Page {
     Ledger,
     Activity,
     Reports,
+    Budgets,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +163,9 @@ enum Mode {
     ConfirmDeleteTransaction(TransactionId),
     SummaryReportForm(SummaryReportForm),
     TrendReportForm(TrendReportForm),
+    BudgetForm(BudgetForm),
+    BudgetStatusForm(BudgetStatusForm),
+    ConfirmDeleteBudget(BudgetId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,9 +350,92 @@ pub fn execute_action(
             delete_transaction(transaction_repository, id)?;
             "Deleted transaction".to_string()
         }
-        Action::Continue | Action::Reload | Action::Quit | Action::RunReport(_) => return Ok(None),
+        Action::Continue
+        | Action::Reload
+        | Action::Quit
+        | Action::RunReport(_)
+        | Action::RunBudget(_) => return Ok(None),
     };
     Ok(Some(message))
+}
+
+pub fn execute_budget(
+    request: BudgetRequest,
+    account_repository: &impl AccountRepository,
+    transaction_repository: &impl TransactionRepository,
+    budget_repository: &mut impl BudgetRepository,
+) -> Result<BudgetResult, BudgetActionError> {
+    match request {
+        BudgetRequest::List { account_id } => Ok(BudgetResult::List(
+            list_budgets(account_repository, budget_repository, account_id)
+                .map_err(BudgetActionError::Manage)?,
+        )),
+        BudgetRequest::Status {
+            account_id,
+            month,
+            time_zone,
+        } => {
+            let month_value = parse_budget_month_for_budget(&month)?;
+            let rows = get_budget_statuses(
+                account_repository,
+                transaction_repository,
+                budget_repository,
+                account_id,
+                month_value,
+                &time_zone,
+            )
+            .map_err(BudgetActionError::Report)?;
+            Ok(BudgetResult::Status {
+                month: month_value,
+                time_zone,
+                rows,
+            })
+        }
+        BudgetRequest::Set {
+            account_id,
+            category,
+            month,
+            limit_minor,
+        } => {
+            let month = parse_budget_month_for_budget(&month)?;
+            let limit_minor = limit_minor
+                .parse::<i64>()
+                .map_err(|_| BudgetActionError::InvalidLimit(limit_minor.clone()))?;
+            set_budget(
+                account_repository,
+                budget_repository,
+                account_id,
+                category,
+                month,
+                limit_minor,
+            )
+            .map_err(BudgetActionError::Manage)?;
+            Ok(BudgetResult::List(
+                list_budgets(account_repository, budget_repository, account_id)
+                    .map_err(BudgetActionError::Manage)?,
+            ))
+        }
+        BudgetRequest::Delete { account_id, id } => {
+            delete_budget(budget_repository, id).map_err(BudgetActionError::Manage)?;
+            Ok(BudgetResult::List(
+                list_budgets(account_repository, budget_repository, account_id)
+                    .map_err(BudgetActionError::Manage)?,
+            ))
+        }
+    }
+}
+
+fn parse_budget_month_for_budget(input: &str) -> Result<BudgetMonth, BudgetActionError> {
+    let (year, month) = input
+        .split_once('-')
+        .ok_or_else(|| BudgetActionError::InvalidMonth(input.to_string()))?;
+    let year = year
+        .parse::<i32>()
+        .map_err(|_| BudgetActionError::InvalidMonth(input.to_string()))?;
+    let month = month
+        .parse::<u8>()
+        .map_err(|_| BudgetActionError::InvalidMonth(input.to_string()))?;
+    BudgetMonth::new(year, month).map_err(|_| BudgetActionError::InvalidMonth(input.to_string()))
 }
 
 pub fn execute_report(
@@ -485,6 +576,70 @@ struct TrendReportForm {
     field: ReportField,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BudgetRequest {
+    List {
+        account_id: AccountId,
+    },
+    Status {
+        account_id: AccountId,
+        month: String,
+        time_zone: String,
+    },
+    Set {
+        account_id: AccountId,
+        category: Category,
+        month: String,
+        limit_minor: String,
+    },
+    Delete {
+        account_id: AccountId,
+        id: BudgetId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BudgetResult {
+    List(Vec<Budget>),
+    Status {
+        month: BudgetMonth,
+        time_zone: String,
+        rows: Vec<BudgetStatus>,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum BudgetActionError {
+    InvalidMonth(String),
+    InvalidLimit(String),
+    Manage(ManageBudgetError),
+    Report(BudgetReportError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BudgetField {
+    Category,
+    Month,
+    Limit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BudgetForm {
+    account_id: AccountId,
+    category: Category,
+    month: String,
+    limit_minor: String,
+    field: BudgetField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BudgetStatusForm {
+    account_id: AccountId,
+    month: String,
+    time_zone: String,
+    field: ReportField,
+}
+
 impl App {
     pub fn load(
         account_repository: &impl AccountRepository,
@@ -530,6 +685,7 @@ impl App {
             mode: Mode::Browse,
             status: None,
             report: None,
+            budget: None,
         })
     }
 
@@ -580,18 +736,51 @@ impl App {
         });
     }
 
+    pub fn set_budget(&mut self, budget: BudgetResult) {
+        self.budget = Some(budget);
+        self.selected_transaction = 0;
+        self.status = Some(Status {
+            message: "Budget data loaded".to_string(),
+            is_error: false,
+        });
+    }
+
+    fn selected_budget_id(&self) -> Option<BudgetId> {
+        match self.budget.as_ref()? {
+            BudgetResult::List(rows) => rows.get(self.selected_transaction).map(Budget::id),
+            BudgetResult::Status { rows, .. } => rows
+                .get(self.selected_transaction)
+                .map(|status| status.budget.id()),
+        }
+    }
+
+    fn budget_row_count(&self) -> usize {
+        match &self.budget {
+            Some(BudgetResult::List(rows)) => rows.len(),
+            Some(BudgetResult::Status { rows, .. }) => rows.len(),
+            None => 0,
+        }
+    }
+
     pub fn select_next(&mut self) {
         match self.focus {
             Focus::Accounts if !self.accounts.is_empty() => {
                 self.selected_account = (self.selected_account + 1) % self.accounts.len();
                 self.selected_transaction = 0;
+                if self.page == Page::Budgets {
+                    self.budget = None;
+                }
             }
             Focus::Transactions => {
-                if let Some(count) = self
-                    .selected_account()
-                    .map(|account| account.transactions().len())
-                    .filter(|count| *count > 0)
-                {
+                let count = match self.page {
+                    Page::Ledger => self
+                        .selected_account()
+                        .map(|account| account.transactions().len())
+                        .unwrap_or(0),
+                    Page::Budgets => self.budget_row_count(),
+                    Page::Activity | Page::Reports => 0,
+                };
+                if count > 0 {
                     self.selected_transaction = (self.selected_transaction + 1) % count;
                 }
             }
@@ -607,13 +796,20 @@ impl App {
                     .checked_sub(1)
                     .unwrap_or(self.accounts.len() - 1);
                 self.selected_transaction = 0;
+                if self.page == Page::Budgets {
+                    self.budget = None;
+                }
             }
             Focus::Transactions => {
-                if let Some(count) = self
-                    .selected_account()
-                    .map(|account| account.transactions().len())
-                    .filter(|count| *count > 0)
-                {
+                let count = match self.page {
+                    Page::Ledger => self
+                        .selected_account()
+                        .map(|account| account.transactions().len())
+                        .unwrap_or(0),
+                    Page::Budgets => self.budget_row_count(),
+                    Page::Activity | Page::Reports => 0,
+                };
+                if count > 0 {
                     self.selected_transaction = self
                         .selected_transaction
                         .checked_sub(1)
@@ -666,6 +862,34 @@ impl App {
                 self.mode = mode;
                 return action;
             }
+            Mode::BudgetForm(form) => {
+                let (mode, action) = handle_budget_form_key(form, key);
+                self.mode = mode;
+                return action;
+            }
+            Mode::BudgetStatusForm(form) => {
+                let (mode, action) = handle_budget_status_form_key(form, key);
+                self.mode = mode;
+                return action;
+            }
+            Mode::ConfirmDeleteBudget(id) => {
+                return match key {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => self
+                        .selected_account()
+                        .map(|account| {
+                            Action::RunBudget(BudgetRequest::Delete {
+                                account_id: account.account().id(),
+                                id,
+                            })
+                        })
+                        .unwrap_or(Action::Continue),
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Continue,
+                    _ => {
+                        self.mode = Mode::ConfirmDeleteBudget(id);
+                        Action::Continue
+                    }
+                };
+            }
             Mode::Browse => {}
         }
 
@@ -685,6 +909,18 @@ impl App {
                 self.page = Page::Reports;
                 self.focus = Focus::Accounts;
                 Action::Continue
+            }
+            KeyCode::Char('4') => {
+                self.page = Page::Budgets;
+                self.focus = Focus::Accounts;
+                self.selected_transaction = 0;
+                self.selected_account()
+                    .map(|account| {
+                        Action::RunBudget(BudgetRequest::List {
+                            account_id: account.account().id(),
+                        })
+                    })
+                    .unwrap_or(Action::Continue)
             }
             KeyCode::Char('c') if self.page == Page::Reports => self
                 .selected_account()
@@ -709,6 +945,40 @@ impl App {
                     .map(|account| account.account().id())
                 {
                     self.mode = Mode::TrendReportForm(default_trend_form(account_id));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('l') if self.page == Page::Budgets => self
+                .selected_account()
+                .map(|account| {
+                    Action::RunBudget(BudgetRequest::List {
+                        account_id: account.account().id(),
+                    })
+                })
+                .unwrap_or(Action::Continue),
+            KeyCode::Char('b') if self.page == Page::Budgets => {
+                if let Some(account_id) = self
+                    .selected_account()
+                    .map(|account| account.account().id())
+                {
+                    self.mode = Mode::BudgetForm(default_budget_form(account_id));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('u') if self.page == Page::Budgets => {
+                if let Some(account_id) = self
+                    .selected_account()
+                    .map(|account| account.account().id())
+                {
+                    self.mode = Mode::BudgetStatusForm(default_budget_status_form(account_id));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('d')
+                if self.page == Page::Budgets && self.focus == Focus::Transactions =>
+            {
+                if let Some(id) = self.selected_budget_id() {
+                    self.mode = Mode::ConfirmDeleteBudget(id);
                 }
                 Action::Continue
             }
@@ -863,6 +1133,125 @@ fn default_summary_form(account_id: AccountId) -> SummaryReportForm {
         from: from.to_string(),
         to: to.to_string(),
         field: ReportField::From,
+    }
+}
+
+fn default_budget_form(account_id: AccountId) -> BudgetForm {
+    let now = jiff::Zoned::now();
+    BudgetForm {
+        account_id,
+        category: Category::Food,
+        month: format!("{:04}-{:02}", now.year(), now.month()),
+        limit_minor: String::new(),
+        field: BudgetField::Category,
+    }
+}
+
+fn default_budget_status_form(account_id: AccountId) -> BudgetStatusForm {
+    let now = jiff::Zoned::now();
+    BudgetStatusForm {
+        account_id,
+        month: format!("{:04}-{:02}", now.year(), now.month()),
+        time_zone: now.time_zone().iana_name().unwrap_or("UTC").to_string(),
+        field: ReportField::From,
+    }
+}
+
+fn handle_budget_form_key(mut form: BudgetForm, key: KeyCode) -> (Mode, Action) {
+    match key {
+        KeyCode::Esc => return (Mode::Browse, Action::Continue),
+        KeyCode::Enter => {
+            return (
+                Mode::Browse,
+                Action::RunBudget(BudgetRequest::Set {
+                    account_id: form.account_id,
+                    category: form.category,
+                    month: form.month,
+                    limit_minor: form.limit_minor,
+                }),
+            );
+        }
+        KeyCode::Tab => {
+            form.field = match form.field {
+                BudgetField::Category => BudgetField::Month,
+                BudgetField::Month => BudgetField::Limit,
+                BudgetField::Limit => BudgetField::Category,
+            };
+        }
+        KeyCode::BackTab => {
+            form.field = match form.field {
+                BudgetField::Category => BudgetField::Limit,
+                BudgetField::Month => BudgetField::Category,
+                BudgetField::Limit => BudgetField::Month,
+            };
+        }
+        KeyCode::Left | KeyCode::Up if form.field == BudgetField::Category => {
+            form.category = previous_category(form.category);
+        }
+        KeyCode::Right | KeyCode::Down if form.field == BudgetField::Category => {
+            form.category = next_category(form.category);
+        }
+        KeyCode::Delete => {
+            if let Some(text) = active_budget_text(&mut form) {
+                text.clear();
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(text) = active_budget_text(&mut form) {
+                text.pop();
+            }
+        }
+        KeyCode::Char(character) => {
+            if let Some(text) = active_budget_text(&mut form) {
+                text.push(character);
+            }
+        }
+        _ => {}
+    }
+    (Mode::BudgetForm(form), Action::Continue)
+}
+
+fn active_budget_text(form: &mut BudgetForm) -> Option<&mut String> {
+    match form.field {
+        BudgetField::Category => None,
+        BudgetField::Month => Some(&mut form.month),
+        BudgetField::Limit => Some(&mut form.limit_minor),
+    }
+}
+
+fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (Mode, Action) {
+    match key {
+        KeyCode::Esc => return (Mode::Browse, Action::Continue),
+        KeyCode::Enter => {
+            return (
+                Mode::Browse,
+                Action::RunBudget(BudgetRequest::Status {
+                    account_id: form.account_id,
+                    month: form.month,
+                    time_zone: form.time_zone,
+                }),
+            );
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            form.field = match form.field {
+                ReportField::From => ReportField::TimeZone,
+                ReportField::To | ReportField::TimeZone => ReportField::From,
+            };
+        }
+        KeyCode::Delete => active_budget_status_text(&mut form).clear(),
+        KeyCode::Backspace => {
+            active_budget_status_text(&mut form).pop();
+        }
+        KeyCode::Char(character) => active_budget_status_text(&mut form).push(character),
+        _ => {}
+    }
+    (Mode::BudgetStatusForm(form), Action::Continue)
+}
+
+fn active_budget_status_text(form: &mut BudgetStatusForm) -> &mut String {
+    match form.field {
+        ReportField::From | ReportField::To => &mut form.month,
+        ReportField::TimeZone => &mut form.time_zone,
     }
 }
 
@@ -1150,6 +1539,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                     Page::Ledger => "Ledger",
                     Page::Activity => "Activity",
                     Page::Reports => "Reports",
+                    Page::Budgets => "Budgets",
                 },
                 Style::default().fg(Color::Magenta).bold(),
             ),
@@ -1163,6 +1553,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Page::Ledger => render_transactions(frame, app, detail_area),
         Page::Activity => render_activity(frame, app, detail_area),
         Page::Reports => render_reports(frame, app, detail_area),
+        Page::Budgets => render_budgets(frame, app, detail_area),
     }
     render_footer(frame, app, footer_area);
     render_mode(frame, app);
@@ -1171,11 +1562,16 @@ pub fn render(frame: &mut Frame, app: &App) {
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let shortcuts = match app.page() {
         Page::Ledger => {
-            "1 ledger  2 activity  3 reports  ↑/k ↓/j move  a account  n transaction  e edit  d delete  r refresh  q quit"
+            "1 ledger  2 activity  3 reports  4 budgets  ↑/k ↓/j move  a account  n transaction  e edit  d delete  r refresh  q quit"
         }
-        Page::Activity => "1 ledger  2 activity  3 reports  ↑/k ↓/j account  r refresh  q quit",
+        Page::Activity => {
+            "1 ledger  2 activity  3 reports  4 budgets  ↑/k ↓/j account  r refresh  q quit"
+        }
         Page::Reports => {
-            "1 ledger  2 activity  3 reports  ↑/k ↓/j account  c category  s summary  t trend  r refresh  q quit"
+            "1 ledger  2 activity  3 reports  4 budgets  ↑/k ↓/j account  c category  s summary  t trend  r refresh  q quit"
+        }
+        Page::Budgets => {
+            "1 ledger  2 activity  3 reports  4 budgets  Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete  q quit"
         }
     };
     let mut lines = vec![Line::from(shortcuts)];
@@ -1202,6 +1598,8 @@ fn render_mode(frame: &mut Frame, app: &App) {
         Mode::TransactionForm(form) => render_transaction_form(frame, form),
         Mode::SummaryReportForm(form) => render_summary_report_form(frame, form),
         Mode::TrendReportForm(form) => render_trend_report_form(frame, form),
+        Mode::BudgetForm(form) => render_budget_form(frame, form),
+        Mode::BudgetStatusForm(form) => render_budget_status_form(frame, form),
         Mode::ConfirmDeleteAccount(_) => {
             let area = centered_rect(frame.area(), 54, 5);
             frame.render_widget(Clear, area);
@@ -1235,7 +1633,80 @@ fn render_mode(frame: &mut Frame, app: &App) {
                 area,
             );
         }
+        Mode::ConfirmDeleteBudget(_) => {
+            let area = centered_rect(frame.area(), 48, 4);
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from("Delete the selected budget?"),
+                    Line::from("Press y to confirm or n/Esc to cancel."),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Confirm delete "),
+                ),
+                area,
+            );
+        }
     }
+}
+
+fn render_budget_form(frame: &mut Frame, form: &BudgetForm) {
+    let area = centered_rect(frame.area(), 62, 8);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(format!("Account: {}", form.account_id.value())),
+            transaction_form_line(
+                "Category",
+                category_label(form.category).to_string(),
+                form.field == BudgetField::Category,
+            ),
+            transaction_form_line(
+                "Month",
+                form.month.clone(),
+                form.field == BudgetField::Month,
+            ),
+            transaction_form_line(
+                "Limit (minor units)",
+                form.limit_minor.clone(),
+                form.field == BudgetField::Limit,
+            ),
+            Line::from("Tab changes field; arrows change category."),
+            Line::from("Delete clears text; Enter saves; Esc cancels."),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Set monthly budget "),
+        ),
+        area,
+    );
+}
+
+fn render_budget_status_form(frame: &mut Frame, form: &BudgetStatusForm) {
+    let area = centered_rect(frame.area(), 68, 7);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(format!("Account: {}", form.account_id.value())),
+            transaction_form_line("Month", form.month.clone(), form.field == ReportField::From),
+            transaction_form_line(
+                "Time zone",
+                form.time_zone.clone(),
+                form.field == ReportField::TimeZone,
+            ),
+            Line::from("Month uses YYYY-MM; Tab changes field."),
+            Line::from("Delete clears text; Enter runs; Esc cancels."),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Budget status "),
+        ),
+        area,
+    );
 }
 
 fn render_summary_report_form(frame: &mut Frame, form: &SummaryReportForm) {
@@ -1554,6 +2025,102 @@ fn render_reports(frame: &mut Frame, app: &App, area: Rect) {
         }
         ReportResult::Trend(rows) => render_trend_report(frame, rows, area),
     }
+}
+
+fn render_budgets(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(result) = &app.budget else {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from("Budget data has not been loaded for this account."),
+                Line::from(""),
+                Line::from("l  List monthly budgets"),
+                Line::from("b  Set or update a monthly category budget"),
+                Line::from("u  Show usage and remaining limits for a month"),
+            ])
+            .block(Block::default().borders(Borders::ALL).title(" Budgets ")),
+            area,
+        );
+        return;
+    };
+
+    let (rows, widths, title): (Vec<Row>, [Constraint; 5], String) = match result {
+        BudgetResult::List(budgets) => (
+            budgets
+                .iter()
+                .map(|budget| {
+                    Row::new([
+                        Cell::from(format_budget_month(budget.month())),
+                        Cell::from(category_label(budget.category())),
+                        Cell::from(format_money(budget.limit())),
+                        Cell::from(""),
+                        Cell::from(""),
+                    ])
+                })
+                .collect(),
+            [
+                Constraint::Length(9),
+                Constraint::Percentage(35),
+                Constraint::Percentage(35),
+                Constraint::Length(0),
+                Constraint::Length(0),
+            ],
+            format!(" Budgets ({}) ", budgets.len()),
+        ),
+        BudgetResult::Status {
+            month,
+            time_zone,
+            rows,
+        } => (
+            rows.iter()
+                .map(|status| {
+                    Row::new([
+                        Cell::from(category_label(status.budget.category())),
+                        Cell::from(format_money(status.budget.limit())),
+                        Cell::from(format_money(&status.used)),
+                        Cell::from(format_money(&status.remaining)),
+                        Cell::from(if status.overrun { "Over" } else { "Within" }),
+                    ])
+                    .style(if status.overrun {
+                        Style::default().fg(Color::Red)
+                    } else {
+                        Style::default()
+                    })
+                })
+                .collect(),
+            [
+                Constraint::Percentage(25),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(15),
+            ],
+            format!(
+                " Budget status {} ({}) ",
+                format_budget_month(*month),
+                time_zone
+            ),
+        ),
+    };
+    let header = match result {
+        BudgetResult::List(_) => Row::new(["Month", "Category", "Limit", "", ""]),
+        BudgetResult::Status { .. } => {
+            Row::new(["Category", "Limit", "Used", "Remaining", "State"])
+        }
+    }
+    .style(Style::default().fg(Color::Cyan).bold());
+    let table = Table::new(rows, widths)
+        .header(header)
+        .column_spacing(1)
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focus_border(app.focus == Focus::Transactions))
+                .title(title),
+        );
+    let mut state = TableState::default()
+        .with_selected((app.budget_row_count() > 0).then_some(app.selected_transaction));
+    frame.render_stateful_widget(table, area, &mut state);
 }
 
 fn render_category_report(frame: &mut Frame, values: &[(Category, Money)], area: Rect) {
@@ -2004,6 +2571,144 @@ mod tests {
             Action::RunReport(ReportRequest::Trend { account_id, .. })
                 if account_id == account.id()
         ));
+    }
+
+    #[test]
+    fn budget_page_emits_list_set_status_and_delete_requests() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        assert_eq!(
+            app.handle_key(KeyCode::Char('4')),
+            Action::RunBudget(BudgetRequest::List {
+                account_id: account.id()
+            })
+        );
+        assert_eq!(app.page(), Page::Budgets);
+        assert_eq!(
+            app.handle_key(KeyCode::Char('l')),
+            Action::RunBudget(BudgetRequest::List {
+                account_id: account.id()
+            })
+        );
+        app.handle_key(KeyCode::Char('b'));
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::RunBudget(BudgetRequest::Set { account_id, .. })
+                if account_id == account.id()
+        ));
+        app.handle_key(KeyCode::Char('u'));
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::RunBudget(BudgetRequest::Status { account_id, .. })
+                if account_id == account.id()
+        ));
+
+        let budget = Budget::new(
+            BudgetId::new(7),
+            account.id(),
+            Category::Food,
+            BudgetMonth::new(2026, 8).unwrap(),
+            Money::from_minor_units(1_000, Currency::Cny),
+        )
+        .unwrap();
+        app.set_budget(BudgetResult::List(vec![budget]));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char('d'));
+        assert_eq!(
+            app.handle_key(KeyCode::Char('y')),
+            Action::RunBudget(BudgetRequest::Delete {
+                account_id: account.id(),
+                id: BudgetId::new(7),
+            })
+        );
+    }
+
+    #[test]
+    fn executes_and_renders_budget_management_and_status() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let mut budgets = InMemoryBudgetRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        transactions
+            .save(
+                Transaction::new(
+                    TransactionId::new(1),
+                    account.id(),
+                    TransactionKind::Expense,
+                    Money::from_minor_units(1_200, Currency::Cny),
+                    "2026-08-15T12:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "Dinner".to_string(),
+                    Category::Food,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let listed = execute_budget(
+            BudgetRequest::Set {
+                account_id: account.id(),
+                category: Category::Food,
+                month: "2026-08".to_string(),
+                limit_minor: "1000".to_string(),
+            },
+            &accounts,
+            &transactions,
+            &mut budgets,
+        )
+        .unwrap();
+        let BudgetResult::List(items) = &listed else {
+            panic!("expected budget list");
+        };
+        assert_eq!(items.len(), 1);
+        let budget_id = items[0].id();
+
+        let status = execute_budget(
+            BudgetRequest::Status {
+                account_id: account.id(),
+                month: "2026-08".to_string(),
+                time_zone: "Asia/Shanghai".to_string(),
+            },
+            &accounts,
+            &transactions,
+            &mut budgets,
+        )
+        .unwrap();
+        let BudgetResult::Status { rows, .. } = &status else {
+            panic!("expected budget status");
+        };
+        assert_eq!(rows[0].used.minor_units(), 1_200);
+        assert_eq!(rows[0].remaining.minor_units(), -200);
+        assert!(rows[0].overrun);
+
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('4'));
+        app.set_budget(status);
+        let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Budget status 2026-08 (Asia/Shanghai)"));
+        assert!(screen.contains("12.00 CNY"));
+        assert!(screen.contains("-2.00 CNY"));
+        assert!(screen.contains("Over"));
+
+        let deleted = execute_budget(
+            BudgetRequest::Delete {
+                account_id: account.id(),
+                id: budget_id,
+            },
+            &accounts,
+            &transactions,
+            &mut budgets,
+        )
+        .unwrap();
+        assert_eq!(deleted, BudgetResult::List(Vec::new()));
     }
 
     #[test]
