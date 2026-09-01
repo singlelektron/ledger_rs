@@ -50,8 +50,8 @@ use super::{
         account_options, category_label, category_options, category_options_selected,
         currency_code, currency_options, edit_time_zone, escape_html, format_budget_month,
         format_major_input, format_money, next_budget_month_for_report, page, parse_budget_month,
-        parse_category, parse_currency, parse_local_zoned, parse_major_amount,
-        parse_transaction_kind, transaction_kind_options,
+        parse_category, parse_currency, parse_local_zoned, parse_local_zoned_with_offset,
+        parse_major_amount, parse_transaction_kind, transaction_kind_options,
     },
 };
 
@@ -758,8 +758,9 @@ pub(crate) async fn transaction_edit(
               <label>Amount ({currency})<input name="amount" required inputmode="decimal" value="{amount}"></label>
               <label>Description<input name="description" required maxlength="120" value="{description}"></label>
               <label>Category<select name="category">{category_options}</select></label>
-              <label>When<input type="datetime-local" name="occurred_at" required value="{occurred_at}"></label>
+              <label>When<input type="datetime-local" name="occurred_at" required step="any" value="{occurred_at}"></label>
               <label>Time zone<input name="time_zone" required value="{time_zone}"></label>
+              <input type="hidden" name="time_zone_offset" value="{time_zone_offset}">
               <button type="submit">Save changes</button>
             </form>
             <form class="delete-form" method="post" action="/transactions/{transaction_id}/delete">
@@ -778,6 +779,7 @@ pub(crate) async fn transaction_edit(
         category_options = category_options_selected(Some(transaction.category()), false),
         occurred_at = transaction.occurred_at().datetime(),
         time_zone = escape_html(&time_zone),
+        time_zone_offset = transaction.occurred_at().offset(),
     );
 
     Ok(Html(page("Edit transaction", &content)))
@@ -800,7 +802,11 @@ pub(crate) async fn update_transaction_handler(
         .ok_or_else(|| WebError::bad_request("Choose a supported transaction type."))?;
     let category = parse_category(&input.category)
         .ok_or_else(|| WebError::bad_request("Choose a supported category."))?;
-    let occurred_at = parse_local_zoned(&input.occurred_at, &input.time_zone)?;
+    let occurred_at = parse_local_zoned_with_offset(
+        &input.occurred_at,
+        &input.time_zone,
+        input.time_zone_offset.as_deref(),
+    )?;
     update_transaction(
         &accounts,
         &mut transactions,
@@ -897,8 +903,9 @@ pub(crate) async fn transfer_edit(
               <label>Amount sent ({source_currency})<input name="source_amount" required inputmode="decimal" value="{source_amount}"></label>
               <label>Amount received ({destination_currency})<input name="destination_amount" required inputmode="decimal" value="{destination_amount}"></label>
               <label>Description<input name="description" required maxlength="120" value="{description}"></label>
-              <label>When<input type="datetime-local" name="occurred_at" required value="{occurred_at}"></label>
+              <label>When<input type="datetime-local" name="occurred_at" required step="any" value="{occurred_at}"></label>
               <label>Time zone<input name="time_zone" required value="{time_zone}"></label>
+              <input type="hidden" name="time_zone_offset" value="{time_zone_offset}">
               <button type="submit">Save changes</button>
             </form>
             <form class="delete-form" method="post" action="/transfers/{transfer_id}/delete">
@@ -920,6 +927,7 @@ pub(crate) async fn transfer_edit(
         description = escape_html(transfer.description()),
         occurred_at = transfer.occurred_at().datetime(),
         time_zone = escape_html(&time_zone),
+        time_zone_offset = transfer.occurred_at().offset(),
     );
 
     Ok(Html(page("Edit transfer", &content)))
@@ -941,7 +949,11 @@ pub(crate) async fn update_transfer_handler(
         .ok_or_else(|| WebError::bad_request("Enter a valid positive source amount."))?;
     let destination_amount = parse_major_amount(&input.destination_amount)
         .ok_or_else(|| WebError::bad_request("Enter a valid positive destination amount."))?;
-    let occurred_at = parse_local_zoned(&input.occurred_at, &input.time_zone)?;
+    let occurred_at = parse_local_zoned_with_offset(
+        &input.occurred_at,
+        &input.time_zone,
+        input.time_zone_offset.as_deref(),
+    )?;
     let updated = update_transfer(
         &accounts,
         &mut transfers,

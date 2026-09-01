@@ -17,6 +17,9 @@ pub(crate) struct CreateTransactionForm {
     pub(crate) amount: String,
     pub(crate) occurred_at: String,
     pub(crate) time_zone: String,
+    /// The offset rendered by an edit form. It selects the original occurrence
+    /// when a local time falls in a DST overlap.
+    pub(crate) time_zone_offset: Option<String>,
     pub(crate) description: String,
     pub(crate) category: String,
 }
@@ -46,6 +49,9 @@ pub(crate) struct UpdateTransferForm {
     pub(crate) destination_amount: String,
     pub(crate) occurred_at: String,
     pub(crate) time_zone: String,
+    /// The offset rendered by an edit form. It selects the original occurrence
+    /// when a local time falls in a DST overlap.
+    pub(crate) time_zone_offset: Option<String>,
     pub(crate) description: String,
 }
 

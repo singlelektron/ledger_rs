@@ -39,14 +39,44 @@ pub(crate) fn parse_local_zoned(
     value: &str,
     time_zone_name: &str,
 ) -> Result<jiff::Zoned, WebError> {
+    parse_local_zoned_with_offset(value, time_zone_name, None)
+}
+
+/// Parses a local time in a time zone, optionally using an offset from an edit
+/// form to select the original occurrence during a DST overlap.
+pub(crate) fn parse_local_zoned_with_offset(
+    value: &str,
+    time_zone_name: &str,
+    time_zone_offset: Option<&str>,
+) -> Result<jiff::Zoned, WebError> {
     let local = value
         .parse::<DateTime>()
         .map_err(|_| WebError::bad_request("Enter a valid local date and time."))?;
     let time_zone = parse_time_zone(time_zone_name)?;
-    time_zone
-        .to_ambiguous_zoned(local)
-        .unambiguous()
-        .map_err(|_| WebError::bad_request("That local time is ambiguous or does not exist."))
+    if let Ok(zoned) = time_zone.to_ambiguous_zoned(local).unambiguous() {
+        return Ok(zoned);
+    }
+    if let Some(time_zone_offset) = time_zone_offset {
+        let offset_seconds = parse_fixed_offset(time_zone_offset)
+            .ok_or_else(|| WebError::bad_request("Enter a valid UTC offset."))?;
+        for candidate in [
+            time_zone.to_ambiguous_zoned(local).earlier(),
+            time_zone.to_ambiguous_zoned(local).later(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if candidate.offset().seconds() == offset_seconds {
+                return Ok(candidate);
+            }
+        }
+        return Err(WebError::bad_request(
+            "That UTC offset does not match the selected local time and time zone.",
+        ));
+    }
+    Err(WebError::bad_request(
+        "That local time is ambiguous or does not exist.",
+    ))
 }
 
 /// Accepts either an IANA name (`Asia/Shanghai`) or a fixed UTC offset

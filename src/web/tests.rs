@@ -21,14 +21,15 @@ use super::{
 };
 use crate::{
     application::{
-        backup::create_json_backup, manage_transaction::get_transaction,
-        manage_transfer::create_transfer,
+        backup::create_json_backup,
+        manage_transaction::get_transaction,
+        manage_transfer::{create_transfer, get_transfer},
     },
     domain::{
         account::AccountId,
         money::{Currency, Money},
         transaction::TransactionId,
-        transfer::NewTransfer,
+        transfer::{NewTransfer, TransferId},
     },
     infrastructure::sqlite::{open_all_repositories, open_complete_repositories},
 };
@@ -171,7 +172,7 @@ async fn editing_imported_fixed_offset_transaction_preserves_the_instant() {
             State(state.clone()),
             Form(CsvImportForm {
                 csv: String::from(
-                    "account_id,kind,amount_minor,currency,occurred_at,description,category\n1,expense,1234,CNY,2026-09-01T12:00:00+08:00[+08:00],Imported offset lunch,food\n",
+                    "account_id,kind,amount_minor,currency,occurred_at,description,category\n1,expense,1234,CNY,2026-09-01T12:00:30+08:00[+08:00],Imported offset lunch,food\n",
                 ),
             }),
         )
@@ -189,7 +190,10 @@ async fn editing_imported_fixed_offset_transaction_preserves_the_instant() {
     let edit = transaction_edit(State(state.clone()), Path(1))
         .await
         .unwrap();
-    assert!(edit.0.contains("value=\"2026-09-01T12:00:00\""));
+    assert!(
+        edit.0
+            .contains("step=\"any\" value=\"2026-09-01T12:00:30\"")
+    );
     assert!(edit.0.contains("value=\"+08\""));
 
     let _redirect = update_transaction_handler(
@@ -198,8 +202,9 @@ async fn editing_imported_fixed_offset_transaction_preserves_the_instant() {
         Form(CreateTransactionForm {
             kind: String::from("expense"),
             amount: String::from("12.34"),
-            occurred_at: String::from("2026-09-01T12:00"),
+            occurred_at: String::from("2026-09-01T12:00:30"),
             time_zone: String::from("+08:00"),
+            time_zone_offset: Some(String::from("+08")),
             description: String::from("Imported offset lunch"),
             category: String::from("food"),
         }),
@@ -228,7 +233,7 @@ async fn editing_fixed_offset_transfer_shows_the_stored_offset() {
         .unwrap();
     }
     let (accounts, _, mut transfers) = open_all_repositories(state.database_path()).unwrap();
-    let occurred_at = "2026-09-01T12:00:00+08:00[+08:00]"
+    let occurred_at = "2026-09-01T12:00:30+08:00[+08:00]"
         .parse::<jiff::Zoned>()
         .unwrap();
     let transfer = NewTransfer::new(
@@ -242,9 +247,99 @@ async fn editing_fixed_offset_transfer_shows_the_stored_offset() {
     .unwrap();
     create_transfer(&accounts, &mut transfers, transfer).unwrap();
 
-    let edit = transfer_edit(State(state), Path(1)).await.unwrap();
-    assert!(edit.0.contains("value=\"2026-09-01T12:00:00\""));
+    let edit = transfer_edit(State(state.clone()), Path(1)).await.unwrap();
+    assert!(
+        edit.0
+            .contains("step=\"any\" value=\"2026-09-01T12:00:30\"")
+    );
     assert!(edit.0.contains("value=\"+08\""));
+
+    let _redirect = update_transfer_handler(
+        State(state.clone()),
+        Path(1),
+        Form(UpdateTransferForm {
+            source_account_id: 1,
+            destination_account_id: 2,
+            source_amount: String::from("7.00"),
+            destination_amount: String::from("1.00"),
+            occurred_at: String::from("2026-09-01T12:00:30"),
+            time_zone: String::from("+08"),
+            time_zone_offset: Some(String::from("+08")),
+            description: String::from("Fixed offset transfer"),
+        }),
+    )
+    .await
+    .unwrap();
+
+    let (_, _, transfers) = open_all_repositories(state.database_path()).unwrap();
+    assert_eq!(
+        get_transfer(&transfers, TransferId::new(1))
+            .unwrap()
+            .occurred_at()
+            .timestamp(),
+        "2026-09-01T12:00:30+08:00[+08:00]"
+            .parse::<jiff::Zoned>()
+            .unwrap()
+            .timestamp()
+    );
+}
+
+#[tokio::test]
+async fn editing_dst_overlap_transaction_preserves_its_offset_and_iana_zone() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state = WebState::new(temp_dir.path().join("web.db"));
+    let _redirect = create_account_handler(
+        State(state.clone()),
+        Form(CreateAccountForm {
+            name: String::from("Cash"),
+            currency: String::from("CNY"),
+        }),
+    )
+    .await
+    .unwrap();
+    let original = "2026-11-01T01:30:00-04:00[America/New_York]";
+    let _redirect = import_csv_handler(
+        State(state.clone()),
+        Form(CsvImportForm {
+            csv: format!(
+                "account_id,kind,amount_minor,currency,occurred_at,description,category\n1,expense,1234,CNY,{original},DST overlap,food\n"
+            ),
+        }),
+    )
+    .await
+    .unwrap();
+
+    let edit = transaction_edit(State(state.clone()), Path(1))
+        .await
+        .unwrap();
+    assert!(edit.0.contains("value=\"2026-11-01T01:30:00\""));
+    assert!(edit.0.contains("value=\"America/New_York\""));
+    assert!(edit.0.contains("name=\"time_zone_offset\" value=\"-04\""));
+
+    let _redirect = update_transaction_handler(
+        State(state.clone()),
+        Path(1),
+        Form(CreateTransactionForm {
+            kind: String::from("expense"),
+            amount: String::from("12.34"),
+            occurred_at: String::from("2026-11-01T01:30:00"),
+            time_zone: String::from("America/New_York"),
+            time_zone_offset: Some(String::from("-04")),
+            description: String::from("DST overlap"),
+            category: String::from("food"),
+        }),
+    )
+    .await
+    .unwrap();
+
+    let (_, transactions, _) = open_all_repositories(state.database_path()).unwrap();
+    assert_eq!(
+        get_transaction(&transactions, TransactionId::new(1))
+            .unwrap()
+            .occurred_at()
+            .to_string(),
+        original
+    );
 }
 
 #[tokio::test]
@@ -268,6 +363,7 @@ async fn transaction_form_records_and_renders_expense() {
             amount: String::from("12.50"),
             occurred_at: String::from("2026-08-31T18:30"),
             time_zone: String::from("Asia/Shanghai"),
+            time_zone_offset: None,
             description: String::from("Dinner & tea"),
             category: String::from("food"),
         }),
@@ -357,6 +453,7 @@ async fn account_delete_preserves_account_with_transactions() {
             amount: String::from("1.00"),
             occurred_at: String::from("2026-09-01T09:00"),
             time_zone: String::from("Asia/Shanghai"),
+            time_zone_offset: None,
             description: String::from("Opening"),
             category: String::from("other"),
         }),
@@ -401,6 +498,7 @@ async fn transaction_management_filters_updates_and_deletes() {
                 amount: String::from(amount),
                 occurred_at: String::from("2026-09-01T18:30"),
                 time_zone: String::from("Asia/Shanghai"),
+                time_zone_offset: None,
                 description: String::from(description),
                 category: String::from(category),
             }),
@@ -434,6 +532,7 @@ async fn transaction_management_filters_updates_and_deletes() {
             amount: String::from("20.25"),
             occurred_at: String::from("2026-09-01T19:00"),
             time_zone: String::from("Asia/Shanghai"),
+            time_zone_offset: None,
             description: String::from("Updated refund"),
             category: String::from("food"),
         }),
@@ -555,6 +654,7 @@ async fn transfer_management_creates_updates_lists_and_deletes() {
             destination_amount: String::from("2.00"),
             occurred_at: String::from("2026-09-01T20:30"),
             time_zone: String::from("Asia/Shanghai"),
+            time_zone_offset: None,
             description: String::from("Updated exchange"),
         }),
     )
@@ -653,6 +753,7 @@ async fn reports_render_monthly_cash_flow_and_budget_status() {
                 amount: String::from(amount),
                 occurred_at: String::from("2026-09-01T12:00"),
                 time_zone: String::from("Asia/Shanghai"),
+                time_zone_offset: None,
                 description: String::from(description),
                 category: String::from(category),
             }),
@@ -716,6 +817,7 @@ async fn empty_report_time_zone_falls_back_to_the_default() {
             amount: String::from("100.00"),
             occurred_at: String::from("2026-09-01T12:00"),
             time_zone: String::from("Asia/Shanghai"),
+            time_zone_offset: None,
             description: String::from("Salary"),
             category: String::from("salary"),
         }),
