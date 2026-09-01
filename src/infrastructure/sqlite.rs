@@ -1423,6 +1423,13 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
             CREATE INDEX audit_log_newest_first
                 ON audit_log (id DESC);
 
+            CREATE TRIGGER protect_audit_log_update BEFORE UPDATE ON audit_log BEGIN
+                SELECT RAISE(ABORT, 'audit log is append-only');
+            END;
+            CREATE TRIGGER protect_audit_log_delete BEFORE DELETE ON audit_log BEGIN
+                SELECT RAISE(ABORT, 'audit log is append-only');
+            END;
+
             CREATE TRIGGER audit_accounts_create AFTER INSERT ON accounts BEGIN
                 INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
                 VALUES ('account', NEW.id, 'create', json_object(
@@ -1774,6 +1781,85 @@ mod tests {
             entries[0].after_state(),
             Some(&serde_json::json!({"id": 1, "name": "Wallet", "currency": "CNY"}))
         );
+    }
+
+    #[test]
+    fn records_transaction_transfer_and_budget_changes() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO accounts (id, name, currency) VALUES (1, 'Cash', 'CNY');
+                INSERT INTO accounts (id, name, currency) VALUES (2, 'Bank', 'CNY');
+
+                INSERT INTO transactions
+                    (id, account_id, kind, amount_minor, currency, occurred_at, description, category)
+                VALUES
+                    (3, 1, 'expense', 100, 'CNY',
+                     '2026-09-01T10:00:00+08:00[Asia/Shanghai]', 'Lunch', 'food');
+                UPDATE transactions SET description = 'Dinner' WHERE id = 3;
+                DELETE FROM transactions WHERE id = 3;
+
+                INSERT INTO transfers
+                    (id, source_account_id, destination_account_id, source_amount_minor,
+                     source_currency, destination_amount_minor, destination_currency,
+                     occurred_at, description)
+                VALUES
+                    (4, 1, 2, 200, 'CNY', 200, 'CNY',
+                     '2026-09-01T11:00:00+08:00[Asia/Shanghai]', 'Move');
+                UPDATE transfers SET description = 'Savings' WHERE id = 4;
+                DELETE FROM transfers WHERE id = 4;
+
+                INSERT INTO budgets
+                    (id, account_id, category, year, month, limit_minor, currency)
+                VALUES (5, 1, 'food', 2026, 9, 1000, 'CNY');
+                UPDATE budgets SET limit_minor = 1200 WHERE id = 5;
+                DELETE FROM budgets WHERE id = 5;
+                "#,
+            )
+            .unwrap();
+
+        for entity in ["transaction", "transfer", "budget"] {
+            let operations = connection
+                .prepare(
+                    "SELECT operation FROM audit_log
+                     WHERE entity_type = ?1 ORDER BY id",
+                )
+                .unwrap()
+                .query_map(params![entity], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(operations, ["create", "update", "delete"]);
+        }
+    }
+
+    #[test]
+    fn prevents_audit_log_updates_and_deletes() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (1, 'Cash', 'CNY')",
+                [],
+            )
+            .unwrap();
+
+        assert!(
+            connection
+                .execute("UPDATE audit_log SET entity_id = 2 WHERE id = 1", [])
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute("DELETE FROM audit_log WHERE id = 1", [])
+                .is_err()
+        );
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
