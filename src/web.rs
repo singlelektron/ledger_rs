@@ -1,8 +1,10 @@
 use crate::{
     application::{
         account_balance::get_account_balance_with_transfers,
+        backup::{create_json_backup, validate_json_backup},
         budget_report::get_budget_statuses,
         create_account::create_account,
+        csv_exchange::{export_transactions_csv, import_transactions_csv},
         list_accounts::list_accounts,
         list_transactions::{TransactionFilter, list_account_transactions},
         manage_account::{
@@ -27,7 +29,7 @@ use crate::{
         transaction::{Category, NewTransaction, TransactionId, TransactionKind},
         transfer::{NewTransfer, TransferId},
     },
-    infrastructure::sqlite::{open_all_repositories, open_complete_repositories},
+    infrastructure::sqlite::{open_all_repositories, open_complete_repositories, restore_backup},
 };
 use axum::{
     Form, Router,
@@ -95,6 +97,11 @@ pub fn router(database_path: PathBuf) -> Router {
         .route("/accounts/{account_id}/budgets", post(set_budget_handler))
         .route("/budgets/{budget_id}/delete", post(delete_budget_handler))
         .route("/reports", get(reports))
+        .route("/data", get(data_tools))
+        .route("/data/backup", get(download_backup))
+        .route("/data/export/{account_id}", get(download_account_csv))
+        .route("/data/import", post(import_csv_handler))
+        .route("/data/restore", post(restore_backup_handler))
         .with_state(WebState::new(database_path))
 }
 
@@ -207,6 +214,16 @@ struct ReportQuery {
     from: Option<String>,
     to: Option<String>,
     time_zone: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CsvImportForm {
+    csv: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BackupRestoreForm {
+    json: String,
 }
 
 async fn home(State(state): State<WebState>) -> Result<Html<String>, WebError> {
@@ -383,6 +400,108 @@ async fn reports(
     );
 
     Ok(Html(page("Reports", &content)))
+}
+
+async fn data_tools(State(state): State<WebState>) -> Result<Html<String>, WebError> {
+    let (accounts, _, _, _) = open_complete_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let accounts =
+        list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
+    let export_links = if accounts.is_empty() {
+        String::from("<p class=\"muted\">Create an account before exporting transactions.</p>")
+    } else {
+        accounts
+            .iter()
+            .map(|account| {
+                format!(
+                    r#"<a class="data-link" href="/data/export/{}"><span>{}</span><small>CSV · {}</small></a>"#,
+                    account.id().value(),
+                    escape_html(account.name()),
+                    currency_code(account.currency()),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    let content = format!(
+        r#"
+        <section class="hero compact-hero"><p class="eyebrow">Local storage</p><h1 class="compact">Data tools</h1><p class="lede">Move data in and out of this workstation without a remote service.</p></section>
+        <div class="data-grid">
+          <section class="data-card"><p class="eyebrow">Full recovery</p><h2>JSON backup</h2><p>Download accounts, transactions, transfers, budgets, IDs, and zoned timestamps.</p><a class="button" href="/data/backup">Download backup</a></section>
+          <section class="data-card"><p class="eyebrow">Transaction exchange</p><h2>CSV export</h2><div class="data-links">{export_links}</div></section>
+          <section class="data-card"><p class="eyebrow">Transaction exchange</p><h2>Import CSV</h2><p>Paste the fixed seven-column CSV format. The import is atomic: one invalid row writes nothing.</p><form method="post" action="/data/import"><label>CSV document<textarea name="csv" required rows="9" placeholder="account_id,kind,amount_minor,currency,occurred_at,description,category"></textarea></label><button type="submit">Import transactions</button></form></section>
+          <section class="data-card danger-zone"><p class="eyebrow">Full recovery</p><h2>Restore JSON backup</h2><p>Restore is accepted only when all ledger tables are empty. Existing data is never merged or overwritten.</p><form method="post" action="/data/restore"><label>Backup document<textarea name="json" required rows="9" placeholder="Paste a ledger_rs JSON backup"></textarea></label><button class="button danger" type="submit">Restore into empty ledger</button></form></section>
+        </div>
+        "#,
+    );
+    Ok(Html(page("Data tools", &content)))
+}
+
+async fn download_backup(State(state): State<WebState>) -> Result<Response, WebError> {
+    let (accounts, transactions, transfers, budgets) =
+        open_complete_repositories(state.database_path())
+            .map_err(|error| WebError::internal("open database", error))?;
+    let backup = create_json_backup(&accounts, &transactions, &transfers, &budgets)
+        .map_err(|error| WebError::internal("create backup", error))?;
+    Ok((
+        [
+            ("content-type", "application/json; charset=utf-8"),
+            (
+                "content-disposition",
+                "attachment; filename=ledger-backup.json",
+            ),
+        ],
+        backup,
+    )
+        .into_response())
+}
+
+async fn download_account_csv(
+    State(state): State<WebState>,
+    Path(account_id): Path<u64>,
+) -> Result<Response, WebError> {
+    let (accounts, transactions, _) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let csv = export_transactions_csv(
+        &accounts,
+        &transactions,
+        AccountId::new(account_id),
+        TransactionFilter::default(),
+    )
+    .map_err(|error| WebError::bad_request(format!("Could not export CSV: {error:?}")))?;
+    Ok((
+        [
+            ("content-type", "text/csv; charset=utf-8"),
+            (
+                "content-disposition",
+                "attachment; filename=transactions.csv",
+            ),
+        ],
+        csv,
+    )
+        .into_response())
+}
+
+async fn import_csv_handler(
+    State(state): State<WebState>,
+    Form(input): Form<CsvImportForm>,
+) -> Result<Redirect, WebError> {
+    let (accounts, mut transactions, _) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    import_transactions_csv(&accounts, &mut transactions, &input.csv)
+        .map_err(|error| WebError::bad_request(format!("Could not import CSV: {error:?}")))?;
+    Ok(Redirect::to("/data"))
+}
+
+async fn restore_backup_handler(
+    State(state): State<WebState>,
+    Form(input): Form<BackupRestoreForm>,
+) -> Result<Redirect, WebError> {
+    let backup = validate_json_backup(&input.json)
+        .map_err(|error| WebError::bad_request(format!("Invalid backup: {error:?}")))?;
+    restore_backup(state.database_path(), &backup)
+        .map_err(|error| WebError::bad_request(format!("Could not restore backup: {error:?}")))?;
+    Ok(Redirect::to("/"))
 }
 
 async fn create_account_handler(
@@ -1336,7 +1455,7 @@ fn page(title: &str, content: &str) -> String {
   <style>{style}</style>
 </head>
 <body>
-  <header><nav><a class="brand" href="/"><span class="brand-mark">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><div class="nav-links"><a href="/">Overview</a><a href="/reports">Reports</a></div><span class="status"><i></i> LOCAL NODE</span></nav></header>
+  <header><nav><a class="brand" href="/"><span class="brand-mark">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><div class="nav-links"><a href="/">Overview</a><a href="/reports">Reports</a><a href="/data">Data</a></div><span class="status"><i></i> LOCAL NODE</span></nav></header>
   <main>{content}</main>
 </body>
 </html>"#
@@ -1839,5 +1958,77 @@ mod tests {
         assert!(response.0.contains("80.00 CNY"));
         assert!(response.0.contains("Limit 50.00 CNY"));
         assert!(response.0.contains("On track · 30.00 CNY"));
+    }
+
+    #[tokio::test]
+    async fn data_tools_export_link_and_atomic_csv_import_work() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let page = data_tools(State(state.clone())).await.unwrap();
+        assert!(page.0.contains("/data/export/1"));
+        let _redirect = import_csv_handler(
+            State(state.clone()),
+            Form(CsvImportForm {
+                csv: String::from(
+                    "account_id,kind,amount_minor,currency,occurred_at,description,category\n1,expense,1234,CNY,2026-09-01T12:00:00+08:00[Asia/Shanghai],Imported lunch,food\n",
+                ),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let detail = account_detail(State(state), Path(1), Query(TransactionQuery::default()))
+            .await
+            .unwrap();
+        assert!(detail.0.contains("Imported lunch"));
+        assert!(detail.0.contains("−12.34 CNY"));
+    }
+
+    #[tokio::test]
+    async fn backup_download_and_empty_database_restore_work() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let source_state = WebState::new(source_dir.path().join("source.db"));
+        let _redirect = create_account_handler(
+            State(source_state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Restored wallet"),
+                currency: String::from("USD"),
+            }),
+        )
+        .await
+        .unwrap();
+        let download = download_backup(State(source_state.clone())).await.unwrap();
+        assert_eq!(
+            download.headers().get("content-type").unwrap(),
+            "application/json; charset=utf-8"
+        );
+        let backup = {
+            let (accounts, transactions, transfers, budgets) =
+                open_complete_repositories(source_state.database_path()).unwrap();
+            create_json_backup(&accounts, &transactions, &transfers, &budgets).unwrap()
+        };
+
+        let target_dir = tempfile::tempdir().unwrap();
+        let target_state = WebState::new(target_dir.path().join("target.db"));
+        let _redirect = restore_backup_handler(
+            State(target_state.clone()),
+            Form(BackupRestoreForm { json: backup }),
+        )
+        .await
+        .unwrap();
+
+        let overview = home(State(target_state)).await.unwrap();
+        assert!(overview.0.contains("Restored wallet"));
+        assert!(overview.0.contains("0.00 USD"));
     }
 }

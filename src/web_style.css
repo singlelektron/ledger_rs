@@ -232,7 +232,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   height: 42px;
   padding: 0 11px;
@@ -245,8 +246,15 @@ select {
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 
+textarea {
+  min-height: 150px;
+  padding: 11px;
+  resize: vertical;
+}
+
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(77, 163, 255, .12);
 }
@@ -459,6 +467,29 @@ tbody tr:last-child td { border-bottom: 0; }
 .metric-row small, .metric-row span { color: var(--muted); font-size: .72rem; }
 .metric-row b { font: 650 .76rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
+.data-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 42px;
+}
+
+.data-card {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(12, 18, 29, .9);
+}
+
+.data-card > p:not(.eyebrow), .muted { color: var(--muted); font-size: .78rem; }
+.data-card > .button { margin-top: 12px; }
+.data-card form { margin-top: 16px; }
+.danger-zone { border-color: #43232c; }
+.data-links { display: grid; gap: 7px; margin-top: 16px; }
+.data-link { display: flex; padding: 11px 12px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); align-items: center; justify-content: space-between; text-decoration: none; }
+.data-link:hover { border-color: var(--line-hot); }
+.data-link small { color: var(--muted); font: 650 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
 .delete-form {
   margin-top: 14px;
   padding-top: 14px;
@@ -477,6 +508,7 @@ tbody tr:last-child td { border-bottom: 0; }
   .filter-bar input { grid-column: 1 / -1; }
   .report-controls { grid-template-columns: 1fr 1fr; }
   .report-controls label:first-child, .report-controls label:nth-child(4), .report-controls button { grid-column: 1 / -1; }
+  .data-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {
