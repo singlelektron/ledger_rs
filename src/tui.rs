@@ -3483,6 +3483,26 @@ mod tests {
     }
 
     #[test]
+    fn budgets_footer_advertises_shared_and_refresh_shortcuts() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('4'));
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("1 ledger  2 activity  3 reports  4 budgets  5 transfers"));
+        assert!(screen.contains("l list  b set  u status  d delete"));
+        assert!(screen.contains("r refresh"));
+        assert!(screen.contains("q quit"));
+    }
+
+    #[test]
     fn renders_transactions_and_transfers_in_activity_page() {
         let mut accounts = InMemoryAccountRepository::new();
         let mut transactions = InMemoryTransactionRepository::new();
