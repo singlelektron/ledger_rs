@@ -3786,6 +3786,32 @@ mod tests {
     }
 
     #[test]
+    fn switching_accounts_on_reports_page_clears_loaded_report() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts
+            .save(Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('3'));
+        app.set_report(ReportResult::Category(vec![]));
+
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_index(), Some(1));
+        assert!(app.report.is_none());
+
+        app.set_report(ReportResult::Category(vec![]));
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.selected_index(), Some(0));
+        assert!(app.report.is_none());
+    }
+
+    #[test]
     fn invalid_account_name_keeps_form_open_and_preserves_input() {
         let accounts = InMemoryAccountRepository::new();
         let transactions = InMemoryTransactionRepository::new();
