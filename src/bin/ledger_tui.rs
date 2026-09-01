@@ -32,7 +32,7 @@ fn main() -> io::Result<()> {
         );
     }
     prepare_database_parent(&database)?;
-    let (mut accounts, mut transactions, transfers, mut budgets) =
+    let (mut accounts, mut transactions, mut transfers, mut budgets) =
         open_complete_repositories(database.path())
             .map_err(|error| io::Error::other(format!("failed to open database: {error:?}")))?;
     secure_database_file(&database)?;
@@ -71,7 +71,7 @@ fn main() -> io::Result<()> {
                         action,
                         &mut accounts,
                         &mut transactions,
-                        &transfers,
+                        &mut transfers,
                         &budgets,
                     ) {
                         Ok(Some(message)) => {

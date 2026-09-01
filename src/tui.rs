@@ -12,11 +12,15 @@ use crate::{
         manage_transaction::{
             ManageTransactionError, TransactionChanges, delete_transaction, update_transaction,
         },
+        manage_transfer::{
+            ManageTransferError, TransferChanges, create_transfer, delete_transfer, update_transfer,
+        },
         monthly_trend::{MonthlyTrend, MonthlyTrendError, get_monthly_trend},
         ranged_summary::{GetRangedSummaryError, get_ranged_summary},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::{
-            AccountRepository, BudgetRepository, TransactionRepository, TransferRepository,
+            AccountRepository, BudgetRepository, RepositoryError, TransactionRepository,
+            TransferRepository,
         },
     },
     domain::{
@@ -27,6 +31,7 @@ use crate::{
         transaction::{
             Category, NewTransaction, Transaction, TransactionError, TransactionId, TransactionKind,
         },
+        transfer::{NewTransfer, Transfer, TransferError, TransferId},
     },
 };
 use crossterm::event::KeyCode;
@@ -136,6 +141,14 @@ pub enum Action {
     DeleteTransaction {
         id: TransactionId,
     },
+    CreateTransfer(TransferInput),
+    UpdateTransfer {
+        id: TransferId,
+        input: TransferInput,
+    },
+    DeleteTransfer {
+        id: TransferId,
+    },
     RunReport(ReportRequest),
     RunBudget(BudgetRequest),
 }
@@ -152,6 +165,7 @@ pub enum Page {
     Activity,
     Reports,
     Budgets,
+    Transfers,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +175,8 @@ enum Mode {
     ConfirmDeleteAccount(AccountId),
     TransactionForm(TransactionForm),
     ConfirmDeleteTransaction(TransactionId),
+    TransferForm(TransferForm),
+    ConfirmDeleteTransfer(TransferId),
     SummaryReportForm(SummaryReportForm),
     TrendReportForm(TrendReportForm),
     BudgetForm(BudgetForm),
@@ -216,6 +232,34 @@ struct TransactionForm {
     field: TransactionField,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferFormKind {
+    Create,
+    Edit(TransferId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferField {
+    SourceAccount,
+    DestinationAccount,
+    SourceAmount,
+    DestinationAmount,
+    OccurredAt,
+    Description,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransferForm {
+    kind: TransferFormKind,
+    source_account_id: String,
+    destination_account_id: String,
+    source_amount_minor: String,
+    destination_amount_minor: String,
+    occurred_at: String,
+    description: String,
+    field: TransferField,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionInput {
     account_id: AccountId,
@@ -227,6 +271,16 @@ pub struct TransactionInput {
     category: Category,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferInput {
+    pub source_account_id: String,
+    pub destination_account_id: String,
+    pub source_amount_minor: String,
+    pub destination_amount_minor: String,
+    pub occurred_at: String,
+    pub description: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum TransactionInputError {
     InvalidAmount(String),
@@ -235,12 +289,24 @@ pub enum TransactionInputError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum TransferInputError {
+    InvalidAccountId(String),
+    AccountNotFound(AccountId),
+    InvalidAmount(String),
+    InvalidOccurredAt(String),
+    Repository(RepositoryError),
+    Transfer(TransferError),
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum ExecuteActionError {
     CreateAccount(CreateAccountError),
     ManageAccount(ManageAccountError),
     TransactionInput(TransactionInputError),
+    TransferInput(TransferInputError),
     RecordTransaction(RecordTransactionError),
     ManageTransaction(ManageTransactionError),
+    ManageTransfer(ManageTransferError),
 }
 
 impl From<CreateAccountError> for ExecuteActionError {
@@ -261,6 +327,12 @@ impl From<TransactionInputError> for ExecuteActionError {
     }
 }
 
+impl From<TransferInputError> for ExecuteActionError {
+    fn from(error: TransferInputError) -> Self {
+        Self::TransferInput(error)
+    }
+}
+
 impl From<RecordTransactionError> for ExecuteActionError {
     fn from(error: RecordTransactionError) -> Self {
         Self::RecordTransaction(error)
@@ -270,6 +342,12 @@ impl From<RecordTransactionError> for ExecuteActionError {
 impl From<ManageTransactionError> for ExecuteActionError {
     fn from(error: ManageTransactionError) -> Self {
         Self::ManageTransaction(error)
+    }
+}
+
+impl From<ManageTransferError> for ExecuteActionError {
+    fn from(error: ManageTransferError) -> Self {
+        Self::ManageTransfer(error)
     }
 }
 
@@ -295,11 +373,56 @@ impl TransactionInput {
     }
 }
 
+impl TransferInput {
+    fn into_new_transfer(
+        self,
+        accounts: &impl AccountRepository,
+    ) -> Result<NewTransfer, TransferInputError> {
+        let source_account_id = parse_transfer_account_id(&self.source_account_id)?;
+        let destination_account_id = parse_transfer_account_id(&self.destination_account_id)?;
+        let source = accounts
+            .find_by_id(source_account_id)
+            .map_err(TransferInputError::Repository)?
+            .ok_or(TransferInputError::AccountNotFound(source_account_id))?;
+        let destination = accounts
+            .find_by_id(destination_account_id)
+            .map_err(TransferInputError::Repository)?
+            .ok_or(TransferInputError::AccountNotFound(destination_account_id))?;
+        let source_amount = self
+            .source_amount_minor
+            .parse::<i64>()
+            .map_err(|_| TransferInputError::InvalidAmount(self.source_amount_minor.clone()))?;
+        let destination_amount = self.destination_amount_minor.parse::<i64>().map_err(|_| {
+            TransferInputError::InvalidAmount(self.destination_amount_minor.clone())
+        })?;
+        let occurred_at = self
+            .occurred_at
+            .parse()
+            .map_err(|_| TransferInputError::InvalidOccurredAt(self.occurred_at.clone()))?;
+        NewTransfer::new(
+            source_account_id,
+            destination_account_id,
+            Money::from_minor_units(source_amount, source.currency()),
+            Money::from_minor_units(destination_amount, destination.currency()),
+            occurred_at,
+            self.description,
+        )
+        .map_err(TransferInputError::Transfer)
+    }
+}
+
+fn parse_transfer_account_id(input: &str) -> Result<AccountId, TransferInputError> {
+    input
+        .parse::<u64>()
+        .map(AccountId::new)
+        .map_err(|_| TransferInputError::InvalidAccountId(input.to_string()))
+}
+
 pub fn execute_action(
     action: Action,
     account_repository: &mut impl AccountRepository,
     transaction_repository: &mut impl TransactionRepository,
-    transfer_repository: &impl TransferRepository,
+    transfer_repository: &mut impl TransferRepository,
     budget_repository: &impl BudgetRepository,
 ) -> Result<Option<String>, ExecuteActionError> {
     let message = match action {
@@ -349,6 +472,35 @@ pub fn execute_action(
         Action::DeleteTransaction { id } => {
             delete_transaction(transaction_repository, id)?;
             "Deleted transaction".to_string()
+        }
+        Action::CreateTransfer(input) => {
+            let transfer = create_transfer(
+                account_repository,
+                transfer_repository,
+                input.into_new_transfer(account_repository)?,
+            )?;
+            format!("Created transfer {}", transfer.id().value())
+        }
+        Action::UpdateTransfer { id, input } => {
+            let input = input.into_new_transfer(account_repository)?;
+            let transfer = update_transfer(
+                account_repository,
+                transfer_repository,
+                id,
+                TransferChanges {
+                    source_account_id: Some(input.source_account_id()),
+                    destination_account_id: Some(input.destination_account_id()),
+                    source_amount: Some(input.source_amount().clone()),
+                    destination_amount: Some(input.destination_amount().clone()),
+                    occurred_at: Some(input.occurred_at().clone()),
+                    description: Some(input.description().to_string()),
+                },
+            )?;
+            format!("Updated transfer {}", transfer.id().value())
+        }
+        Action::DeleteTransfer { id } => {
+            delete_transfer(transfer_repository, id)?;
+            "Deleted transfer".to_string()
         }
         Action::Continue
         | Action::Reload
@@ -713,6 +865,29 @@ impl App {
             .get(self.selected_transaction)
     }
 
+    fn selected_transfer(&self) -> Option<&Transfer> {
+        self.selected_account()?
+            .activity()
+            .iter()
+            .filter_map(|activity| match activity {
+                AccountActivity::Transfer(transfer) => Some(transfer),
+                AccountActivity::Transaction(_) => None,
+            })
+            .nth(self.selected_transaction)
+    }
+
+    fn transfer_count(&self) -> usize {
+        self.selected_account()
+            .map(|account| {
+                account
+                    .activity()
+                    .iter()
+                    .filter(|activity| matches!(activity, AccountActivity::Transfer(_)))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     pub fn focus(&self) -> Focus {
         self.focus
     }
@@ -778,6 +953,7 @@ impl App {
                         .map(|account| account.transactions().len())
                         .unwrap_or(0),
                     Page::Budgets => self.budget_row_count(),
+                    Page::Transfers => self.transfer_count(),
                     Page::Activity | Page::Reports => 0,
                 };
                 if count > 0 {
@@ -807,6 +983,7 @@ impl App {
                         .map(|account| account.transactions().len())
                         .unwrap_or(0),
                     Page::Budgets => self.budget_row_count(),
+                    Page::Transfers => self.transfer_count(),
                     Page::Activity | Page::Reports => 0,
                 };
                 if count > 0 {
@@ -848,6 +1025,21 @@ impl App {
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Continue,
                     _ => {
                         self.mode = Mode::ConfirmDeleteTransaction(id);
+                        Action::Continue
+                    }
+                };
+            }
+            Mode::TransferForm(form) => {
+                let (mode, action) = handle_transfer_form_key(form, key);
+                self.mode = mode;
+                return action;
+            }
+            Mode::ConfirmDeleteTransfer(id) => {
+                return match key {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => Action::DeleteTransfer { id },
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Continue,
+                    _ => {
+                        self.mode = Mode::ConfirmDeleteTransfer(id);
                         Action::Continue
                     }
                 };
@@ -922,6 +1114,12 @@ impl App {
                     })
                     .unwrap_or(Action::Continue)
             }
+            KeyCode::Char('5') => {
+                self.page = Page::Transfers;
+                self.focus = Focus::Accounts;
+                self.selected_transaction = 0;
+                Action::Continue
+            }
             KeyCode::Char('c') if self.page == Page::Reports => self
                 .selected_account()
                 .map(|account| {
@@ -979,6 +1177,59 @@ impl App {
             {
                 if let Some(id) = self.selected_budget_id() {
                     self.mode = Mode::ConfirmDeleteBudget(id);
+                }
+                Action::Continue
+            }
+            KeyCode::Char('n') if self.page == Page::Transfers => {
+                if let Some(account) = self.selected_account().map(AccountOverview::account) {
+                    let destination_id = self
+                        .accounts
+                        .iter()
+                        .map(AccountOverview::account)
+                        .find(|candidate| candidate.id() != account.id())
+                        .map(|candidate| candidate.id().value().to_string())
+                        .unwrap_or_default();
+                    self.mode = Mode::TransferForm(TransferForm {
+                        kind: TransferFormKind::Create,
+                        source_account_id: account.id().value().to_string(),
+                        destination_account_id: destination_id,
+                        source_amount_minor: String::new(),
+                        destination_amount_minor: String::new(),
+                        occurred_at: jiff::Zoned::now().to_string(),
+                        description: String::new(),
+                        field: TransferField::DestinationAccount,
+                    });
+                }
+                Action::Continue
+            }
+            KeyCode::Char('e')
+                if self.page == Page::Transfers && self.focus == Focus::Transactions =>
+            {
+                if let Some(transfer) = self.selected_transfer() {
+                    self.mode = Mode::TransferForm(TransferForm {
+                        kind: TransferFormKind::Edit(transfer.id()),
+                        source_account_id: transfer.source_account_id().value().to_string(),
+                        destination_account_id: transfer
+                            .destination_account_id()
+                            .value()
+                            .to_string(),
+                        source_amount_minor: transfer.source_amount().minor_units().to_string(),
+                        destination_amount_minor: transfer
+                            .destination_amount()
+                            .minor_units()
+                            .to_string(),
+                        occurred_at: transfer.occurred_at().to_string(),
+                        description: transfer.description().to_string(),
+                        field: TransferField::SourceAccount,
+                    });
+                }
+                Action::Continue
+            }
+            KeyCode::Char('d')
+                if self.page == Page::Transfers && self.focus == Focus::Transactions =>
+            {
+                if let Some(id) = self.selected_transfer().map(Transfer::id) {
+                    self.mode = Mode::ConfirmDeleteTransfer(id);
                 }
                 Action::Continue
             }
@@ -1396,6 +1647,76 @@ fn handle_transaction_form_key(mut form: TransactionForm, key: KeyCode) -> (Mode
     (Mode::TransactionForm(form), Action::Continue)
 }
 
+fn handle_transfer_form_key(mut form: TransferForm, key: KeyCode) -> (Mode, Action) {
+    match key {
+        KeyCode::Esc => return (Mode::Browse, Action::Continue),
+        KeyCode::Enter => {
+            let kind = form.kind;
+            let input = form.into_input();
+            let action = match kind {
+                TransferFormKind::Create => Action::CreateTransfer(input),
+                TransferFormKind::Edit(id) => Action::UpdateTransfer { id, input },
+            };
+            return (Mode::Browse, action);
+        }
+        KeyCode::Tab => form.field = next_transfer_field(form.field),
+        KeyCode::BackTab => form.field = previous_transfer_field(form.field),
+        KeyCode::Delete => active_transfer_text(&mut form).clear(),
+        KeyCode::Backspace => {
+            active_transfer_text(&mut form).pop();
+        }
+        KeyCode::Char(character) => active_transfer_text(&mut form).push(character),
+        _ => {}
+    }
+    (Mode::TransferForm(form), Action::Continue)
+}
+
+impl TransferForm {
+    fn into_input(self) -> TransferInput {
+        TransferInput {
+            source_account_id: self.source_account_id,
+            destination_account_id: self.destination_account_id,
+            source_amount_minor: self.source_amount_minor,
+            destination_amount_minor: self.destination_amount_minor,
+            occurred_at: self.occurred_at,
+            description: self.description,
+        }
+    }
+}
+
+fn active_transfer_text(form: &mut TransferForm) -> &mut String {
+    match form.field {
+        TransferField::SourceAccount => &mut form.source_account_id,
+        TransferField::DestinationAccount => &mut form.destination_account_id,
+        TransferField::SourceAmount => &mut form.source_amount_minor,
+        TransferField::DestinationAmount => &mut form.destination_amount_minor,
+        TransferField::OccurredAt => &mut form.occurred_at,
+        TransferField::Description => &mut form.description,
+    }
+}
+
+fn next_transfer_field(field: TransferField) -> TransferField {
+    match field {
+        TransferField::SourceAccount => TransferField::DestinationAccount,
+        TransferField::DestinationAccount => TransferField::SourceAmount,
+        TransferField::SourceAmount => TransferField::DestinationAmount,
+        TransferField::DestinationAmount => TransferField::OccurredAt,
+        TransferField::OccurredAt => TransferField::Description,
+        TransferField::Description => TransferField::SourceAccount,
+    }
+}
+
+fn previous_transfer_field(field: TransferField) -> TransferField {
+    match field {
+        TransferField::SourceAccount => TransferField::Description,
+        TransferField::DestinationAccount => TransferField::SourceAccount,
+        TransferField::SourceAmount => TransferField::DestinationAccount,
+        TransferField::DestinationAmount => TransferField::SourceAmount,
+        TransferField::OccurredAt => TransferField::DestinationAmount,
+        TransferField::Description => TransferField::OccurredAt,
+    }
+}
+
 impl TransactionForm {
     fn into_input(self) -> TransactionInput {
         TransactionInput {
@@ -1540,6 +1861,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                     Page::Activity => "Activity",
                     Page::Reports => "Reports",
                     Page::Budgets => "Budgets",
+                    Page::Transfers => "Transfers",
                 },
                 Style::default().fg(Color::Magenta).bold(),
             ),
@@ -1554,6 +1876,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Page::Activity => render_activity(frame, app, detail_area),
         Page::Reports => render_reports(frame, app, detail_area),
         Page::Budgets => render_budgets(frame, app, detail_area),
+        Page::Transfers => render_transfers(frame, app, detail_area),
     }
     render_footer(frame, app, footer_area);
     render_mode(frame, app);
@@ -1562,16 +1885,19 @@ pub fn render(frame: &mut Frame, app: &App) {
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let shortcuts = match app.page() {
         Page::Ledger => {
-            "1 ledger  2 activity  3 reports  4 budgets  ↑/k ↓/j move  a account  n transaction  e edit  d delete  r refresh  q quit"
+            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  ↑/k ↓/j move  a account  n transaction  e edit  d delete  r refresh  q quit"
         }
         Page::Activity => {
-            "1 ledger  2 activity  3 reports  4 budgets  ↑/k ↓/j account  r refresh  q quit"
+            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  ↑/k ↓/j account  r refresh  q quit"
         }
         Page::Reports => {
-            "1 ledger  2 activity  3 reports  4 budgets  ↑/k ↓/j account  c category  s summary  t trend  r refresh  q quit"
+            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  ↑/k ↓/j account  c category  s summary  t trend  r refresh  q quit"
         }
         Page::Budgets => {
-            "1 ledger  2 activity  3 reports  4 budgets  Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete  q quit"
+            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete  q quit"
+        }
+        Page::Transfers => {
+            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  Tab focus  ↑/k ↓/j move  n new  e edit  d delete  r refresh  q quit"
         }
     };
     let mut lines = vec![Line::from(shortcuts)];
@@ -1596,6 +1922,7 @@ fn render_mode(frame: &mut Frame, app: &App) {
         Mode::Browse => {}
         Mode::AccountForm(form) => render_account_form(frame, form),
         Mode::TransactionForm(form) => render_transaction_form(frame, form),
+        Mode::TransferForm(form) => render_transfer_form(frame, form),
         Mode::SummaryReportForm(form) => render_summary_report_form(frame, form),
         Mode::TrendReportForm(form) => render_trend_report_form(frame, form),
         Mode::BudgetForm(form) => render_budget_form(frame, form),
@@ -1623,6 +1950,22 @@ fn render_mode(frame: &mut Frame, app: &App) {
             frame.render_widget(
                 Paragraph::new(vec![
                     Line::from("Delete the selected transaction?"),
+                    Line::from("Press y to confirm or n/Esc to cancel."),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Confirm delete "),
+                ),
+                area,
+            );
+        }
+        Mode::ConfirmDeleteTransfer(_) => {
+            let area = centered_rect(frame.area(), 52, 4);
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from("Delete the selected transfer?"),
                     Line::from("Press y to confirm or n/Esc to cancel."),
                 ])
                 .block(
@@ -1704,6 +2047,58 @@ fn render_budget_status_form(frame: &mut Frame, form: &BudgetStatusForm) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Budget status "),
+        ),
+        area,
+    );
+}
+
+fn render_transfer_form(frame: &mut Frame, form: &TransferForm) {
+    let area = centered_rect(frame.area(), 82, 11);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            transaction_form_line(
+                "Source account ID",
+                form.source_account_id.clone(),
+                form.field == TransferField::SourceAccount,
+            ),
+            transaction_form_line(
+                "Destination account ID",
+                form.destination_account_id.clone(),
+                form.field == TransferField::DestinationAccount,
+            ),
+            transaction_form_line(
+                "Source amount (minor units)",
+                form.source_amount_minor.clone(),
+                form.field == TransferField::SourceAmount,
+            ),
+            transaction_form_line(
+                "Destination amount (minor units)",
+                form.destination_amount_minor.clone(),
+                form.field == TransferField::DestinationAmount,
+            ),
+            transaction_form_line(
+                "Occurred at",
+                form.occurred_at.clone(),
+                form.field == TransferField::OccurredAt,
+            ),
+            transaction_form_line(
+                "Description",
+                form.description.clone(),
+                form.field == TransferField::Description,
+            ),
+            Line::from(
+                "Amounts use each account's currency; equal currencies require equal amounts.",
+            ),
+            Line::from("Tab/Shift-Tab changes field; Delete clears; Enter saves; Esc cancels."),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(match form.kind {
+                    TransferFormKind::Create => " Create transfer ",
+                    TransferFormKind::Edit(_) => " Edit transfer ",
+                }),
         ),
         area,
     );
@@ -2000,6 +2395,79 @@ fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
             .title(format!(" Activity ({}) ", account.activity().len())),
     );
     frame.render_widget(table, area);
+}
+
+fn render_transfers(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(account) = app.selected_account() else {
+        frame.render_widget(
+            Paragraph::new("Create an account before recording transfers.")
+                .block(Block::default().borders(Borders::ALL).title(" Transfers ")),
+            area,
+        );
+        return;
+    };
+    let account_id = account.account().id();
+    let transfers = account
+        .activity()
+        .iter()
+        .filter_map(|activity| match activity {
+            AccountActivity::Transfer(transfer) => Some(transfer),
+            AccountActivity::Transaction(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let rows = transfers.iter().map(|transfer| {
+        let (direction, counterparty, amount) = if transfer.source_account_id() == account_id {
+            (
+                "Out",
+                transfer.destination_account_id(),
+                format!("-{}", format_money(transfer.source_amount())),
+            )
+        } else {
+            (
+                "In",
+                transfer.source_account_id(),
+                format!("+{}", format_money(transfer.destination_amount())),
+            )
+        };
+        Row::new([
+            Cell::from(transfer.occurred_at().to_string()),
+            Cell::from(direction),
+            Cell::from(counterparty.value().to_string()),
+            Cell::from(amount),
+            Cell::from(transfer.description().to_string()),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(24),
+            Constraint::Length(4),
+            Constraint::Length(12),
+            Constraint::Length(16),
+            Constraint::Min(12),
+        ],
+    )
+    .header(
+        Row::new([
+            "Occurred at",
+            "Flow",
+            "Other account",
+            "Amount",
+            "Description",
+        ])
+        .style(Style::default().fg(Color::Cyan).bold()),
+    )
+    .column_spacing(1)
+    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(focus_border(app.focus == Focus::Transactions))
+            .title(format!(" Transfers ({}) ", transfers.len())),
+    );
+    let mut state = TableState::default()
+        .with_selected((!transfers.is_empty()).then_some(app.selected_transaction));
+    frame.render_stateful_widget(table, area, &mut state);
 }
 
 fn render_reports(frame: &mut Frame, app: &App, area: Rect) {
@@ -3003,10 +3471,132 @@ mod tests {
     }
 
     #[test]
+    fn transfer_page_emits_create_edit_and_delete_actions() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let mut transfers = InMemoryTransferRepository::new();
+        let source = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        let destination =
+            Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap();
+        accounts.save(source.clone()).unwrap();
+        accounts.save(destination.clone()).unwrap();
+        let transfer = transfers
+            .create(
+                NewTransfer::new(
+                    source.id(),
+                    destination.id(),
+                    Money::from_minor_units(500, Currency::Cny),
+                    Money::from_minor_units(500, Currency::Cny),
+                    "2026-08-31T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "Savings".to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        assert_eq!(app.handle_key(KeyCode::Char('5')), Action::Continue);
+        assert_eq!(app.page(), Page::Transfers);
+        app.handle_key(KeyCode::Char('n'));
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::CreateTransfer(TransferInput {
+                source_account_id,
+                destination_account_id,
+                ..
+            }) if source_account_id == "1" && destination_account_id == "2"
+        ));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char('e'));
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::UpdateTransfer { id, .. } if id == transfer.id()
+        ));
+        app.handle_key(KeyCode::Char('d'));
+        assert_eq!(
+            app.handle_key(KeyCode::Char('y')),
+            Action::DeleteTransfer { id: transfer.id() }
+        );
+    }
+
+    #[test]
+    fn executes_and_renders_cross_currency_transfer_workflow() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let mut transfers = InMemoryTransferRepository::new();
+        let budgets = InMemoryBudgetRepository::new();
+        let source =
+            Account::new(AccountId::new(1), "CNY Cash".to_string(), Currency::Cny).unwrap();
+        let destination =
+            Account::new(AccountId::new(2), "USD Cash".to_string(), Currency::Usd).unwrap();
+        accounts.save(source.clone()).unwrap();
+        accounts.save(destination.clone()).unwrap();
+        let input = TransferInput {
+            source_account_id: source.id().value().to_string(),
+            destination_account_id: destination.id().value().to_string(),
+            source_amount_minor: "700".to_string(),
+            destination_amount_minor: "100".to_string(),
+            occurred_at: "2026-08-31T10:00:00+08:00[Asia/Shanghai]".to_string(),
+            description: "Exchange".to_string(),
+        };
+
+        assert_eq!(
+            execute_action(
+                Action::CreateTransfer(input.clone()),
+                &mut accounts,
+                &mut transactions,
+                &mut transfers,
+                &budgets,
+            ),
+            Ok(Some("Created transfer 1".to_string()))
+        );
+        let transfer = transfers.find_by_id(TransferId::new(1)).unwrap().unwrap();
+        assert_eq!(transfer.source_amount().currency(), Currency::Cny);
+        assert_eq!(transfer.destination_amount().currency(), Currency::Usd);
+        assert_eq!(
+            execute_action(
+                Action::UpdateTransfer {
+                    id: transfer.id(),
+                    input: TransferInput {
+                        description: "Currency exchange".to_string(),
+                        ..input
+                    },
+                },
+                &mut accounts,
+                &mut transactions,
+                &mut transfers,
+                &budgets,
+            ),
+            Ok(Some("Updated transfer 1".to_string()))
+        );
+
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('5'));
+        let mut terminal = Terminal::new(TestBackend::new(160, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Transfers (1)"));
+        assert!(screen.contains("Currency exchange"));
+        assert!(screen.contains("-7.00 CNY"));
+
+        assert_eq!(
+            execute_action(
+                Action::DeleteTransfer { id: transfer.id() },
+                &mut accounts,
+                &mut transactions,
+                &mut transfers,
+                &budgets,
+            ),
+            Ok(Some("Deleted transfer".to_string()))
+        );
+        assert!(transfers.find_by_id(transfer.id()).unwrap().is_none());
+    }
+
+    #[test]
     fn executes_complete_account_and_transaction_workflow() {
         let mut accounts = InMemoryAccountRepository::new();
         let mut transactions = InMemoryTransactionRepository::new();
-        let transfers = InMemoryTransferRepository::new();
+        let mut transfers = InMemoryTransferRepository::new();
         let budgets = InMemoryBudgetRepository::new();
 
         assert_eq!(
@@ -3017,7 +3607,7 @@ mod tests {
                 },
                 &mut accounts,
                 &mut transactions,
-                &transfers,
+                &mut transfers,
                 &budgets,
             ),
             Ok(Some("Created account Cash".to_string()))
@@ -3037,7 +3627,7 @@ mod tests {
                 Action::CreateTransaction(transaction_input.clone()),
                 &mut accounts,
                 &mut transactions,
-                &transfers,
+                &mut transfers,
                 &budgets,
             ),
             Ok(Some("Created transaction 1".to_string()))
@@ -3057,7 +3647,7 @@ mod tests {
                 },
                 &mut accounts,
                 &mut transactions,
-                &transfers,
+                &mut transfers,
                 &budgets,
             ),
             Ok(Some("Updated transaction 1".to_string()))
@@ -3076,7 +3666,7 @@ mod tests {
                 Action::DeleteAccount { id: account.id() },
                 &mut accounts,
                 &mut transactions,
-                &transfers,
+                &mut transfers,
                 &budgets,
             ),
             Err(ExecuteActionError::ManageAccount(
@@ -3089,7 +3679,7 @@ mod tests {
             },
             &mut accounts,
             &mut transactions,
-            &transfers,
+            &mut transfers,
             &budgets,
         )
         .unwrap();
@@ -3100,7 +3690,7 @@ mod tests {
             },
             &mut accounts,
             &mut transactions,
-            &transfers,
+            &mut transfers,
             &budgets,
         )
         .unwrap();
@@ -3108,7 +3698,7 @@ mod tests {
             Action::DeleteAccount { id: account.id() },
             &mut accounts,
             &mut transactions,
-            &transfers,
+            &mut transfers,
             &budgets,
         )
         .unwrap();
