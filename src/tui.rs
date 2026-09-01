@@ -1330,11 +1330,13 @@ impl App {
             KeyCode::Char('2') => {
                 self.page = Page::Activity;
                 self.focus = Focus::Accounts;
+                self.selected_transaction = 0;
                 Action::Continue
             }
             KeyCode::Char('3') => {
                 self.page = Page::Reports;
                 self.focus = Focus::Accounts;
+                self.selected_transaction = 0;
                 self.report = None;
                 Action::Continue
             }
