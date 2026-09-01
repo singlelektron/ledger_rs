@@ -34,8 +34,9 @@ use crate::{
 };
 use axum::{
     Form, Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    http::{Method, StatusCode, header},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -57,6 +58,11 @@ impl WebState {
         &self.database_path
     }
 }
+
+/// Axum's default 2 MiB request body limit would reject large CSV imports and
+/// JSON backups before their handlers run. The local, single-user workspace
+/// raises the limit explicitly on the two document-upload routes.
+const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn require_loopback(address: SocketAddr) -> io::Result<SocketAddr> {
     if address.ip().is_loopback() {
@@ -112,9 +118,71 @@ pub fn router(database_path: PathBuf) -> Router {
         .route("/data", get(data_tools))
         .route("/data/backup", get(download_backup))
         .route("/data/export/{account_id}", get(download_account_csv))
-        .route("/data/import", post(import_csv_handler))
-        .route("/data/restore", post(restore_backup_handler))
+        .route(
+            "/data/import",
+            post(import_csv_handler).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
+        .route(
+            "/data/restore",
+            post(restore_backup_handler).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
         .with_state(WebState::new(database_path))
+        .layer(middleware::from_fn(reject_cross_site_requests))
+}
+
+/// Rejects state-changing requests that a malicious webpage could submit to
+/// the loopback server. Browsers attach an `Origin` header to form POSTs, so a
+/// strict origin match against the `Host` header blocks cross-site HTML forms;
+/// `Sec-Fetch-Site` additionally rejects cross-site and same-site requests in
+/// modern browsers. Clients that send neither header (for example `curl`)
+/// still work, and read-only methods are never checked.
+async fn reject_cross_site_requests(request: Request, next: Next) -> Result<Response, WebError> {
+    if matches!(
+        request.method(),
+        &Method::GET | &Method::HEAD | &Method::OPTIONS | &Method::TRACE
+    ) {
+        return Ok(next.run(request).await);
+    }
+
+    if let Some(origin) = request.headers().get(header::ORIGIN) {
+        let Some(origin) = origin.to_str().ok() else {
+            return Err(cross_site_forbidden());
+        };
+        let Some(host) = request
+            .headers()
+            .get(header::HOST)
+            .and_then(|host| host.to_str().ok())
+        else {
+            return Err(cross_site_forbidden());
+        };
+        if !origin_matches_host(host, origin) {
+            return Err(cross_site_forbidden());
+        }
+    }
+
+    if let Some(site) = request.headers().get("sec-fetch-site") {
+        let Some(site) = site.to_str().ok() else {
+            return Err(cross_site_forbidden());
+        };
+        if site != "same-origin" && site != "none" {
+            return Err(cross_site_forbidden());
+        }
+    }
+
+    Ok(next.run(request).await)
+}
+
+fn cross_site_forbidden() -> WebError {
+    WebError::forbidden("Cross-site requests are not allowed against this local Web UI.")
+}
+
+/// The Web UI is served over plain HTTP on a loopback address, so a
+/// same-origin browser request sends `Origin: http://<host>` where `<host>`
+/// exactly matches the `Host` header.
+fn origin_matches_host(host: &str, origin: &str) -> bool {
+    origin
+        .strip_prefix("http://")
+        .is_some_and(|origin_host| origin_host == host)
 }
 
 #[derive(Debug)]
@@ -142,6 +210,13 @@ impl WebError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: message.into(),
         }
     }
@@ -1531,6 +1606,8 @@ fn page(title: &str, content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn home_page_lists_created_account_and_balance() {
@@ -2111,5 +2188,124 @@ mod tests {
         let overview = home(State(target_state)).await.unwrap();
         assert!(overview.0.contains("Restored wallet"));
         assert!(overview.0.contains("0.00 USD"));
+    }
+
+    #[tokio::test]
+    async fn router_rejects_cross_site_state_changing_requests() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let app = router(temp_dir.path().join("web.db"));
+
+        let cross_site_origin = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/accounts")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::from("name=Cross&currency=CNY"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_site_origin.status(), StatusCode::FORBIDDEN);
+
+        let cross_site_fetch_metadata = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/accounts")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::from("name=Cross&currency=CNY"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_site_fetch_metadata.status(), StatusCode::FORBIDDEN);
+
+        let same_origin = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/accounts")
+                    .header(header::HOST, "127.0.0.1:3000")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header(header::ORIGIN, "http://127.0.0.1:3000")
+                    .body(Body::from("name=Cash&currency=CNY"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(same_origin.status(), StatusCode::SEE_OTHER);
+
+        let no_origin = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/accounts")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("name=Wallet&currency=USD"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(no_origin.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn read_routes_ignore_origin_headers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let app = router(temp_dir.path().join("web.db"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/data")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn large_upload_bodies_reach_the_handlers_instead_of_413() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let app = router(temp_dir.path().join("web.db"));
+        let oversized = "x".repeat(2_500_000);
+
+        let restore = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/data/restore")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("json={oversized}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // The body exceeds Axum's 2 MiB default; reaching the handler (400 from
+        // backup validation) proves the route limit was raised.
+        assert_eq!(restore.status(), StatusCode::BAD_REQUEST);
+
+        let import = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/data/import")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("csv={oversized}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(import.status(), StatusCode::BAD_REQUEST);
     }
 }

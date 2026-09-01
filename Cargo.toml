@@ -17,3 +17,4 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tower = { version = "0.5", features = ["util"] }
