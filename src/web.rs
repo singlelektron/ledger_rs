@@ -7,18 +7,22 @@ use crate::{
         manage_account::{
             ManageAccountError, delete_account_with_dependencies, get_account, rename_account,
         },
+        manage_transaction::{
+            ManageTransactionError, TransactionChanges, delete_transaction, get_transaction,
+            update_transaction,
+        },
         record_transaction::record_transaction,
     },
     domain::{
         account::AccountId,
         money::{Currency, Money},
-        transaction::{Category, NewTransaction, TransactionKind},
+        transaction::{Category, NewTransaction, TransactionId, TransactionKind},
     },
     infrastructure::sqlite::{open_all_repositories, open_complete_repositories},
 };
 use axum::{
     Form, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -58,6 +62,14 @@ pub fn router(database_path: PathBuf) -> Router {
         .route(
             "/accounts/{account_id}/transactions",
             post(create_transaction_handler),
+        )
+        .route(
+            "/transactions/{transaction_id}/edit",
+            get(transaction_edit).post(update_transaction_handler),
+        )
+        .route(
+            "/transactions/{transaction_id}/delete",
+            post(delete_transaction_handler),
         )
         .with_state(WebState::new(database_path))
 }
@@ -127,6 +139,13 @@ struct CreateTransactionForm {
     time_zone: String,
     description: String,
     category: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TransactionQuery {
+    kind: Option<String>,
+    category: Option<String>,
+    q: Option<String>,
 }
 
 async fn home(State(state): State<WebState>) -> Result<Html<String>, WebError> {
@@ -210,6 +229,7 @@ async fn create_account_handler(
 async fn account_detail(
     State(state): State<WebState>,
     Path(account_id): Path<u64>,
+    Query(query): Query<TransactionQuery>,
 ) -> Result<Html<String>, WebError> {
     let account_id = AccountId::new(account_id);
     let (accounts, transactions, transfers) = open_all_repositories(state.database_path())
@@ -218,11 +238,40 @@ async fn account_detail(
     let balance =
         get_account_balance_with_transfers(&accounts, &transactions, &transfers, account_id)
             .map_err(|error| WebError::internal("calculate account balance", error))?;
+    let selected_kind = query
+        .kind
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            parse_transaction_kind(value)
+                .ok_or_else(|| WebError::bad_request("Choose a supported transaction type."))
+        })
+        .transpose()?;
+    let selected_category = query
+        .category
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            parse_category(value)
+                .ok_or_else(|| WebError::bad_request("Choose a supported category."))
+        })
+        .transpose()?;
+    let description_contains = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
     let transactions = list_account_transactions(
         &accounts,
         &transactions,
         account_id,
-        TransactionFilter::default(),
+        TransactionFilter {
+            kind: selected_kind,
+            category: selected_category,
+            description_contains,
+            ..TransactionFilter::default()
+        },
     )
     .map_err(|error| WebError::internal("list transactions", error))?;
 
@@ -239,13 +288,14 @@ async fn account_detail(
                     TransactionKind::Income | TransactionKind::ExpenseRefund => ("+", "income"),
                 };
                 format!(
-                    r#"<article class="transaction-row"><div><strong>{}</strong><small>{} · {}</small></div><b class="{}">{}{}</b></article>"#,
+                    r#"<article class="transaction-row"><div><strong>{}</strong><small>{} · {}</small></div><span class="transaction-end"><b class="{}">{}{}</b><a href="/transactions/{}/edit">Edit</a></span></article>"#,
                     escape_html(transaction.description()),
                     category_label(transaction.category()),
                     escape_html(&transaction.occurred_at().to_string()),
                     class_name,
                     sign,
                     format_money(transaction.amount()),
+                    transaction.id().value(),
                 )
             })
             .collect::<Vec<_>>()
@@ -275,6 +325,13 @@ async fn account_detail(
         <div class="dashboard">
           <section>
             <div class="section-heading"><div><p class="eyebrow">History</p><h2>Transactions</h2></div><span class="count">{transaction_count}</span></div>
+            <form class="filter-bar" method="get" action="/accounts/{account_id}">
+              <input name="q" value="{search_query}" placeholder="Search description">
+              <select name="kind" aria-label="Transaction type filter">{kind_filter_options}</select>
+              <select name="category" aria-label="Category filter">{category_filter_options}</select>
+              <button class="button secondary" type="submit">Filter</button>
+              <a href="/accounts/{account_id}">Reset</a>
+            </form>
             <div class="transaction-list">{transaction_rows}</div>
           </section>
           <aside class="form-card">
@@ -297,6 +354,9 @@ async fn account_detail(
         balance = format_money(&balance),
         transaction_count = transactions.len(),
         category_options = category_options(),
+        search_query = escape_html(query.q.as_deref().unwrap_or_default()),
+        kind_filter_options = transaction_kind_options(selected_kind, true),
+        category_filter_options = category_options_selected(selected_category, true),
     );
 
     Ok(Html(page(account.name(), &content)))
@@ -368,6 +428,112 @@ async fn create_transaction_handler(
     Ok(Redirect::to(&format!("/accounts/{}", account_id.value())))
 }
 
+async fn transaction_edit(
+    State(state): State<WebState>,
+    Path(transaction_id): Path<u64>,
+) -> Result<Html<String>, WebError> {
+    let transaction_id = TransactionId::new(transaction_id);
+    let (accounts, transactions, _) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let transaction =
+        get_transaction(&transactions, transaction_id).map_err(map_transaction_error)?;
+    let account = get_account(&accounts, transaction.account_id()).map_err(map_account_error)?;
+    let time_zone = transaction
+        .occurred_at()
+        .time_zone()
+        .iana_name()
+        .unwrap_or("UTC");
+    let content = format!(
+        r#"
+        <a class="back" href="/accounts/{account_id}">← Back to {account_name}</a>
+        <section class="editor-shell">
+          <div><p class="eyebrow">Transaction #{transaction_id}</p><h1 class="compact">Edit transaction</h1><p class="lede">Changes are validated by the same application rules as the CLI.</p></div>
+          <div class="form-card">
+            <form method="post" action="/transactions/{transaction_id}/edit">
+              <label>Type<select name="kind">{kind_options}</select></label>
+              <label>Amount ({currency})<input name="amount" required inputmode="decimal" value="{amount}"></label>
+              <label>Description<input name="description" required maxlength="120" value="{description}"></label>
+              <label>Category<select name="category">{category_options}</select></label>
+              <label>When<input type="datetime-local" name="occurred_at" required value="{occurred_at}"></label>
+              <label>Time zone<input name="time_zone" required value="{time_zone}"></label>
+              <button type="submit">Save changes</button>
+            </form>
+            <form class="delete-form" method="post" action="/transactions/{transaction_id}/delete">
+              <button class="button danger" type="submit">Delete transaction</button>
+            </form>
+          </div>
+        </section>
+        "#,
+        account_id = account.id().value(),
+        account_name = escape_html(account.name()),
+        transaction_id = transaction.id().value(),
+        kind_options = transaction_kind_options(Some(transaction.kind()), false),
+        currency = currency_code(account.currency()),
+        amount = format_major_input(transaction.amount().minor_units()),
+        description = escape_html(transaction.description()),
+        category_options = category_options_selected(Some(transaction.category()), false),
+        occurred_at = transaction.occurred_at().datetime(),
+        time_zone = escape_html(time_zone),
+    );
+
+    Ok(Html(page("Edit transaction", &content)))
+}
+
+async fn update_transaction_handler(
+    State(state): State<WebState>,
+    Path(transaction_id): Path<u64>,
+    Form(input): Form<CreateTransactionForm>,
+) -> Result<Redirect, WebError> {
+    let transaction_id = TransactionId::new(transaction_id);
+    let (accounts, mut transactions, _) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let current = get_transaction(&transactions, transaction_id).map_err(map_transaction_error)?;
+    let account = get_account(&accounts, current.account_id()).map_err(map_account_error)?;
+    let amount_minor = parse_major_amount(&input.amount).ok_or_else(|| {
+        WebError::bad_request("Enter a positive amount with at most two decimals.")
+    })?;
+    let kind = parse_transaction_kind(&input.kind)
+        .ok_or_else(|| WebError::bad_request("Choose a supported transaction type."))?;
+    let category = parse_category(&input.category)
+        .ok_or_else(|| WebError::bad_request("Choose a supported category."))?;
+    let occurred_at = parse_local_zoned(&input.occurred_at, &input.time_zone)?;
+    update_transaction(
+        &accounts,
+        &mut transactions,
+        transaction_id,
+        TransactionChanges {
+            kind: Some(kind),
+            amount: Some(Money::from_minor_units(amount_minor, account.currency())),
+            occurred_at: Some(occurred_at),
+            description: Some(input.description),
+            category: Some(category),
+            ..TransactionChanges::default()
+        },
+    )
+    .map_err(map_transaction_error)?;
+
+    Ok(Redirect::to(&format!(
+        "/accounts/{}",
+        current.account_id().value()
+    )))
+}
+
+async fn delete_transaction_handler(
+    State(state): State<WebState>,
+    Path(transaction_id): Path<u64>,
+) -> Result<Redirect, WebError> {
+    let transaction_id = TransactionId::new(transaction_id);
+    let (_, mut transactions, _) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let current = get_transaction(&transactions, transaction_id).map_err(map_transaction_error)?;
+    delete_transaction(&mut transactions, transaction_id).map_err(map_transaction_error)?;
+
+    Ok(Redirect::to(&format!(
+        "/accounts/{}",
+        current.account_id().value()
+    )))
+}
+
 fn map_account_error(error: ManageAccountError) -> WebError {
     match error {
         ManageAccountError::AccountNotFound(id) => {
@@ -386,6 +552,18 @@ fn map_account_error(error: ManageAccountError) -> WebError {
             WebError::bad_request(format!("Invalid account: {error:?}"))
         }
         other => WebError::internal("load account", other),
+    }
+}
+
+fn map_transaction_error(error: ManageTransactionError) -> WebError {
+    match error {
+        ManageTransactionError::TransactionNotFound(id) => {
+            WebError::not_found(format!("Transaction {} does not exist.", id.value()))
+        }
+        ManageTransactionError::Repository(error) => {
+            WebError::internal("manage transaction", error)
+        }
+        other => WebError::bad_request(format!("Invalid transaction: {other:?}")),
     }
 }
 
@@ -408,6 +586,12 @@ fn parse_major_amount(value: &str) -> Option<i64> {
     };
     let amount = whole.checked_mul(100)?.checked_add(fraction)?;
     (amount > 0).then_some(amount)
+}
+
+fn format_major_input(minor_units: i64) -> String {
+    let absolute = minor_units.unsigned_abs();
+    let sign = if minor_units < 0 { "-" } else { "" };
+    format!("{sign}{}.{:02}", absolute / 100, absolute % 100)
 }
 
 fn parse_local_zoned(value: &str, time_zone_name: &str) -> Result<jiff::Zoned, WebError> {
@@ -471,6 +655,15 @@ fn category_label(category: Category) -> &'static str {
 }
 
 fn category_options() -> String {
+    category_options_selected(None, false)
+}
+
+fn category_options_selected(selected: Option<Category>, include_any: bool) -> String {
+    let mut options = if include_any {
+        String::from(r#"<option value="">Any category</option>"#)
+    } else {
+        String::new()
+    };
     [
         Category::Food,
         Category::Transportation,
@@ -490,14 +683,47 @@ fn category_options() -> String {
     .into_iter()
     .map(|category| {
         let value = category_label(category).to_ascii_lowercase();
+        let selected_attribute = if selected == Some(category) {
+            " selected"
+        } else {
+            ""
+        };
         format!(
-            r#"<option value="{}">{}</option>"#,
+            r#"<option value="{}"{}>{}</option>"#,
             value,
+            selected_attribute,
             category_label(category)
         )
     })
-    .collect::<Vec<_>>()
-    .join("")
+    .for_each(|option| options.push_str(&option));
+    options
+}
+
+fn transaction_kind_options(selected: Option<TransactionKind>, include_any: bool) -> String {
+    let mut options = if include_any {
+        String::from(r#"<option value="">Any type</option>"#)
+    } else {
+        String::new()
+    };
+    for (kind, value, label) in [
+        (TransactionKind::Expense, "expense", "Expense"),
+        (TransactionKind::Income, "income", "Income"),
+        (
+            TransactionKind::ExpenseRefund,
+            "expense_refund",
+            "Expense refund",
+        ),
+    ] {
+        let selected_attribute = if selected == Some(kind) {
+            " selected"
+        } else {
+            ""
+        };
+        options.push_str(&format!(
+            r#"<option value="{value}"{selected_attribute}>{label}</option>"#
+        ));
+    }
+    options
 }
 
 fn parse_currency(value: &str) -> Option<Currency> {
@@ -654,7 +880,9 @@ mod tests {
         .await
         .unwrap();
 
-        let response = account_detail(State(state), Path(1)).await.unwrap();
+        let response = account_detail(State(state), Path(1), Query(TransactionQuery::default()))
+            .await
+            .unwrap();
 
         assert!(response.0.contains("Dinner &amp; tea"));
         assert!(response.0.contains("−12.50 CNY"));
@@ -666,7 +894,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let state = WebState::new(temp_dir.path().join("web.db"));
 
-        let error = account_detail(State(state), Path(99)).await.unwrap_err();
+        let error = account_detail(State(state), Path(99), Query(TransactionQuery::default()))
+            .await
+            .unwrap_err();
 
         assert_eq!(error.status, StatusCode::NOT_FOUND);
     }
@@ -694,7 +924,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let detail = account_detail(State(state.clone()), Path(1)).await.unwrap();
+        let detail = account_detail(
+            State(state.clone()),
+            Path(1),
+            Query(TransactionQuery::default()),
+        )
+        .await
+        .unwrap();
         assert!(detail.0.contains("New name"));
 
         let _redirect = delete_account_handler(State(state.clone()), Path(1))
@@ -738,6 +974,123 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
-        assert!(account_detail(State(state), Path(1)).await.is_ok());
+        assert!(
+            account_detail(State(state), Path(1), Query(TransactionQuery::default()))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn transaction_management_filters_updates_and_deletes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+        for (kind, amount, description, category) in [
+            ("expense", "12.50", "Dinner", "food"),
+            ("income", "100.00", "Salary", "salary"),
+        ] {
+            let _redirect = create_transaction_handler(
+                State(state.clone()),
+                Path(1),
+                Form(CreateTransactionForm {
+                    kind: String::from(kind),
+                    amount: String::from(amount),
+                    occurred_at: String::from("2026-09-01T18:30"),
+                    time_zone: String::from("Asia/Shanghai"),
+                    description: String::from(description),
+                    category: String::from(category),
+                }),
+            )
+            .await
+            .unwrap();
+        }
+
+        let filtered = account_detail(
+            State(state.clone()),
+            Path(1),
+            Query(TransactionQuery {
+                q: Some(String::from("dinner")),
+                ..TransactionQuery::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(filtered.0.contains("Dinner"));
+        assert!(!filtered.0.contains("<strong>Salary</strong>"));
+
+        let edit = transaction_edit(State(state.clone()), Path(1))
+            .await
+            .unwrap();
+        assert!(edit.0.contains("value=\"12.50\""));
+        let _redirect = update_transaction_handler(
+            State(state.clone()),
+            Path(1),
+            Form(CreateTransactionForm {
+                kind: String::from("expense_refund"),
+                amount: String::from("20.25"),
+                occurred_at: String::from("2026-09-01T19:00"),
+                time_zone: String::from("Asia/Shanghai"),
+                description: String::from("Updated refund"),
+                category: String::from("food"),
+            }),
+        )
+        .await
+        .unwrap();
+        let updated = account_detail(
+            State(state.clone()),
+            Path(1),
+            Query(TransactionQuery::default()),
+        )
+        .await
+        .unwrap();
+        assert!(updated.0.contains("Updated refund"));
+        assert!(updated.0.contains("+20.25 CNY"));
+
+        let _redirect = delete_transaction_handler(State(state.clone()), Path(1))
+            .await
+            .unwrap();
+        let after_delete =
+            account_detail(State(state), Path(1), Query(TransactionQuery::default()))
+                .await
+                .unwrap();
+        assert!(!after_delete.0.contains("Updated refund"));
+        assert!(after_delete.0.contains("Salary"));
+    }
+
+    #[tokio::test]
+    async fn transaction_filter_rejects_unknown_kind() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let error = account_detail(
+            State(state),
+            Path(1),
+            Query(TransactionQuery {
+                kind: Some(String::from("invalid")),
+                ..TransactionQuery::default()
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
     }
 }
