@@ -42,7 +42,11 @@ use axum::{
 };
 use jiff::{civil::DateTime, tz::TimeZone};
 use serde::Deserialize;
-use std::{io, net::SocketAddr, path::PathBuf};
+use std::{
+    io,
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 #[derive(Clone, Debug)]
 pub struct WebState {
@@ -63,6 +67,11 @@ impl WebState {
 /// JSON backups before their handlers run. The local, single-user workspace
 /// raises the limit explicitly on the two document-upload routes.
 const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+/// Default IANA time-zone name for the reports page and the transaction and
+/// transfer forms when the browser supplies no explicit zone. Kept in one
+/// place so the three UI locations cannot drift apart.
+const DEFAULT_TIME_ZONE: &str = "Asia/Shanghai";
 
 pub fn require_loopback(address: SocketAddr) -> io::Result<SocketAddr> {
     if address.ip().is_loopback() {
@@ -130,13 +139,27 @@ pub fn router(database_path: PathBuf) -> Router {
         .layer(middleware::from_fn(reject_cross_site_requests))
 }
 
-/// Rejects state-changing requests that a malicious webpage could submit to
-/// the loopback server. Browsers attach an `Origin` header to form POSTs, so a
-/// strict origin match against the `Host` header blocks cross-site HTML forms;
-/// `Sec-Fetch-Site` additionally rejects cross-site and same-site requests in
-/// modern browsers. Clients that send neither header (for example `curl`)
-/// still work, and read-only methods are never checked.
+/// Rejects requests that a malicious webpage could drive against the loopback
+/// server. Every request must be addressed to a loopback host, which closes
+/// DNS rebinding: a domain such as `attacker.example` that resolves to
+/// 127.0.0.1 sends `Host: attacker.example`, and without this check it would
+/// be indistinguishable from the real UI for both writes and sensitive GET
+/// routes such as backup downloads. State-changing methods additionally
+/// require the browser's `Origin` header (when present) to match `Host`,
+/// blocking cross-site HTML forms, and `Sec-Fetch-Site` rejects cross-site and
+/// same-site requests in modern browsers. Clients that send neither header
+/// (for example `curl`) still work against loopback, and read-only methods
+/// ignore origin metadata because they cannot mutate data.
 async fn reject_cross_site_requests(request: Request, next: Next) -> Result<Response, WebError> {
+    if !host_is_loopback(
+        request
+            .headers()
+            .get(header::HOST)
+            .and_then(|host| host.to_str().ok()),
+    ) {
+        return Err(loopback_forbidden());
+    }
+
     if matches!(
         request.method(),
         &Method::GET | &Method::HEAD | &Method::OPTIONS | &Method::TRACE
@@ -174,6 +197,34 @@ async fn reject_cross_site_requests(request: Request, next: Next) -> Result<Resp
 
 fn cross_site_forbidden() -> WebError {
     WebError::forbidden("Cross-site requests are not allowed against this local Web UI.")
+}
+
+fn loopback_forbidden() -> WebError {
+    WebError::forbidden("The local Web UI only accepts requests addressed to a loopback host.")
+}
+
+/// The Web UI is served over plain HTTP on a loopback address, so every
+/// legitimate request arrives with a loopback `Host` header (`127.0.0.0/8`,
+/// `localhost`, or `[::1]`, with an optional port). Requiring that header
+/// defeats DNS rebinding, where a domain resolving to 127.0.0.1 would
+/// otherwise present a matching, same-origin `Origin` for POSTs and readable
+/// GET responses.
+fn host_is_loopback(host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let host = host.trim();
+    let address = if let Some(rest) = host.strip_prefix('[') {
+        rest.split_once(']').map_or(host, |(address, _)| address)
+    } else if host.matches(':').count() > 1 {
+        host
+    } else {
+        host.rsplit_once(':').map_or(host, |(address, _)| address)
+    };
+    if address.eq_ignore_ascii_case("localhost") || address == "::1" {
+        return true;
+    }
+    address.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// The Web UI is served over plain HTTP on a loopback address, so a
@@ -386,7 +437,7 @@ async fn reports(
     let all_accounts =
         list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
     let selected_account = query.account_id.map(AccountId::new);
-    let time_zone = query.time_zone.as_deref().unwrap_or("Asia/Shanghai");
+    let time_zone = query.time_zone.as_deref().unwrap_or(DEFAULT_TIME_ZONE);
 
     let results = match (selected_account, query.from.as_deref(), query.to.as_deref()) {
         (Some(account_id), Some(from), Some(to)) if !from.is_empty() && !to.is_empty() => {
@@ -592,6 +643,18 @@ async fn download_account_csv(
 ) -> Result<Response, WebError> {
     let (accounts, transactions, _) = open_all_repositories(state.database_path())
         .map_err(|error| WebError::internal("open database", error))?;
+    let account = get_account(&accounts, AccountId::new(account_id)).map_err(map_account_error)?;
+    let safe_name: String = account
+        .name()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
     let csv = export_transactions_csv(
         &accounts,
         &transactions,
@@ -599,13 +662,11 @@ async fn download_account_csv(
         TransactionFilter::default(),
     )
     .map_err(|error| WebError::bad_request(format!("Could not export CSV: {error:?}")))?;
+    let content_disposition = format!("attachment; filename=ledger-{safe_name}.csv");
     Ok((
         [
             ("content-type", "text/csv; charset=utf-8"),
-            (
-                "content-disposition",
-                "attachment; filename=transactions.csv",
-            ),
+            ("content-disposition", content_disposition.as_str()),
         ],
         csv,
     )
@@ -784,12 +845,13 @@ async fn account_detail(
               <label>Amount received<input name="destination_amount" required inputmode="decimal" placeholder="0.00"></label>
               <label>Description<input name="description" required maxlength="120" placeholder="Why move it?"></label>
               <label>When<input type="datetime-local" name="occurred_at" required></label>
-              <label>Time zone<input name="time_zone" required value="Asia/Shanghai"></label>
+              <label>Time zone<input name="time_zone" required value="{default_time_zone}"></label>
               <button type="submit">Create transfer</button>
             </form></div>"#,
             account_id = account_id.value(),
             destination_options = account_options(&all_accounts, Some(account_id), None),
             source_currency = currency_code(account.currency()),
+            default_time_zone = DEFAULT_TIME_ZONE,
         )
     };
 
@@ -872,7 +934,7 @@ async fn account_detail(
                 <label>Description<input name="description" required maxlength="120" placeholder="What was it for?"></label>
                 <label>Category<select name="category">{category_options}</select></label>
                 <label>When<input type="datetime-local" name="occurred_at" required></label>
-                <label>Time zone<input name="time_zone" required value="Asia/Shanghai"></label>
+                <label>Time zone<input name="time_zone" required value="{default_time_zone}"></label>
                 <button type="submit">Record transaction</button>
               </form>
             </div>
@@ -896,6 +958,7 @@ async fn account_detail(
         search_query = escape_html(query.q.as_deref().unwrap_or_default()),
         kind_filter_options = transaction_kind_options(selected_kind, true),
         category_filter_options = category_options_selected(selected_category, true),
+        default_time_zone = DEFAULT_TIME_ZONE,
     );
 
     Ok(Html(page(account.name(), &content)))
@@ -1652,6 +1715,35 @@ mod tests {
     }
 
     #[test]
+    fn host_is_loopback_accepts_only_local_addresses() {
+        for loopback in [
+            Some("127.0.0.1:3000"),
+            Some("127.0.0.1"),
+            Some("127.0.0.9:8080"),
+            Some("localhost:3000"),
+            Some("LOCALHOST"),
+            Some("[::1]:3000"),
+            Some("::1"),
+        ] {
+            assert!(
+                host_is_loopback(loopback),
+                "expected loopback: {loopback:?}"
+            );
+        }
+        for remote in [
+            Some("attacker.example:3000"),
+            Some("192.168.1.5:3000"),
+            Some(""),
+            None,
+        ] {
+            assert!(
+                !host_is_loopback(remote),
+                "expected non-loopback: {remote:?}"
+            );
+        }
+    }
+
+    #[test]
     fn formats_negative_minimum_money_without_overflow() {
         let money = Money::from_minor_units(i64::MIN, Currency::Usd);
 
@@ -2153,6 +2245,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_csv_download_uses_account_specific_filename() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash wallet"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let download = download_account_csv(State(state), Path(1)).await.unwrap();
+        let disposition = download
+            .headers()
+            .get("content-disposition")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(disposition, "attachment; filename=ledger-Cash-wallet.csv");
+    }
+
+    #[tokio::test]
     async fn backup_download_and_empty_database_restore_work() {
         let source_dir = tempfile::tempdir().unwrap();
         let source_state = WebState::new(source_dir.path().join("source.db"));
@@ -2201,6 +2317,7 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri("/accounts")
+                    .header(header::HOST, "127.0.0.1:3000")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .header(header::ORIGIN, "https://evil.example")
                     .body(Body::from("name=Cross&currency=CNY"))
@@ -2216,6 +2333,7 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri("/accounts")
+                    .header(header::HOST, "127.0.0.1:3000")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .header("sec-fetch-site", "cross-site")
                     .body(Body::from("name=Cross&currency=CNY"))
@@ -2246,6 +2364,7 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri("/accounts")
+                    .header(header::HOST, "127.0.0.1:3000")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(Body::from("name=Wallet&currency=USD"))
                     .unwrap(),
@@ -2253,6 +2372,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_origin.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn router_rejects_dns_rebinding_requests() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let app = router(temp_dir.path().join("web.db"));
+
+        // A domain that resolves to 127.0.0.1 keeps `Origin` and `Host` in
+        // agreement, so the origin==host check alone cannot tell it apart from
+        // the real loopback UI. The `Host` header itself must be loopback.
+        let post = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/accounts")
+                    .header(header::HOST, "attacker.example:3000")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header(header::ORIGIN, "http://attacker.example:3000")
+                    .header("sec-fetch-site", "same-origin")
+                    .body(Body::from("name=Cross&currency=CNY"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(post.status(), StatusCode::FORBIDDEN);
+
+        // Browsers do not attach `Origin` or `Sec-Fetch-Site` to GETs, so the
+        // same attack could otherwise read backups or CSV exports directly.
+        let get = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/data/backup")
+                    .header(header::HOST, "attacker.example:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -2264,6 +2424,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/data")
+                    .header(header::HOST, "127.0.0.1:3000")
                     .header(header::ORIGIN, "https://evil.example")
                     .body(Body::empty())
                     .unwrap(),
@@ -2285,6 +2446,7 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri("/data/restore")
+                    .header(header::HOST, "127.0.0.1:3000")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(Body::from(format!("json={oversized}")))
                     .unwrap(),
@@ -2300,6 +2462,7 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri("/data/import")
+                    .header(header::HOST, "127.0.0.1:3000")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(Body::from(format!("csv={oversized}")))
                     .unwrap(),

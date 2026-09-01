@@ -567,7 +567,13 @@ cargo run --bin ledger_web -- \
 ```
 
 The Web UI is a local-only product. It accepts only loopback listen addresses;
-attempting to bind to `0.0.0.0` or another non-loopback address fails.
+attempting to bind to `0.0.0.0` or another non-loopback address fails. Every
+request must also be addressed to a loopback host: the middleware rejects
+`Host` headers outside `127.0.0.0/8`, `localhost`, or `[::1]`, which blocks
+DNS-rebinding attacks where a domain that resolves to `127.0.0.1` would
+otherwise impersonate the local UI. State-changing requests additionally
+require a matching same-origin `Origin` when one is sent and accept only
+`same-origin` or `none` `Sec-Fetch-Site` metadata.
 
 Show the available commands:
 
