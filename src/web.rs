@@ -35,7 +35,7 @@ use crate::{
 use axum::{
     Form, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{Method, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -82,6 +82,29 @@ pub fn require_loopback(address: SocketAddr) -> io::Result<SocketAddr> {
             "the Web UI is local-only; --listen must use a loopback address",
         ))
     }
+}
+
+/// Defense-in-depth response headers applied to every page and download. The
+/// UI is loopback-only and contains no JavaScript, so the policy blocks all
+/// resource types except the inline stylesheet; `form-action 'self'` keeps
+/// form submissions same-origin and `frame-ancestors 'none'` prevents the
+/// pages from being embedded elsewhere.
+const HARDENING_HEADERS: [(&str, &str); 3] = [
+    (
+        "content-security-policy",
+        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'",
+    ),
+    ("x-content-type-options", "nosniff"),
+    ("referrer-policy", "same-origin"),
+];
+
+fn with_hardening_headers(mut response: Response) -> Response {
+    for (name, value) in HARDENING_HEADERS {
+        response
+            .headers_mut()
+            .insert(name, HeaderValue::from_static(value));
+    }
+    response
 }
 
 pub fn router(database_path: PathBuf) -> Router {
@@ -164,7 +187,7 @@ async fn reject_cross_site_requests(request: Request, next: Next) -> Result<Resp
         request.method(),
         &Method::GET | &Method::HEAD | &Method::OPTIONS | &Method::TRACE
     ) {
-        return Ok(next.run(request).await);
+        return Ok(with_hardening_headers(next.run(request).await));
     }
 
     if let Some(origin) = request.headers().get(header::ORIGIN) {
@@ -192,7 +215,7 @@ async fn reject_cross_site_requests(request: Request, next: Next) -> Result<Resp
         }
     }
 
-    Ok(next.run(request).await)
+    Ok(with_hardening_headers(next.run(request).await))
 }
 
 fn cross_site_forbidden() -> WebError {
@@ -2634,6 +2657,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn router_applies_defense_in_depth_headers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let app = router(temp_dir.path().join("web.db"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::HOST, "127.0.0.1:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-security-policy")
+                .unwrap(),
+            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+        );
+        assert_eq!(
+            response.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+        assert_eq!(
+            response.headers().get("referrer-policy").unwrap(),
+            "same-origin"
+        );
     }
 
     #[tokio::test]
