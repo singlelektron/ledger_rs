@@ -11,8 +11,9 @@ small, independently tested steps:
 6. CSV exchange and JSON backup/restore (completed)
 7. Shared contract and end-to-end workflow hardening (completed)
 8. Minimal TUI shell
-9. Minimal local Web UI for account and transaction workflows (completed)
+9. Local Web workspace for account, transaction, transfer, budget, report, CSV,
+   and backup workflows (completed)
 
-The next interface increments can deepen the TUI or add transfers, budgets, and
-reports to the Web UI. Authentication, synchronization, remote deployment, and
-external exchange-rate services remain out of scope for this phase.
+The next interface increments can deepen the TUI. Remote deployment,
+authentication, and synchronization are intentionally not product goals;
+external exchange-rate services remain future domain work.

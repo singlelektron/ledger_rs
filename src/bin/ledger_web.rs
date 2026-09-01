@@ -15,7 +15,8 @@ struct WebCli {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = WebCli::parse();
-    let listener = tokio::net::TcpListener::bind(cli.listen).await?;
+    let listen = web::require_loopback(cli.listen)?;
+    let listener = tokio::net::TcpListener::bind(listen).await?;
 
     println!("ledger_rs Web UI: http://{}", listener.local_addr()?);
     axum::serve(listener, web::router(cli.database)).await

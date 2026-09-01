@@ -94,8 +94,9 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- A minimal local Web UI for listing accounts and balances, creating accounts,
-  viewing transaction history, and recording income, expenses, and refunds
+- A local-only, server-rendered Web workspace with account, transaction,
+  transfer, and budget management; filtering; trend, range, category, and
+  budget reports; CSV exchange; and JSON backup/empty-ledger restore
 - Unit and workflow coverage including a shared in-memory/SQLite repository
   contract, a complete CLI backup/restore scenario, and Web form workflows
 
@@ -103,8 +104,8 @@ The shared application core is complete. In-memory and file-backed SQLite
 repositories implement the same account, transaction, transfer, budget, and
 pagination behavior. The CLI exercises all shared workflows, including CRUD,
 balances, activity, reports, CSV exchange, and full JSON recovery. The Web UI
-provides a deliberately small browser workflow over the same application use
-cases. Transfers, budgets, reports, backup, and import/export remain CLI-only.
+provides the main day-to-day and data-management workflows over the same
+application use cases in a local-only browser workspace.
 
 ## Goals
 
@@ -303,17 +304,16 @@ The shared application core now:
 6. Exchange transactions through atomic CSV import and filtered export
 7. Back up and atomically restore the complete aggregate graph through
    versioned JSON
-8. Expose every workflow through the CLI and the essential daily workflow
-   through the Web UI
+8. Expose every workflow through the CLI and the primary account, transaction,
+   transfer, budget, report, and data workflows through the Web UI
 
 The current scope does not include:
 
 - Full TUI workflows
-- Web management for transfers, budgets, reports, backup, or CSV exchange
-- Authentication and authorization
 - External exchange-rate lookup or automatic currency conversion
 - Automatic time-zone detection or daylight-saving-time input resolution
-- Data synchronization
+- Remote access, multi-user authentication, and data synchronization; the Web
+  workspace is intentionally local-only
 
 ## Design Principles
 
@@ -528,11 +528,14 @@ version are rejected explicitly.
 
 ### Interface Milestones
 
-#### Minimal Web UI - Completed
+#### Local Web Workspace - Completed
 
 - List accounts and transfer-aware balances through application use cases
-- Create accounts and record income, expenses, and refunds
-- Show stable newest-first transaction history
+- Manage accounts, transactions, cross-account transfers, and monthly budgets
+- Filter stable newest-first transaction history
+- Display monthly trends, ranged summaries, category flow, and budget status
+- Exchange CSV transactions and download/restore versioned JSON backups
+- Enforce loopback-only listening for the single-user local product boundary
 - Keep HTTP parsing and HTML rendering outside the shared business core
 
 #### TUI
@@ -543,8 +546,6 @@ version are rejected explicitly.
 
 #### Later
 
-- Expand Web coverage to transfers, budgets, and reports
-- Authentication and synchronization
 - External exchange-rate services
 
 ## Local Development
@@ -557,7 +558,7 @@ Start the local Web UI with the default `ledger.db` database:
 cargo run --bin ledger_web
 ```
 
-Then open `http://127.0.0.1:3000`. To select another database or address:
+Then open `http://127.0.0.1:3000`. To select another database or local port:
 
 ```bash
 cargo run --bin ledger_web -- \
@@ -565,8 +566,8 @@ cargo run --bin ledger_web -- \
   --listen 127.0.0.1:8080
 ```
 
-The Web UI has no authentication and binds to loopback by default. Do not
-expose it to an untrusted network.
+The Web UI is a local-only product. It accepts only loopback listen addresses;
+attempting to bind to `0.0.0.0` or another non-loopback address fails.
 
 Show the available commands:
 

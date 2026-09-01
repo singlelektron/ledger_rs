@@ -18,8 +18,8 @@ The Axum Web interface lives in `src/web.rs`, with its executable entry point in
 opens repository adapters for that path and then calls synchronous application
 use cases. This keeps non-`Send` `rusqlite` connections out of shared server
 state and avoids changing repository traits for one interface. It is suitable
-for a local single-user MVP; a connection pool and explicit blocking-task
-boundary will be needed before serving concurrent remote users.
+for the deliberately local, single-user workload, where a connection pool and
+network-service architecture would add complexity without product value.
 
 Bulk CSV import is coordinated in the application layer. It validates every
 row before calling the transaction repository's atomic batch-create operation;

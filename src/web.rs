@@ -41,7 +41,7 @@ use axum::{
 };
 use jiff::{civil::DateTime, tz::TimeZone};
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::{io, net::SocketAddr, path::PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct WebState {
@@ -55,6 +55,17 @@ impl WebState {
 
     pub fn database_path(&self) -> &std::path::Path {
         &self.database_path
+    }
+}
+
+pub fn require_loopback(address: SocketAddr) -> io::Result<SocketAddr> {
+    if address.ip().is_loopback() {
+        Ok(address)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the Web UI is local-only; --listen must use a loopback address",
+        ))
     }
 }
 
@@ -1549,6 +1560,18 @@ mod tests {
         let state = WebState::new(PathBuf::from("custom.db"));
 
         assert_eq!(state.database_path(), std::path::Path::new("custom.db"));
+    }
+
+    #[test]
+    fn web_listener_rejects_non_loopback_addresses() {
+        let local = "127.0.0.1:3000".parse().unwrap();
+        let remote = "0.0.0.0:3000".parse().unwrap();
+
+        assert_eq!(require_loopback(local).unwrap(), local);
+        assert_eq!(
+            require_loopback(remote).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]

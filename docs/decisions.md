@@ -12,19 +12,18 @@ with an incompatible schema.
 CLI, TUI, and Web interfaces share domain types and application use
 cases. Interface-specific parsing and rendering stay outside the domain.
 
-## Server-rendered local Web MVP
+## Server-rendered local Web workspace
 
 The first Web interface uses Axum with server-rendered HTML and standard form
 posts. It deliberately avoids a separate JavaScript application and JSON API,
-so the smallest useful browser workflow can reuse application use cases without
-introducing duplicated client-side domain rules or a frontend build toolchain.
+so browser workflows can reuse application use cases without introducing
+duplicated client-side domain rules or a frontend build toolchain.
 
-The server binds to loopback by default and has no authentication. Each request
+The application is intentionally not a remote service. The executable rejects
+non-loopback listen addresses, so authentication and multi-user synchronization
+are outside the product boundary instead of deferred Web features. Each request
 opens the configured SQLite database and releases it when the response is
-ready. This is a simple and safe ownership boundary for the current local,
-single-user scope. A remotely exposed or high-concurrency deployment would
-require authentication, CSRF protection, a connection pool, and moving
-blocking database work off async executor threads.
+ready. This is a simple ownership boundary for the local, single-user workload.
 
 ## CSV for transaction exchange
 
