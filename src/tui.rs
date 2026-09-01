@@ -3426,6 +3426,53 @@ mod tests {
     }
 
     #[test]
+    fn switching_to_activity_or_reports_resets_row_selection() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        for id in 1..=2 {
+            transactions
+                .save(
+                    Transaction::new(
+                        TransactionId::new(id),
+                        account.id(),
+                        TransactionKind::Expense,
+                        Money::from_minor_units(100, Currency::Cny),
+                        format!("2026-08-30T10:00:0{id}+08:00[Asia/Shanghai]")
+                            .parse()
+                            .unwrap(),
+                        format!("Expense {id}"),
+                        Category::Food,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_transaction_index(), Some(1));
+
+        app.handle_key(KeyCode::Char('2'));
+        assert_eq!(app.page(), Page::Activity);
+        assert_eq!(app.focus(), Focus::Accounts);
+        assert_eq!(app.selected_transaction_index(), Some(0));
+
+        app.handle_key(KeyCode::Char('1'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_transaction_index(), Some(1));
+
+        app.handle_key(KeyCode::Char('3'));
+        assert_eq!(app.page(), Page::Reports);
+        assert_eq!(app.focus(), Focus::Accounts);
+        assert_eq!(app.selected_transaction_index(), Some(0));
+    }
+
+    #[test]
     fn selects_transactions_independently_from_accounts() {
         let mut accounts = InMemoryAccountRepository::new();
         let mut transactions = InMemoryTransactionRepository::new();
