@@ -98,7 +98,7 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 230 passing unit and workflow tests, including a shared in-memory/SQLite
+- 251 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract and a complete CLI backup/restore verification scenario
 
 The shared application core and first TUI milestone are complete. In-memory and file-backed SQLite
@@ -123,11 +123,12 @@ file protections as the CLI. To open another database, use the shared override:
 cargo run --bin ledger_tui -- --database path/to/ledger.db
 ```
 
-Use number keys to switch pages: `1` ledger, `2` unified activity, `3` reports,
-`4` budgets, and `5` transfers. On the ledger, budgets, and transfers pages,
-use Tab or the left/right arrows to focus the account or detail pane, then use
-the up/down arrows or `k`/`j` to move the selection. The activity and reports
-pages keep focus on the account pane because their content is read-only.
+Use number keys to switch pages: `1` for the ledger, `2` for unified activity,
+`3` for reports, `4` for budgets, and `5` for transfers. On the ledger, budgets,
+and transfers pages, use Tab or the left/right arrows to focus the account or
+detail pane, then use the up/down arrows or `k`/`j` to move the selection. The
+activity and reports pages keep focus on the account pane because their content
+is read-only.
 
 On the ledger page, press `a` to create an account and `n` to create a
 transaction. On the transfer page, `n` creates a transfer. Press `e` or `d` to
@@ -138,7 +139,8 @@ to calculate monthly usage. Forms use Tab to move between fields, arrows to
 change enum values, Delete to clear text, Enter to submit, and Escape to cancel.
 Enter validates the form first; invalid input keeps the form open with an
 inline error message so the typed values are preserved.
-Press `r` to reload data and `q` to quit.
+Press `r` to reload data, `q` or Ctrl+C to quit. Reloading keeps the current
+page, focus, and selection instead of resetting to the ledger page.
 
 CSV exchange and full-database JSON backup/restore remain CLI batch operations.
 They require explicit file paths, and restore intentionally operates only on an
