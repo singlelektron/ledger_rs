@@ -11,12 +11,17 @@ use crate::{
             ManageTransactionError, TransactionChanges, delete_transaction, get_transaction,
             update_transaction,
         },
+        manage_transfer::{
+            ManageTransferError, TransferChanges, create_transfer, delete_transfer, get_transfer,
+            list_account_transfers, update_transfer,
+        },
         record_transaction::record_transaction,
     },
     domain::{
         account::AccountId,
         money::{Currency, Money},
         transaction::{Category, NewTransaction, TransactionId, TransactionKind},
+        transfer::{NewTransfer, TransferId},
     },
     infrastructure::sqlite::{open_all_repositories, open_complete_repositories},
 };
@@ -70,6 +75,18 @@ pub fn router(database_path: PathBuf) -> Router {
         .route(
             "/transactions/{transaction_id}/delete",
             post(delete_transaction_handler),
+        )
+        .route(
+            "/accounts/{account_id}/transfers",
+            post(create_transfer_handler),
+        )
+        .route(
+            "/transfers/{transfer_id}/edit",
+            get(transfer_edit).post(update_transfer_handler),
+        )
+        .route(
+            "/transfers/{transfer_id}/delete",
+            post(delete_transfer_handler),
         )
         .with_state(WebState::new(database_path))
 }
@@ -146,6 +163,27 @@ struct TransactionQuery {
     kind: Option<String>,
     category: Option<String>,
     q: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTransferForm {
+    destination_account_id: u64,
+    source_amount: String,
+    destination_amount: String,
+    occurred_at: String,
+    time_zone: String,
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateTransferForm {
+    source_account_id: u64,
+    destination_account_id: u64,
+    source_amount: String,
+    destination_amount: String,
+    occurred_at: String,
+    time_zone: String,
+    description: String,
 }
 
 async fn home(State(state): State<WebState>) -> Result<Html<String>, WebError> {
@@ -235,9 +273,13 @@ async fn account_detail(
     let (accounts, transactions, transfers) = open_all_repositories(state.database_path())
         .map_err(|error| WebError::internal("open database", error))?;
     let account = get_account(&accounts, account_id).map_err(map_account_error)?;
+    let all_accounts =
+        list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
     let balance =
         get_account_balance_with_transfers(&accounts, &transactions, &transfers, account_id)
             .map_err(|error| WebError::internal("calculate account balance", error))?;
+    let account_transfers =
+        list_account_transfers(&accounts, &transfers, account_id).map_err(map_transfer_error)?;
     let selected_kind = query
         .kind
         .as_deref()
@@ -302,6 +344,68 @@ async fn account_detail(
             .join("")
     };
 
+    let transfer_rows = if account_transfers.is_empty() {
+        String::from(
+            r#"<div class="empty-state inline"><h2>No transfers yet</h2><p>Move money between two accounts without recording duplicate transactions.</p></div>"#,
+        )
+    } else {
+        account_transfers
+            .iter()
+            .map(|transfer| {
+                let outgoing = transfer.source_account_id() == account_id;
+                let counterparty_id = if outgoing {
+                    transfer.destination_account_id()
+                } else {
+                    transfer.source_account_id()
+                };
+                let counterparty = all_accounts
+                    .iter()
+                    .find(|candidate| candidate.id() == counterparty_id)
+                    .map(|candidate| candidate.name())
+                    .unwrap_or("Unknown account");
+                let (direction, sign, amount, class_name) = if outgoing {
+                    ("Sent to", "−", transfer.source_amount(), "expense")
+                } else {
+                    ("Received from", "+", transfer.destination_amount(), "income")
+                };
+                format!(
+                    r#"<article class="transaction-row transfer-row"><div><strong>{}</strong><small>{} {} · {}</small></div><span class="transaction-end"><b class="{}">{}{}</b><a href="/transfers/{}/edit">Edit</a></span></article>"#,
+                    escape_html(transfer.description()),
+                    direction,
+                    escape_html(counterparty),
+                    escape_html(&transfer.occurred_at().to_string()),
+                    class_name,
+                    sign,
+                    format_money(amount),
+                    transfer.id().value(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let transfer_form = if all_accounts.len() < 2 {
+        String::from(
+            r#"<div class="form-card muted-card"><p class="eyebrow">New transfer</p><h2>Add another account first</h2><p>Transfers need distinct source and destination accounts.</p></div>"#,
+        )
+    } else {
+        format!(
+            r#"<div class="form-card"><p class="eyebrow">New transfer</p><h2>Move money to another account</h2>
+            <form method="post" action="/accounts/{account_id}/transfers">
+              <label>Destination<select name="destination_account_id">{destination_options}</select></label>
+              <label>Amount sent ({source_currency})<input name="source_amount" required inputmode="decimal" placeholder="0.00"></label>
+              <label>Amount received<input name="destination_amount" required inputmode="decimal" placeholder="0.00"></label>
+              <label>Description<input name="description" required maxlength="120" placeholder="Why move it?"></label>
+              <label>When<input type="datetime-local" name="occurred_at" required></label>
+              <label>Time zone<input name="time_zone" required value="Asia/Shanghai"></label>
+              <button type="submit">Create transfer</button>
+            </form></div>"#,
+            account_id = account_id.value(),
+            destination_options = account_options(&all_accounts, Some(account_id), None),
+            source_currency = currency_code(account.currency()),
+        )
+    };
+
     let content = format!(
         r#"
         <a class="back" href="/">← All accounts</a>
@@ -333,18 +437,23 @@ async fn account_detail(
               <a href="/accounts/{account_id}">Reset</a>
             </form>
             <div class="transaction-list">{transaction_rows}</div>
+            <div class="subsection-heading"><div><p class="eyebrow">Movement</p><h2>Transfers</h2></div><span class="count">{transfer_count}</span></div>
+            <div class="transaction-list">{transfer_rows}</div>
           </section>
-          <aside class="form-card">
-            <p class="eyebrow">New transaction</p><h2>Record money in or out</h2>
-            <form method="post" action="/accounts/{account_id}/transactions">
-              <label>Type<select name="kind"><option value="expense">Expense</option><option value="income">Income</option><option value="expense_refund">Expense refund</option></select></label>
-              <label>Amount ({currency})<input name="amount" required inputmode="decimal" placeholder="0.00"></label>
-              <label>Description<input name="description" required maxlength="120" placeholder="What was it for?"></label>
-              <label>Category<select name="category">{category_options}</select></label>
-              <label>When<input type="datetime-local" name="occurred_at" required></label>
-              <label>Time zone<input name="time_zone" required value="Asia/Shanghai"></label>
-              <button type="submit">Record transaction</button>
-            </form>
+          <aside class="action-stack">
+            <div class="form-card">
+              <p class="eyebrow">New transaction</p><h2>Record money in or out</h2>
+              <form method="post" action="/accounts/{account_id}/transactions">
+                <label>Type<select name="kind"><option value="expense">Expense</option><option value="income">Income</option><option value="expense_refund">Expense refund</option></select></label>
+                <label>Amount ({currency})<input name="amount" required inputmode="decimal" placeholder="0.00"></label>
+                <label>Description<input name="description" required maxlength="120" placeholder="What was it for?"></label>
+                <label>Category<select name="category">{category_options}</select></label>
+                <label>When<input type="datetime-local" name="occurred_at" required></label>
+                <label>Time zone<input name="time_zone" required value="Asia/Shanghai"></label>
+                <button type="submit">Record transaction</button>
+              </form>
+            </div>
+            {transfer_form}
           </aside>
         </div>
         "#,
@@ -353,6 +462,9 @@ async fn account_detail(
         currency = currency_code(account.currency()),
         balance = format_money(&balance),
         transaction_count = transactions.len(),
+        transfer_count = account_transfers.len(),
+        transfer_rows = transfer_rows,
+        transfer_form = transfer_form,
         category_options = category_options(),
         search_query = escape_html(query.q.as_deref().unwrap_or_default()),
         kind_filter_options = transaction_kind_options(selected_kind, true),
@@ -534,6 +646,153 @@ async fn delete_transaction_handler(
     )))
 }
 
+async fn create_transfer_handler(
+    State(state): State<WebState>,
+    Path(source_account_id): Path<u64>,
+    Form(input): Form<CreateTransferForm>,
+) -> Result<Redirect, WebError> {
+    let source_account_id = AccountId::new(source_account_id);
+    let destination_account_id = AccountId::new(input.destination_account_id);
+    let (accounts, _, mut transfers) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let source = get_account(&accounts, source_account_id).map_err(map_account_error)?;
+    let destination = get_account(&accounts, destination_account_id).map_err(map_account_error)?;
+    let source_amount = parse_major_amount(&input.source_amount)
+        .ok_or_else(|| WebError::bad_request("Enter a valid positive source amount."))?;
+    let destination_amount = parse_major_amount(&input.destination_amount)
+        .ok_or_else(|| WebError::bad_request("Enter a valid positive destination amount."))?;
+    let occurred_at = parse_local_zoned(&input.occurred_at, &input.time_zone)?;
+    let transfer = NewTransfer::new(
+        source_account_id,
+        destination_account_id,
+        Money::from_minor_units(source_amount, source.currency()),
+        Money::from_minor_units(destination_amount, destination.currency()),
+        occurred_at,
+        input.description,
+    )
+    .map_err(|error| WebError::bad_request(format!("Invalid transfer: {error:?}")))?;
+    create_transfer(&accounts, &mut transfers, transfer).map_err(map_transfer_error)?;
+
+    Ok(Redirect::to(&format!(
+        "/accounts/{}",
+        source_account_id.value()
+    )))
+}
+
+async fn transfer_edit(
+    State(state): State<WebState>,
+    Path(transfer_id): Path<u64>,
+) -> Result<Html<String>, WebError> {
+    let transfer_id = TransferId::new(transfer_id);
+    let (accounts, _, transfers) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let transfer = get_transfer(&transfers, transfer_id).map_err(map_transfer_error)?;
+    let all_accounts =
+        list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
+    let source = get_account(&accounts, transfer.source_account_id()).map_err(map_account_error)?;
+    let destination =
+        get_account(&accounts, transfer.destination_account_id()).map_err(map_account_error)?;
+    let time_zone = transfer
+        .occurred_at()
+        .time_zone()
+        .iana_name()
+        .unwrap_or("UTC");
+    let content = format!(
+        r#"
+        <a class="back" href="/accounts/{source_account_id}">← Back to {source_name}</a>
+        <section class="editor-shell">
+          <div><p class="eyebrow">Transfer #{transfer_id}</p><h1 class="compact">Edit transfer</h1><p class="lede">Both amounts stay locked to their account currencies.</p></div>
+          <div class="form-card">
+            <form method="post" action="/transfers/{transfer_id}/edit">
+              <label>Source<select name="source_account_id">{source_options}</select></label>
+              <label>Destination<select name="destination_account_id">{destination_options}</select></label>
+              <label>Amount sent ({source_currency})<input name="source_amount" required inputmode="decimal" value="{source_amount}"></label>
+              <label>Amount received ({destination_currency})<input name="destination_amount" required inputmode="decimal" value="{destination_amount}"></label>
+              <label>Description<input name="description" required maxlength="120" value="{description}"></label>
+              <label>When<input type="datetime-local" name="occurred_at" required value="{occurred_at}"></label>
+              <label>Time zone<input name="time_zone" required value="{time_zone}"></label>
+              <button type="submit">Save changes</button>
+            </form>
+            <form class="delete-form" method="post" action="/transfers/{transfer_id}/delete">
+              <button class="button danger" type="submit">Delete transfer</button>
+            </form>
+          </div>
+        </section>
+        "#,
+        source_account_id = source.id().value(),
+        source_name = escape_html(source.name()),
+        transfer_id = transfer.id().value(),
+        source_options = account_options(&all_accounts, None, Some(source.id())),
+        destination_options = account_options(&all_accounts, None, Some(destination.id())),
+        source_currency = currency_code(source.currency()),
+        destination_currency = currency_code(destination.currency()),
+        source_amount = format_major_input(transfer.source_amount().minor_units()),
+        destination_amount = format_major_input(transfer.destination_amount().minor_units()),
+        description = escape_html(transfer.description()),
+        occurred_at = transfer.occurred_at().datetime(),
+        time_zone = escape_html(time_zone),
+    );
+
+    Ok(Html(page("Edit transfer", &content)))
+}
+
+async fn update_transfer_handler(
+    State(state): State<WebState>,
+    Path(transfer_id): Path<u64>,
+    Form(input): Form<UpdateTransferForm>,
+) -> Result<Redirect, WebError> {
+    let transfer_id = TransferId::new(transfer_id);
+    let source_account_id = AccountId::new(input.source_account_id);
+    let destination_account_id = AccountId::new(input.destination_account_id);
+    let (accounts, _, mut transfers) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let source = get_account(&accounts, source_account_id).map_err(map_account_error)?;
+    let destination = get_account(&accounts, destination_account_id).map_err(map_account_error)?;
+    let source_amount = parse_major_amount(&input.source_amount)
+        .ok_or_else(|| WebError::bad_request("Enter a valid positive source amount."))?;
+    let destination_amount = parse_major_amount(&input.destination_amount)
+        .ok_or_else(|| WebError::bad_request("Enter a valid positive destination amount."))?;
+    let occurred_at = parse_local_zoned(&input.occurred_at, &input.time_zone)?;
+    let updated = update_transfer(
+        &accounts,
+        &mut transfers,
+        transfer_id,
+        TransferChanges {
+            source_account_id: Some(source_account_id),
+            destination_account_id: Some(destination_account_id),
+            source_amount: Some(Money::from_minor_units(source_amount, source.currency())),
+            destination_amount: Some(Money::from_minor_units(
+                destination_amount,
+                destination.currency(),
+            )),
+            occurred_at: Some(occurred_at),
+            description: Some(input.description),
+        },
+    )
+    .map_err(map_transfer_error)?;
+
+    Ok(Redirect::to(&format!(
+        "/accounts/{}",
+        updated.source_account_id().value()
+    )))
+}
+
+async fn delete_transfer_handler(
+    State(state): State<WebState>,
+    Path(transfer_id): Path<u64>,
+) -> Result<Redirect, WebError> {
+    let transfer_id = TransferId::new(transfer_id);
+    let (_, _, mut transfers) = open_all_repositories(state.database_path())
+        .map_err(|error| WebError::internal("open database", error))?;
+    let current = get_transfer(&transfers, transfer_id).map_err(map_transfer_error)?;
+    delete_transfer(&mut transfers, transfer_id).map_err(map_transfer_error)?;
+
+    Ok(Redirect::to(&format!(
+        "/accounts/{}",
+        current.source_account_id().value()
+    )))
+}
+
 fn map_account_error(error: ManageAccountError) -> WebError {
     match error {
         ManageAccountError::AccountNotFound(id) => {
@@ -564,6 +823,16 @@ fn map_transaction_error(error: ManageTransactionError) -> WebError {
             WebError::internal("manage transaction", error)
         }
         other => WebError::bad_request(format!("Invalid transaction: {other:?}")),
+    }
+}
+
+fn map_transfer_error(error: ManageTransferError) -> WebError {
+    match error {
+        ManageTransferError::TransferNotFound(id) => {
+            WebError::not_found(format!("Transfer {} does not exist.", id.value()))
+        }
+        ManageTransferError::Repository(error) => WebError::internal("manage transfer", error),
+        other => WebError::bad_request(format!("Invalid transfer: {other:?}")),
     }
 }
 
@@ -751,6 +1020,32 @@ fn currency_options() -> String {
     ["CNY", "USD", "EUR", "HKD", "MYR"]
         .into_iter()
         .map(|code| format!(r#"<option value="{code}">{code}</option>"#))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn account_options(
+    accounts: &[crate::domain::account::Account],
+    excluded: Option<AccountId>,
+    selected: Option<AccountId>,
+) -> String {
+    accounts
+        .iter()
+        .filter(|account| Some(account.id()) != excluded)
+        .map(|account| {
+            let selected_attribute = if Some(account.id()) == selected {
+                " selected"
+            } else {
+                ""
+            };
+            format!(
+                r#"<option value="{}"{}>{} · {}</option>"#,
+                account.id().value(),
+                selected_attribute,
+                escape_html(account.name()),
+                currency_code(account.currency()),
+            )
+        })
         .collect::<Vec<_>>()
         .join("")
 }
@@ -1092,5 +1387,92 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn transfer_management_creates_updates_lists_and_deletes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        for (name, currency) in [("CNY Wallet", "CNY"), ("USD Wallet", "USD")] {
+            let _redirect = create_account_handler(
+                State(state.clone()),
+                Form(CreateAccountForm {
+                    name: String::from(name),
+                    currency: String::from(currency),
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let _redirect = create_transfer_handler(
+            State(state.clone()),
+            Path(1),
+            Form(CreateTransferForm {
+                destination_account_id: 2,
+                source_amount: String::from("7.00"),
+                destination_amount: String::from("1.00"),
+                occurred_at: String::from("2026-09-01T20:00"),
+                time_zone: String::from("Asia/Shanghai"),
+                description: String::from("Exchange"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let source = account_detail(
+            State(state.clone()),
+            Path(1),
+            Query(TransactionQuery::default()),
+        )
+        .await
+        .unwrap();
+        let destination = account_detail(
+            State(state.clone()),
+            Path(2),
+            Query(TransactionQuery::default()),
+        )
+        .await
+        .unwrap();
+        assert!(source.0.contains("Sent to USD Wallet"));
+        assert!(source.0.contains("−7.00 CNY"));
+        assert!(destination.0.contains("Received from CNY Wallet"));
+        assert!(destination.0.contains("+1.00 USD"));
+
+        let edit = transfer_edit(State(state.clone()), Path(1)).await.unwrap();
+        assert!(edit.0.contains("Edit transfer"));
+        let _redirect = update_transfer_handler(
+            State(state.clone()),
+            Path(1),
+            Form(UpdateTransferForm {
+                source_account_id: 1,
+                destination_account_id: 2,
+                source_amount: String::from("14.00"),
+                destination_amount: String::from("2.00"),
+                occurred_at: String::from("2026-09-01T20:30"),
+                time_zone: String::from("Asia/Shanghai"),
+                description: String::from("Updated exchange"),
+            }),
+        )
+        .await
+        .unwrap();
+        let updated = account_detail(
+            State(state.clone()),
+            Path(1),
+            Query(TransactionQuery::default()),
+        )
+        .await
+        .unwrap();
+        assert!(updated.0.contains("Updated exchange"));
+        assert!(updated.0.contains("−14.00 CNY"));
+
+        let _redirect = delete_transfer_handler(State(state.clone()), Path(1))
+            .await
+            .unwrap();
+        let after_delete =
+            account_detail(State(state), Path(1), Query(TransactionQuery::default()))
+                .await
+                .unwrap();
+        assert!(!after_delete.0.contains("Updated exchange"));
+        assert!(after_delete.0.contains("No transfers yet"));
     }
 }

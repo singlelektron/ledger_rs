@@ -210,6 +210,10 @@ h2 {
   content: "";
 }
 
+.action-stack { display: grid; gap: 14px; }
+.muted-card { border-color: var(--line); background: rgba(12, 18, 29, .75); }
+.muted-card p:last-child { margin-bottom: 0; color: var(--muted); font-size: .78rem; }
+
 form { display: grid; gap: 13px; margin-top: 22px; }
 
 label {
@@ -347,6 +351,15 @@ button:hover,
   border-radius: var(--radius);
   background: rgba(12, 18, 29, .9);
 }
+
+.subsection-heading {
+  display: flex;
+  margin: 30px 0 13px;
+  align-items: end;
+  justify-content: space-between;
+}
+
+.subsection-heading p { margin-bottom: 6px; }
 
 .filter-bar {
   display: grid;
