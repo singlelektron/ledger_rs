@@ -1040,11 +1040,7 @@ async fn transaction_edit(
     let transaction =
         get_transaction(&transactions, transaction_id).map_err(map_transaction_error)?;
     let account = get_account(&accounts, transaction.account_id()).map_err(map_account_error)?;
-    let time_zone = transaction
-        .occurred_at()
-        .time_zone()
-        .iana_name()
-        .unwrap_or("UTC");
+    let time_zone = edit_time_zone(transaction.occurred_at());
     let content = format!(
         r#"
         <a class="back" href="/accounts/{account_id}">← Back to {account_name}</a>
@@ -1075,7 +1071,7 @@ async fn transaction_edit(
         description = escape_html(transaction.description()),
         category_options = category_options_selected(Some(transaction.category()), false),
         occurred_at = transaction.occurred_at().datetime(),
-        time_zone = escape_html(time_zone),
+        time_zone = escape_html(&time_zone),
     );
 
     Ok(Html(page("Edit transaction", &content)))
@@ -1182,11 +1178,7 @@ async fn transfer_edit(
     let source = get_account(&accounts, transfer.source_account_id()).map_err(map_account_error)?;
     let destination =
         get_account(&accounts, transfer.destination_account_id()).map_err(map_account_error)?;
-    let time_zone = transfer
-        .occurred_at()
-        .time_zone()
-        .iana_name()
-        .unwrap_or("UTC");
+    let time_zone = edit_time_zone(transfer.occurred_at());
     let content = format!(
         r#"
         <a class="back" href="/accounts/{source_account_id}">← Back to {source_name}</a>
@@ -1220,7 +1212,7 @@ async fn transfer_edit(
         destination_amount = format_major_input(transfer.destination_amount().minor_units()),
         description = escape_html(transfer.description()),
         occurred_at = transfer.occurred_at().datetime(),
-        time_zone = escape_html(time_zone),
+        time_zone = escape_html(&time_zone),
     );
 
     Ok(Html(page("Edit transfer", &content)))
@@ -1413,12 +1405,61 @@ fn parse_local_zoned(value: &str, time_zone_name: &str) -> Result<jiff::Zoned, W
     let local = value
         .parse::<DateTime>()
         .map_err(|_| WebError::bad_request("Enter a valid local date and time."))?;
-    let time_zone = TimeZone::get(time_zone_name)
-        .map_err(|_| WebError::bad_request("Enter a valid IANA time zone."))?;
+    let time_zone = parse_time_zone(time_zone_name)?;
     time_zone
         .to_ambiguous_zoned(local)
         .unambiguous()
         .map_err(|_| WebError::bad_request("That local time is ambiguous or does not exist."))
+}
+
+/// Accepts either an IANA name (`Asia/Shanghai`) or a fixed UTC offset
+/// (`+08:00`, `-05:00`, `+00`). Fixed offsets are what `edit_time_zone`
+/// writes for imported timestamps that carry an offset but no IANA zone, so
+/// saving an unchanged edit form cannot silently reinterpret the wall time in
+/// another zone.
+fn parse_time_zone(time_zone_name: &str) -> Result<TimeZone, WebError> {
+    if let Some(offset_seconds) = parse_fixed_offset(time_zone_name) {
+        return jiff::tz::Offset::from_seconds(offset_seconds)
+            .map(jiff::tz::Offset::to_time_zone)
+            .map_err(|_| WebError::bad_request("Enter a valid UTC offset."));
+    }
+    TimeZone::get(time_zone_name)
+        .map_err(|_| WebError::bad_request("Enter a valid IANA time zone."))
+}
+
+/// Parses `+HH`, `+HH:MM`, or `+HH:MM:SS` (and their negative forms) into
+/// offset seconds, or returns `None` for IANA names and other input.
+fn parse_fixed_offset(value: &str) -> Option<i32> {
+    let value = value.trim();
+    let (sign, digits) = match value.as_bytes().first()? {
+        b'+' => (1i32, &value[1..]),
+        b'-' => (-1i32, &value[1..]),
+        _ => return None,
+    };
+    let mut parts = digits.split(':');
+    let hours: i32 = parts.next()?.parse().ok()?;
+    let minutes: i32 = parts.next().map_or(Ok(0), |part| part.parse()).ok()?;
+    let seconds: i32 = parts.next().map_or(Ok(0), |part| part.parse()).ok()?;
+    if parts.next().is_some() || hours > 23 || minutes > 59 || seconds > 59 {
+        return None;
+    }
+    hours
+        .checked_mul(3600)?
+        .checked_add(minutes.checked_mul(60)?)?
+        .checked_add(seconds)?
+        .checked_mul(sign)
+}
+
+/// The value shown in the edit form's time-zone field: the IANA name when the
+/// stored timestamp has one, otherwise the exact fixed offset of the stored
+/// instant (for example `+08:00`). `parse_time_zone` accepts both forms, so
+/// re-saving an unchanged edit form reproduces the same instant instead of
+/// falling back to a different zone.
+fn edit_time_zone(zoned: &jiff::Zoned) -> String {
+    match zoned.time_zone().iana_name() {
+        Some(name) => name.to_owned(),
+        None => zoned.offset().to_string(),
+    }
 }
 
 fn parse_budget_month(value: &str) -> Result<BudgetMonth, WebError> {
@@ -1763,6 +1804,119 @@ mod tests {
         assert_eq!(parse_major_amount("0"), None);
         assert_eq!(parse_major_amount("1.001"), None);
         assert_eq!(parse_major_amount("-1"), None);
+    }
+
+    #[test]
+    fn parses_iana_and_fixed_offset_time_zones() {
+        let iana = parse_local_zoned("2026-09-01T12:00", "Asia/Shanghai").unwrap();
+        assert_eq!(iana.time_zone().iana_name(), Some("Asia/Shanghai"));
+
+        let offset = parse_local_zoned("2026-09-01T12:00", "+08:00").unwrap();
+        assert_eq!(offset.time_zone().iana_name(), None);
+        assert_eq!(offset.offset().to_string(), "+08");
+        assert_eq!(parse_fixed_offset("+08"), Some(8 * 3600));
+
+        let negative = parse_local_zoned("2026-09-01T12:00", "-05:30").unwrap();
+        assert_eq!(negative.offset().to_string(), "-05:30");
+
+        let utc = parse_local_zoned("2026-09-01T12:00", "+00").unwrap();
+        assert_eq!(utc.offset().to_string(), "+00");
+
+        assert!(parse_time_zone("not-a-zone").is_err());
+        assert_eq!(parse_fixed_offset("24:00"), None);
+    }
+
+    #[tokio::test]
+    async fn editing_imported_fixed_offset_transaction_preserves_the_instant() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+        let _redirect = import_csv_handler(
+            State(state.clone()),
+            Form(CsvImportForm {
+                csv: String::from(
+                    "account_id,kind,amount_minor,currency,occurred_at,description,category\n1,expense,1234,CNY,2026-09-01T12:00:00+08:00[+08:00],Imported offset lunch,food\n",
+                ),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let original = {
+            let (_, transactions, _) = open_all_repositories(state.database_path()).unwrap();
+            get_transaction(&transactions, TransactionId::new(1))
+                .unwrap()
+                .occurred_at()
+                .timestamp()
+        };
+
+        let edit = transaction_edit(State(state.clone()), Path(1))
+            .await
+            .unwrap();
+        assert!(edit.0.contains("value=\"2026-09-01T12:00:00\""));
+        assert!(edit.0.contains("value=\"+08\""));
+
+        let _redirect = update_transaction_handler(
+            State(state.clone()),
+            Path(1),
+            Form(CreateTransactionForm {
+                kind: String::from("expense"),
+                amount: String::from("12.34"),
+                occurred_at: String::from("2026-09-01T12:00"),
+                time_zone: String::from("+08:00"),
+                description: String::from("Imported offset lunch"),
+                category: String::from("food"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let (_, transactions, _) = open_all_repositories(state.database_path()).unwrap();
+        let updated = get_transaction(&transactions, TransactionId::new(1)).unwrap();
+        assert_eq!(updated.occurred_at().timestamp(), original);
+    }
+
+    #[tokio::test]
+    async fn editing_fixed_offset_transfer_shows_the_stored_offset() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        for (name, currency) in [("CNY Wallet", "CNY"), ("USD Wallet", "USD")] {
+            let _redirect = create_account_handler(
+                State(state.clone()),
+                Form(CreateAccountForm {
+                    name: String::from(name),
+                    currency: String::from(currency),
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let (accounts, _, mut transfers) = open_all_repositories(state.database_path()).unwrap();
+        let occurred_at = "2026-09-01T12:00:00+08:00[+08:00]"
+            .parse::<jiff::Zoned>()
+            .unwrap();
+        let transfer = NewTransfer::new(
+            AccountId::new(1),
+            AccountId::new(2),
+            Money::from_minor_units(700, Currency::Cny),
+            Money::from_minor_units(100, Currency::Usd),
+            occurred_at,
+            String::from("Fixed offset transfer"),
+        )
+        .unwrap();
+        create_transfer(&accounts, &mut transfers, transfer).unwrap();
+
+        let edit = transfer_edit(State(state), Path(1)).await.unwrap();
+        assert!(edit.0.contains("value=\"2026-09-01T12:00:00\""));
+        assert!(edit.0.contains("value=\"+08\""));
     }
 
     #[tokio::test]
