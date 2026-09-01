@@ -90,6 +90,7 @@ impl std::fmt::Display for RepositoryError {
             Self::DuplicateTransferId(id) => write!(f, "duplicate transfer id {id}"),
             Self::DuplicateBudgetId(id) => write!(f, "duplicate budget id {id}"),
             Self::InvalidId(id) => write!(f, "invalid repository id {id}"),
+            Self::InvalidLimit(limit) => write!(f, "invalid limit {limit}"),
             Self::IdExhausted => write!(f, "repository exhausted its id space"),
             Self::RestoreTargetNotEmpty => write!(f, "restore target is not empty"),
             Self::Storage(message) => write!(f, "storage error: {message}"),

@@ -33,8 +33,35 @@ entities, allowing delete events and earlier snapshots to remain available.
 
 ## Shared application core
 
-CLI, TUI, and future Web interfaces share domain types and application use
+CLI, TUI, and Web interfaces share domain types and application use
 cases. Interface-specific parsing and rendering stay outside the domain.
+
+## Server-rendered local Web workspace
+
+The first Web interface uses Axum with server-rendered HTML and standard form
+posts. It deliberately avoids a separate JavaScript application and JSON API,
+so browser workflows can reuse application use cases without introducing
+duplicated client-side domain rules or a frontend build toolchain.
+
+The application is intentionally not a remote service. The executable rejects
+non-loopback listen addresses, so authentication and multi-user synchronization
+are outside the product boundary instead of deferred Web features. Each request
+opens the configured SQLite database and releases it when the response is
+ready. This is a simple ownership boundary for the local, single-user workload.
+
+Request handling additionally requires every `Host` header to be a loopback
+host (`127.0.0.0/8`, `localhost`, or `[::1]`). This closes DNS rebinding, where
+a domain that resolves to `127.0.0.1` would otherwise present a matching,
+same-origin `Origin` for state-changing posts and readable responses on backup
+or CSV export routes. State-changing methods still require a matching
+`Origin` when one is sent and reject non-`same-origin`/`none`
+`Sec-Fetch-Site` metadata.
+
+Because each request uses its own connection, two simultaneous writes (for
+example a large CSV import and a form submit) could briefly contend for the
+SQLite write lock. A five-second busy timeout makes those writes queue instead
+of failing immediately with `SQLITE_BUSY`; for the single-user workload this
+is more predictable than a connection pool.
 
 ## CSV for transaction exchange
 

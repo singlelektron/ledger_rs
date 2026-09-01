@@ -14,8 +14,14 @@ use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 
 const CURRENT_SCHEMA_VERSION: i64 = 4;
+
+/// How long a connection waits for a lock held by another connection before
+/// failing with `SQLITE_BUSY`. The local Web UI opens a fresh connection per
+/// request, so a slow upload and another write could otherwise collide.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn currency_to_code(currency: Currency) -> &'static str {
     match currency {
@@ -1140,6 +1146,9 @@ pub fn open_repositories(
 ) -> Result<(SqliteAccountRepository, SqliteTransactionRepository), RepositoryError> {
     let connection =
         Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
 
     initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
 
@@ -1159,6 +1168,9 @@ pub fn restore_backup(
 ) -> Result<(), RepositoryError> {
     let connection =
         Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
     initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
     let transaction = connection
         .unchecked_transaction()
@@ -1276,6 +1288,9 @@ pub fn open_all_repositories(
 > {
     let connection =
         Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
     initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
     let connection = Rc::new(connection);
     Ok((
@@ -1302,6 +1317,9 @@ pub fn open_complete_repositories(
 > {
     let connection =
         Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
     initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
     let connection = Rc::new(connection);
     Ok((

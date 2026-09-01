@@ -100,15 +100,21 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 251 passing unit and workflow tests, including a shared in-memory/SQLite
-  repository contract and a complete CLI backup/restore verification scenario
+- A local-only, server-rendered Web workspace with account, transaction,
+  transfer, and budget management; filtering; trend, range, category, and
+  budget reports; CSV exchange; and JSON backup/empty-ledger restore
+- 290 passing unit and workflow tests, including a shared in-memory/SQLite
+  repository contract, a complete CLI backup/restore scenario, Web form
+  workflows, and an append-only audit trail
 
-The shared application core and first TUI milestone are complete. In-memory and file-backed SQLite
+The shared application core, interactive TUI milestone, and local Web workspace
+are complete. In-memory and file-backed SQLite
 repositories implement the same account, transaction, transfer, budget, and
 pagination behavior. The CLI exercises all shared workflows, including CRUD,
-balances, activity, reports, CSV exchange, and full JSON recovery. The TUI calls
-the same application use cases for interactive account, transaction, transfer,
-budget, activity, and report workflows without duplicating their business rules.
+balances, activity, reports, CSV exchange, and full JSON recovery. The TUI and
+Web UI call the same application use cases for interactive account,
+transaction, transfer, budget, activity, and report workflows without
+duplicating their business rules.
 
 ## TUI
 
@@ -333,7 +339,7 @@ category breakdown from the same selected transactions. This supports monthly,
 yearly, and custom reporting periods without separate calculation rules. CLI
 presentation for ranged summaries is implemented with stable category ordering.
 
-## Completed Shared Core Scope
+## Completed Shared-Core Scope
 
 The shared application core now:
 
@@ -346,15 +352,15 @@ The shared application core now:
 6. Exchange transactions through atomic CSV import and filtered export
 7. Back up and atomically restore the complete aggregate graph through
    versioned JSON
-8. Expose every workflow through the CLI for reuse by the next TUI milestone
+8. Expose every workflow through the CLI and the primary account, transaction,
+   transfer, budget, report, and data workflows through the Web UI
 
 The current scope does not include:
 
-- Web interfaces
-- Authentication and authorization
 - External exchange-rate lookup or automatic currency conversion
 - Automatic time-zone detection or daylight-saving-time input resolution
-- Data synchronization
+- Remote access, multi-user authentication, and data synchronization; the Web
+  workspace is intentionally local-only
 
 ## Design Principles
 
@@ -567,6 +573,24 @@ version are rejected explicitly.
 - Atomic CSV transaction import and filtered export - Completed
 - Versioned JSON backup and restore - Completed
 
+### Interface Milestones
+
+#### Local Web Workspace - Completed
+
+- List accounts and transfer-aware balances through application use cases
+- Manage accounts, transactions, cross-account transfers, and monthly budgets
+- Filter stable newest-first transaction history
+- Display monthly trends, ranged summaries, category flow, and budget status
+- Exchange CSV transactions and download/restore versioned JSON backups
+- Enforce loopback-only listening for the single-user local product boundary
+- Keep HTTP parsing and HTML rendering outside the shared business core
+
+#### TUI
+
+- Render account activity, balances, budgets, and reports from the shared
+  application layer
+- Keep terminal state and keyboard handling outside domain and repository code
+
 ### Milestone 11: Interactive TUI Workflows - Completed
 
 - Render accounts, balances, transaction history, and unified transfer activity
@@ -576,10 +600,8 @@ version are rejected explicitly.
 - Present category reports, ranged summaries, monthly trends, and budget status
 - Keep terminal state and keyboard handling outside domain and repository code
 
-### Later Milestones
+#### Later
 
-- Web API
-- Authentication and synchronization
 - External exchange-rate services
 
 ## Running a Prebuilt Binary
@@ -631,6 +653,29 @@ replacing the executable therefore does not replace or delete the ledger.
 ## Local Development
 
 Install a stable Rust toolchain that supports Rust 2024 edition.
+
+Start the local Web UI with the default `ledger.db` database:
+
+```bash
+cargo run --bin ledger_web
+```
+
+Then open `http://127.0.0.1:3000`. To select another database or local port:
+
+```bash
+cargo run --bin ledger_web -- \
+  --database data/ledger.db \
+  --listen 127.0.0.1:8080
+```
+
+The Web UI is a local-only product. It accepts only loopback listen addresses;
+attempting to bind to `0.0.0.0` or another non-loopback address fails. Every
+request must also be addressed to a loopback host: the middleware rejects
+`Host` headers outside `127.0.0.0/8`, `localhost`, or `[::1]`, which blocks
+DNS-rebinding attacks where a domain that resolves to `127.0.0.1` would
+otherwise impersonate the local UI. State-changing requests additionally
+require a matching same-origin `Origin` when one is sent and accept only
+`same-origin` or `none` `Sec-Fetch-Site` metadata.
 
 Show the available commands:
 

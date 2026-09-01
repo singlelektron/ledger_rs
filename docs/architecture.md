@@ -9,8 +9,20 @@ layer; the application layer uses domain types and repository traits; SQLite and
 in-memory repositories implement those traits. Domain code never depends on an
 interface or database.
 
-The project remains a single crate while the shared core is small. The TUI
-loads its dashboard model through account-listing, account-balance,
+The project remains a single crate while the shared core is small. The CLI,
+TUI, and Web UI call the same application use cases instead of duplicating
+business rules.
+
+The Axum Web interface lives in the `src/web/` module directory, with its
+executable entry point in `src/bin/ledger_web.rs`. Its state contains only the
+SQLite path. Each request opens repository adapters for that path and then calls
+synchronous application use cases. This keeps non-`Send` `rusqlite` connections
+out of shared server state and avoids changing repository traits for one
+interface. It is suitable for the deliberately local, single-user workload,
+where a connection pool and network-service architecture would add complexity
+without product value.
+
+The TUI loads its dashboard model through account-listing, account-balance,
 transaction-listing, and unified-activity application use cases. Its terminal
 code owns only input, selection state, formatting, and rendering; it does not
 query SQLite directly or duplicate accounting rules.
