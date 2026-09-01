@@ -437,7 +437,11 @@ async fn reports(
     let all_accounts =
         list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
     let selected_account = query.account_id.map(AccountId::new);
-    let time_zone = query.time_zone.as_deref().unwrap_or(DEFAULT_TIME_ZONE);
+    let time_zone = query
+        .time_zone
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_TIME_ZONE);
 
     let results = match (selected_account, query.from.as_deref(), query.to.as_deref()) {
         (Some(account_id), Some(from), Some(to)) if !from.is_empty() && !to.is_empty() => {
@@ -2362,6 +2366,50 @@ mod tests {
         assert!(response.0.contains("Range summary"));
         assert!(response.0.contains("Net outflow"));
         assert!(response.0.contains("Salary"));
+    }
+
+    #[tokio::test]
+    async fn empty_report_time_zone_falls_back_to_the_default() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+        let _redirect = create_transaction_handler(
+            State(state.clone()),
+            Path(1),
+            Form(CreateTransactionForm {
+                kind: String::from("income"),
+                amount: String::from("100.00"),
+                occurred_at: String::from("2026-09-01T12:00"),
+                time_zone: String::from("Asia/Shanghai"),
+                description: String::from("Salary"),
+                category: String::from("salary"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = reports(
+            State(state),
+            Query(ReportQuery {
+                account_id: Some(1),
+                from: Some(String::from("2026-09")),
+                to: Some(String::from("2026-09")),
+                time_zone: Some(String::new()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.0.contains("value=\"Asia/Shanghai\""));
+        assert!(response.0.contains("100.00 CNY"));
     }
 
     #[tokio::test]
