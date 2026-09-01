@@ -873,6 +873,17 @@ references and original zoned timestamps. Restore validates the entire backup
 before opening one SQLite transaction and refuses any database that already
 contains ledger data.
 
+Display the 50 most recent database changes:
+
+```bash
+./ledger_rs data audit-log
+```
+
+Use `--limit N` to return between 1 and 200 entries. Results are newest first
+and include the UTC write time, entity type and ID, operation, and compact JSON
+snapshots from before and/or after the change. Audit entries are retained when
+the referenced business entity is deleted.
+
 Query the balance calculated from an account's stored transactions:
 
 ```bash
