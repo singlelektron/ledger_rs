@@ -96,7 +96,7 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 210 passing unit and workflow tests, including a shared in-memory/SQLite
+- 218 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract and a complete CLI backup/restore verification scenario
 
 The pre-TUI application core is complete. In-memory and file-backed SQLite
@@ -882,7 +882,9 @@ Display the 50 most recent database changes:
 Use `--limit N` to return between 1 and 200 entries. Results are newest first
 and include the UTC write time, entity type and ID, operation, and compact JSON
 snapshots from before and/or after the change. Audit entries are retained when
-the referenced business entity is deleted.
+the referenced business entity is deleted. Version 1 JSON backups contain
+business aggregates rather than prior audit history; restoring those aggregates
+creates new audit entries for the restore writes.
 
 Query the balance calculated from an account's stored transactions:
 

@@ -51,4 +51,6 @@ or storage failure cannot leave a partially imported file.
 JSON restore is allowed only when all four data tables are empty. Version 1
 restores accounts first, followed by transactions, transfers, and budgets, with
 their original integer IDs. The empty check and every insert run in one SQLite
-transaction; any constraint or storage error rolls back the whole restore.
+transaction; any constraint or storage error rolls back the whole restore. The
+backup format does not carry earlier audit rows. Restore inserts are audited as
+new writes in the target database.
