@@ -1,5 +1,6 @@
 pub mod account_activity;
 pub mod account_balance;
+pub mod audit_log;
 pub mod backup;
 pub mod budget_report;
 pub mod category_report;
