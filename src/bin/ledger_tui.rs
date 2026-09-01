@@ -9,7 +9,11 @@ use std::{io, path::PathBuf};
 use clap::Parser;
 
 #[derive(Debug, Parser)]
-#[command(about = "Interactive terminal dashboard for ledger_rs")]
+#[command(
+    name = "ledger_tui",
+    version,
+    about = "Interactive terminal dashboard for ledger_rs"
+)]
 struct Args {
     #[arg(
         long,
