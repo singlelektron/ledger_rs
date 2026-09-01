@@ -1,6 +1,6 @@
 # ledger_rs
 
-This is a repository for me to learn how to write a Rust project.
+This is a learning-oriented project for me to learn how to write a Rust project.
 
 The following documentation was generated with AI assistance.
 
