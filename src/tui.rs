@@ -132,6 +132,18 @@ pub struct App {
     budget: Option<BudgetResult>,
 }
 
+/// UI state preserved across a reload so a refresh or a successful mutation
+/// does not bounce the user back to the initial page/selection.
+#[derive(Debug, Clone)]
+struct ReloadState {
+    page: Page,
+    focus: Focus,
+    selected_account: usize,
+    selected_transaction: usize,
+    report: Option<ReportResult>,
+    budget: Option<BudgetResult>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Continue,
@@ -433,14 +445,8 @@ impl std::fmt::Display for ExecuteActionError {
 
 impl TransactionInput {
     pub fn into_new_transaction(self) -> Result<NewTransaction, TransactionInputError> {
-        let amount_minor = self
-            .amount_minor
-            .parse::<i64>()
-            .map_err(|_| TransactionInputError::InvalidAmount(self.amount_minor.clone()))?;
-        let occurred_at = self
-            .occurred_at
-            .parse()
-            .map_err(|_| TransactionInputError::InvalidOccurredAt(self.occurred_at.clone()))?;
+        let amount_minor = parse_transaction_amount_minor(&self.amount_minor)?;
+        let occurred_at = parse_transaction_occurred_at(&self.occurred_at)?;
         NewTransaction::new(
             self.account_id,
             self.kind,
@@ -465,35 +471,88 @@ impl TransferInput {
         self,
         resolve_account: impl Fn(AccountId) -> Result<Option<Account>, RepositoryError>,
     ) -> Result<NewTransfer, TransferInputError> {
-        let source_account_id = parse_transfer_account_id(&self.source_account_id)?;
-        let destination_account_id = parse_transfer_account_id(&self.destination_account_id)?;
-        let source = resolve_account(source_account_id)
-            .map_err(TransferInputError::Repository)?
-            .ok_or(TransferInputError::AccountNotFound(source_account_id))?;
-        let destination = resolve_account(destination_account_id)
-            .map_err(TransferInputError::Repository)?
-            .ok_or(TransferInputError::AccountNotFound(destination_account_id))?;
-        let source_amount = self
-            .source_amount_minor
-            .parse::<i64>()
-            .map_err(|_| TransferInputError::InvalidAmount(self.source_amount_minor.clone()))?;
-        let destination_amount = self.destination_amount_minor.parse::<i64>().map_err(|_| {
-            TransferInputError::InvalidAmount(self.destination_amount_minor.clone())
-        })?;
-        let occurred_at = self
-            .occurred_at
-            .parse()
-            .map_err(|_| TransferInputError::InvalidOccurredAt(self.occurred_at.clone()))?;
+        let parsed = resolve_transfer_input(
+            &self.source_account_id,
+            &self.destination_account_id,
+            &self.source_amount_minor,
+            &self.destination_amount_minor,
+            &self.occurred_at,
+            resolve_account,
+        )?;
         NewTransfer::new(
-            source_account_id,
-            destination_account_id,
-            Money::from_minor_units(source_amount, source.currency()),
-            Money::from_minor_units(destination_amount, destination.currency()),
-            occurred_at,
+            parsed.source_account_id,
+            parsed.destination_account_id,
+            Money::from_minor_units(parsed.source_amount, parsed.source.currency()),
+            Money::from_minor_units(parsed.destination_amount, parsed.destination.currency()),
+            parsed.occurred_at,
             self.description,
         )
         .map_err(TransferInputError::Transfer)
     }
+}
+
+fn parse_transaction_amount_minor(input: &str) -> Result<i64, TransactionInputError> {
+    input
+        .parse::<i64>()
+        .map_err(|_| TransactionInputError::InvalidAmount(input.to_string()))
+}
+
+fn parse_transaction_occurred_at(input: &str) -> Result<jiff::Zoned, TransactionInputError> {
+    input
+        .parse()
+        .map_err(|_| TransactionInputError::InvalidOccurredAt(input.to_string()))
+}
+
+fn parse_transfer_amount_minor(input: &str) -> Result<i64, TransferInputError> {
+    input
+        .parse::<i64>()
+        .map_err(|_| TransferInputError::InvalidAmount(input.to_string()))
+}
+
+fn parse_transfer_occurred_at(input: &str) -> Result<jiff::Zoned, TransferInputError> {
+    input
+        .parse()
+        .map_err(|_| TransferInputError::InvalidOccurredAt(input.to_string()))
+}
+
+struct ParsedTransferInput {
+    source_account_id: AccountId,
+    destination_account_id: AccountId,
+    source: Account,
+    destination: Account,
+    source_amount: i64,
+    destination_amount: i64,
+    occurred_at: jiff::Zoned,
+}
+
+fn resolve_transfer_input(
+    source_account_id: &str,
+    destination_account_id: &str,
+    source_amount_minor: &str,
+    destination_amount_minor: &str,
+    occurred_at: &str,
+    resolve_account: impl Fn(AccountId) -> Result<Option<Account>, RepositoryError>,
+) -> Result<ParsedTransferInput, TransferInputError> {
+    let source_account_id = parse_transfer_account_id(source_account_id)?;
+    let destination_account_id = parse_transfer_account_id(destination_account_id)?;
+    let source_amount = parse_transfer_amount_minor(source_amount_minor)?;
+    let destination_amount = parse_transfer_amount_minor(destination_amount_minor)?;
+    let occurred_at = parse_transfer_occurred_at(occurred_at)?;
+    let source = resolve_account(source_account_id)
+        .map_err(TransferInputError::Repository)?
+        .ok_or(TransferInputError::AccountNotFound(source_account_id))?;
+    let destination = resolve_account(destination_account_id)
+        .map_err(TransferInputError::Repository)?
+        .ok_or(TransferInputError::AccountNotFound(destination_account_id))?;
+    Ok(ParsedTransferInput {
+        source_account_id,
+        destination_account_id,
+        source,
+        destination,
+        source_amount,
+        destination_amount,
+        occurred_at,
+    })
 }
 
 fn parse_transfer_account_id(input: &str) -> Result<AccountId, TransferInputError> {
@@ -734,6 +793,12 @@ fn parse_budget_month_value(input: &str) -> Result<BudgetMonth, ()> {
     BudgetMonth::new(year, month).map_err(|_| ())
 }
 
+fn validate_time_zone(value: &str) -> Result<(), String> {
+    jiff::tz::TimeZone::get(value).map(|_| ()).map_err(|_| {
+        format!("invalid time zone {value:?}; expected an IANA time zone like Asia/Shanghai")
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Status {
     message: String,
@@ -798,6 +863,12 @@ impl std::fmt::Display for ReportError {
 enum ReportField {
     From,
     To,
+    TimeZone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BudgetStatusField {
+    Month,
     TimeZone,
 }
 
@@ -898,7 +969,7 @@ struct BudgetStatusForm {
     account_id: AccountId,
     month: String,
     time_zone: String,
-    field: ReportField,
+    field: BudgetStatusField,
     error: Option<String>,
 }
 
@@ -1019,6 +1090,9 @@ impl App {
     /// state is retained and the error is surfaced in the status line. When a
     /// mutation already committed, `success_message` is shown alongside the
     /// refresh failure so the user knows the write succeeded.
+    /// A successful reload preserves the current page, focus, account and row
+    /// selections (clamped if rows disappeared), and any loaded report or
+    /// budget result, so refresh and post-mutation reloads do not reset the UI.
     pub fn reload(
         &mut self,
         accounts: &impl AccountRepository,
@@ -1067,6 +1141,45 @@ impl App {
         }
     }
 
+    fn selectable_row_count(&self) -> usize {
+        match self.page {
+            Page::Ledger => self
+                .selected_account()
+                .map(|account| account.transactions().len())
+                .unwrap_or(0),
+            Page::Budgets => self.budget_row_count(),
+            Page::Transfers => self.transfer_count(),
+            Page::Activity | Page::Reports => 0,
+        }
+    }
+
+    fn capture_reload_state(&self) -> ReloadState {
+        ReloadState {
+            page: self.page,
+            focus: self.focus,
+            selected_account: self.selected_account,
+            selected_transaction: self.selected_transaction,
+            report: self.report.clone(),
+            budget: self.budget.clone(),
+        }
+    }
+
+    fn restore_reload_state(&mut self, state: ReloadState) {
+        self.page = state.page;
+        self.focus = state.focus;
+        self.selected_account = if self.accounts.is_empty() {
+            0
+        } else {
+            state.selected_account.min(self.accounts.len() - 1)
+        };
+        self.report = state.report;
+        self.budget = state.budget;
+        self.selected_transaction = match self.selectable_row_count() {
+            0 => 0,
+            count => state.selected_transaction.min(count - 1),
+        };
+    }
+
     pub fn select_next(&mut self) {
         match self.focus {
             Focus::Accounts if !self.accounts.is_empty() => {
@@ -1080,15 +1193,7 @@ impl App {
                 }
             }
             Focus::Transactions => {
-                let count = match self.page {
-                    Page::Ledger => self
-                        .selected_account()
-                        .map(|account| account.transactions().len())
-                        .unwrap_or(0),
-                    Page::Budgets => self.budget_row_count(),
-                    Page::Transfers => self.transfer_count(),
-                    Page::Activity | Page::Reports => 0,
-                };
+                let count = self.selectable_row_count();
                 if count > 0 {
                     self.selected_transaction = (self.selected_transaction + 1) % count;
                 }
@@ -1113,15 +1218,7 @@ impl App {
                 }
             }
             Focus::Transactions => {
-                let count = match self.page {
-                    Page::Ledger => self
-                        .selected_account()
-                        .map(|account| account.transactions().len())
-                        .unwrap_or(0),
-                    Page::Budgets => self.budget_row_count(),
-                    Page::Transfers => self.transfer_count(),
-                    Page::Activity | Page::Reports => 0,
-                };
+                let count = self.selectable_row_count();
                 if count > 0 {
                     self.selected_transaction = self
                         .selected_transaction
@@ -1488,9 +1585,11 @@ fn reload_dashboard_with(
     load: impl FnOnce() -> Result<App, LoadError>,
     success_message: Option<String>,
 ) {
+    let state = app.capture_reload_state();
     match load() {
         Ok(loaded) => {
             *app = loaded;
+            app.restore_reload_state(state);
             if let Some(message) = success_message {
                 app.set_status(message, false);
             }
@@ -1597,7 +1696,7 @@ fn default_budget_status_form(account_id: AccountId) -> BudgetStatusForm {
         account_id,
         month: format!("{:04}-{:02}", now.year(), now.month()),
         time_zone: now.time_zone().iana_name().unwrap_or("UTC").to_string(),
-        field: ReportField::From,
+        field: BudgetStatusField::Month,
         error: None,
     }
 }
@@ -1701,6 +1800,15 @@ fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (M
                     Action::Continue,
                 );
             }
+            if let Err(error) = validate_time_zone(&form.time_zone) {
+                return (
+                    Mode::BudgetStatusForm(BudgetStatusForm {
+                        error: Some(error),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
             return (
                 Mode::Browse,
                 Action::RunBudget(BudgetRequest::Status {
@@ -1712,8 +1820,8 @@ fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (M
         }
         KeyCode::Tab | KeyCode::BackTab => {
             form.field = match form.field {
-                ReportField::From => ReportField::TimeZone,
-                ReportField::To | ReportField::TimeZone => ReportField::From,
+                BudgetStatusField::Month => BudgetStatusField::TimeZone,
+                BudgetStatusField::TimeZone => BudgetStatusField::Month,
             };
         }
         KeyCode::Delete => active_budget_status_text(&mut form).clear(),
@@ -1729,8 +1837,8 @@ fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (M
 
 fn active_budget_status_text(form: &mut BudgetStatusForm) -> &mut String {
     match form.field {
-        ReportField::From | ReportField::To => &mut form.month,
-        ReportField::TimeZone => &mut form.time_zone,
+        BudgetStatusField::Month => &mut form.month,
+        BudgetStatusField::TimeZone => &mut form.time_zone,
     }
 }
 
@@ -1835,6 +1943,15 @@ fn handle_trend_report_form_key(mut form: TrendReportForm, key: KeyCode) -> (Mod
                     Action::Continue,
                 );
             }
+            if let Err(error) = validate_time_zone(&form.time_zone) {
+                return (
+                    Mode::TrendReportForm(TrendReportForm {
+                        error: Some(error),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
             return (
                 Mode::Browse,
                 Action::RunReport(ReportRequest::Trend {
@@ -1883,25 +2000,21 @@ fn handle_transaction_form_key(mut form: TransactionForm, key: KeyCode) -> (Mode
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
         KeyCode::Enter => {
             let form_kind = form.form_kind;
-            match form.clone().into_input().into_new_transaction() {
-                Ok(_) => {
-                    let input = form.into_input();
-                    let action = match form_kind {
-                        TransactionFormKind::Create => Action::CreateTransaction(input),
-                        TransactionFormKind::Edit(id) => Action::UpdateTransaction { id, input },
-                    };
-                    return (Mode::Browse, action);
-                }
-                Err(error) => {
-                    return (
-                        Mode::TransactionForm(TransactionForm {
-                            error: Some(error.to_string()),
-                            ..form
-                        }),
-                        Action::Continue,
-                    );
-                }
+            if let Err(error) = form.validate() {
+                return (
+                    Mode::TransactionForm(TransactionForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
             }
+            let input = form.into_input();
+            let action = match form_kind {
+                TransactionFormKind::Create => Action::CreateTransaction(input),
+                TransactionFormKind::Edit(id) => Action::UpdateTransaction { id, input },
+            };
+            return (Mode::Browse, action);
         }
         KeyCode::Tab => form.field = next_transaction_field(form.field),
         KeyCode::BackTab => form.field = previous_transaction_field(form.field),
@@ -1989,16 +2102,30 @@ impl TransferForm {
     }
 
     fn validate(&self, accounts: &[AccountOverview]) -> Result<(), TransferInputError> {
-        self.clone()
-            .into_input()
-            .into_new_transfer_with(|id| {
+        let parsed = resolve_transfer_input(
+            &self.source_account_id,
+            &self.destination_account_id,
+            &self.source_amount_minor,
+            &self.destination_amount_minor,
+            &self.occurred_at,
+            |id| {
                 Ok(accounts
                     .iter()
                     .map(AccountOverview::account)
                     .find(|account| account.id() == id)
                     .cloned())
-            })
-            .map(|_| ())
+            },
+        )?;
+        NewTransfer::new(
+            parsed.source_account_id,
+            parsed.destination_account_id,
+            Money::from_minor_units(parsed.source_amount, parsed.source.currency()),
+            Money::from_minor_units(parsed.destination_amount, parsed.destination.currency()),
+            parsed.occurred_at,
+            self.description.clone(),
+        )
+        .map(|_| ())
+        .map_err(TransferInputError::Transfer)
     }
 }
 
@@ -2046,6 +2173,21 @@ impl TransactionForm {
             description: self.description,
             category: self.category,
         }
+    }
+
+    fn validate(&self) -> Result<(), TransactionInputError> {
+        let amount_minor = parse_transaction_amount_minor(&self.amount_minor)?;
+        let occurred_at = parse_transaction_occurred_at(&self.occurred_at)?;
+        NewTransaction::new(
+            self.account_id,
+            self.kind,
+            Money::from_minor_units(amount_minor, self.currency),
+            occurred_at,
+            self.description.clone(),
+            self.category,
+        )
+        .map(|_| ())
+        .map_err(TransactionInputError::Transaction)
     }
 }
 
@@ -2352,11 +2494,15 @@ fn render_budget_status_form(frame: &mut Frame, form: &BudgetStatusForm) {
     frame.render_widget(Clear, area);
     let mut lines = vec![
         Line::from(format!("Account: {}", form.account_id.value())),
-        transaction_form_line("Month", form.month.clone(), form.field == ReportField::From),
+        transaction_form_line(
+            "Month",
+            form.month.clone(),
+            form.field == BudgetStatusField::Month,
+        ),
         transaction_form_line(
             "Time zone",
             form.time_zone.clone(),
-            form.field == ReportField::TimeZone,
+            form.field == BudgetStatusField::TimeZone,
         ),
         Line::from("Month uses YYYY-MM; Tab changes field."),
         Line::from("Delete clears text; Enter runs; Esc cancels."),
@@ -2479,7 +2625,7 @@ fn render_trend_report_form(frame: &mut Frame, form: &TrendReportForm) {
 }
 
 fn render_transaction_form(frame: &mut Frame, form: &TransactionForm) {
-    let area = centered_rect(frame.area(), 78, 11);
+    let area = centered_rect(frame.area(), 78, 11 + u16::from(form.error.is_some()));
     frame.render_widget(Clear, area);
     let mut lines = vec![
         Line::from(format!(
@@ -2515,12 +2661,7 @@ fn render_transaction_form(frame: &mut Frame, form: &TransactionForm) {
         Line::from("Tab/Shift-Tab changes field; arrows change kind/category."),
         Line::from("Delete clears text; Enter saves; Esc cancels."),
     ];
-    if let Some(error) = &form.error {
-        lines.push(Line::from(Span::styled(
-            error.as_str(),
-            Style::default().fg(Color::Red),
-        )));
-    }
+    push_form_error(&mut lines, form.error.as_deref());
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
             match form.form_kind {
@@ -3503,6 +3644,148 @@ mod tests {
     }
 
     #[test]
+    fn reload_preserves_page_focus_selection_and_success_message() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let mut transfers = InMemoryTransferRepository::new();
+        let cash = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        let bank = Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap();
+        let savings =
+            Account::new(AccountId::new(3), "Savings".to_string(), Currency::Cny).unwrap();
+        accounts.save(cash.clone()).unwrap();
+        accounts.save(bank.clone()).unwrap();
+        accounts.save(savings.clone()).unwrap();
+        transfers
+            .create(
+                NewTransfer::new(
+                    cash.id(),
+                    bank.id(),
+                    Money::from_minor_units(100, Currency::Cny),
+                    Money::from_minor_units(100, Currency::Cny),
+                    "2026-08-30T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "First".to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        transfers
+            .create(
+                NewTransfer::new(
+                    bank.id(),
+                    savings.id(),
+                    Money::from_minor_units(50, Currency::Cny),
+                    Money::from_minor_units(50, Currency::Cny),
+                    "2026-08-31T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "Second".to_string(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char('5'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Down);
+        let selected_before = app.selected_transfer().map(Transfer::id);
+        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(app.page(), Page::Transfers);
+        assert_eq!(app.focus(), Focus::Transactions);
+
+        app.reload(
+            &accounts,
+            &transactions,
+            &transfers,
+            Some("Created transfer 3".to_string()),
+        );
+
+        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(app.page(), Page::Transfers);
+        assert_eq!(app.focus(), Focus::Transactions);
+        assert_eq!(app.selected_transfer().map(Transfer::id), selected_before);
+        assert_eq!(
+            app.status.as_ref().map(|status| status.message.as_str()),
+            Some("Created transfer 3")
+        );
+    }
+
+    #[test]
+    fn reload_clamps_selection_when_accounts_shrink() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts
+            .save(Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.select_next();
+        assert_eq!(app.selected_index(), Some(1));
+
+        accounts.delete(AccountId::new(2)).unwrap();
+        app.reload(&accounts, &transactions, &transfers, None);
+
+        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.page(), Page::Ledger);
+    }
+
+    #[test]
+    fn reload_clamps_row_selection_when_rows_disappear() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        for id in 1..=2 {
+            transactions
+                .save(
+                    Transaction::new(
+                        TransactionId::new(id),
+                        account.id(),
+                        TransactionKind::Expense,
+                        Money::from_minor_units(100, Currency::Cny),
+                        format!("2026-08-30T10:00:0{id}+08:00[Asia/Shanghai]")
+                            .parse()
+                            .unwrap(),
+                        format!("Expense {id}"),
+                        Category::Food,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_transaction_index(), Some(1));
+
+        transactions.delete(TransactionId::new(2)).unwrap();
+        app.reload(&accounts, &transactions, &transfers, None);
+
+        assert_eq!(app.selected_transaction_index(), Some(0));
+    }
+
+    #[test]
+    fn refresh_reload_keeps_page_and_loaded_report() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('3'));
+        app.set_report(ReportResult::Category(vec![]));
+        app.reload(&accounts, &transactions, &transfers, None);
+
+        assert_eq!(app.page(), Page::Reports);
+        assert!(app.report.is_some());
+    }
+
+    #[test]
     fn invalid_account_name_keeps_form_open_and_preserves_input() {
         let accounts = InMemoryAccountRepository::new();
         let transactions = InMemoryTransactionRepository::new();
@@ -3654,6 +3937,65 @@ mod tests {
             &app.mode,
             Mode::TrendReportForm(form)
                 if form.error.as_deref() == Some("invalid month \"abc\"; expected YYYY-MM")
+        ));
+    }
+
+    #[test]
+    fn invalid_time_zone_keeps_trend_form_open_and_preserves_input() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('3'));
+        app.handle_key(KeyCode::Char('t'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Delete);
+        for character in "Unknown/Zone".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(
+            &app.mode,
+            Mode::TrendReportForm(form)
+                if form.error.as_deref()
+                    == Some(
+                        "invalid time zone \"Unknown/Zone\"; expected an IANA time zone like Asia/Shanghai"
+                    )
+                    && form.time_zone == "Unknown/Zone"
+        ));
+    }
+
+    #[test]
+    fn invalid_time_zone_keeps_budget_status_form_open() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('4'));
+        app.handle_key(KeyCode::Char('u'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Delete);
+        for character in "Unknown/Zone".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(
+            &app.mode,
+            Mode::BudgetStatusForm(form)
+                if form.error.as_deref()
+                    == Some(
+                        "invalid time zone \"Unknown/Zone\"; expected an IANA time zone like Asia/Shanghai"
+                    )
+                    && form.time_zone == "Unknown/Zone"
         ));
     }
 

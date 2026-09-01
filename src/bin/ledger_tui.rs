@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ledger_rs::{
     app_paths::{prepare_database_parent, resolve_database_path, secure_database_file},
     infrastructure::sqlite::open_complete_repositories,
@@ -48,6 +48,9 @@ fn main() -> io::Result<()> {
             if let Event::Key(key) = event
                 && key.kind == KeyEventKind::Press
             {
+                if is_ctrl_c(&key) {
+                    return Ok(());
+                }
                 match app.handle_key(key.code) {
                     Action::Quit => return Ok(()),
                     Action::Reload => {
@@ -84,6 +87,12 @@ fn main() -> io::Result<()> {
     })
 }
 
+fn is_ctrl_c(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +109,27 @@ mod tests {
         let args = Args::try_parse_from(["ledger_tui", "--database", "test.db"]).unwrap();
 
         assert_eq!(args.database, Some(PathBuf::from("test.db")));
+    }
+
+    #[test]
+    fn ctrl_c_is_detected_on_press_with_control_modifier() {
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(is_ctrl_c(&key));
+        assert!(is_ctrl_c(&KeyEvent::new(
+            KeyCode::Char('C'),
+            KeyModifiers::CONTROL
+        )));
+    }
+
+    #[test]
+    fn plain_c_or_missing_control_is_not_quit() {
+        assert!(!is_ctrl_c(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::NONE
+        )));
+        assert!(!is_ctrl_c(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::SHIFT
+        )));
     }
 }
