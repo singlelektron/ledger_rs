@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    name: Check formatting
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Select current stable Rust
+        run: rustup update stable && rustup default stable
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+  build-profiles:
+    name: Validate ${{ matrix.name }} profile
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: CLI core
+            cargo_args: --no-default-features
+          - name: TUI
+            cargo_args: --no-default-features --features tui
+          - name: Web
+            cargo_args: --no-default-features --features web
+          - name: TUI and Web
+            cargo_args: --no-default-features --features tui,web
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Select current stable Rust
+        run: rustup update stable && rustup default stable
+
+      - name: Run strict Clippy
+        run: cargo clippy --locked ${{ matrix.cargo_args }} --all-targets -- -D warnings
+
+      - name: Run profile tests
+        run: cargo test --locked ${{ matrix.cargo_args }} --lib --bins
+
+      - name: Build profile binaries
+        run: cargo build --locked ${{ matrix.cargo_args }} --bins
