@@ -945,6 +945,9 @@ impl App {
                 if self.page == Page::Budgets {
                     self.budget = None;
                 }
+                if self.page == Page::Reports {
+                    self.report = None;
+                }
             }
             Focus::Transactions => {
                 let count = match self.page {
@@ -974,6 +977,9 @@ impl App {
                 self.selected_transaction = 0;
                 if self.page == Page::Budgets {
                     self.budget = None;
+                }
+                if self.page == Page::Reports {
+                    self.report = None;
                 }
             }
             Focus::Transactions => {
@@ -1100,6 +1106,7 @@ impl App {
             KeyCode::Char('3') => {
                 self.page = Page::Reports;
                 self.focus = Focus::Accounts;
+                self.report = None;
                 Action::Continue
             }
             KeyCode::Char('4') => {
@@ -1894,7 +1901,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             "1 ledger  2 activity  3 reports  4 budgets  5 transfers  ↑/k ↓/j account  c category  s summary  t trend  r refresh  q quit"
         }
         Page::Budgets => {
-            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete  q quit"
+            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete  r refresh  q quit"
         }
         Page::Transfers => {
             "1 ledger  2 activity  3 reports  4 budgets  5 transfers  Tab focus  ↑/k ↓/j move  n new  e edit  d delete  r refresh  q quit"
