@@ -2342,24 +2342,22 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_mode(frame, app);
 }
 
+/// Footer hints shared by every page. These mirror the global key handling
+/// in `App::handle_key` (page keys 1-5, `r` reload, `q` quit); keeping them
+/// in one place prevents per-page help from drifting away from the actual
+/// behavior, which is how the Budgets page lost its `r refresh` hint.
+const PAGE_NAVIGATION_HINTS: &str = "1 ledger  2 activity  3 reports  4 budgets  5 transfers";
+const GLOBAL_HINTS: &str = "r refresh  q quit";
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let shortcuts = match app.page() {
-        Page::Ledger => {
-            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  ↑/k ↓/j move  a account  n transaction  e edit  d delete  r refresh  q quit"
-        }
-        Page::Activity => {
-            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  ↑/k ↓/j account  r refresh  q quit"
-        }
-        Page::Reports => {
-            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  ↑/k ↓/j account  c category  s summary  t trend  r refresh  q quit"
-        }
-        Page::Budgets => {
-            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete  r refresh  q quit"
-        }
-        Page::Transfers => {
-            "1 ledger  2 activity  3 reports  4 budgets  5 transfers  Tab focus  ↑/k ↓/j move  n new  e edit  d delete  r refresh  q quit"
-        }
+    let page_hints = match app.page() {
+        Page::Ledger => "↑/k ↓/j move  a account  n transaction  e edit  d delete",
+        Page::Activity => "↑/k ↓/j account",
+        Page::Reports => "↑/k ↓/j account  c category  s summary  t trend",
+        Page::Budgets => "Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete",
+        Page::Transfers => "Tab focus  ↑/k ↓/j move  n new  e edit  d delete",
     };
+    let shortcuts = format!("{PAGE_NAVIGATION_HINTS}  {page_hints}  {GLOBAL_HINTS}");
     let mut lines = vec![Line::from(shortcuts)];
     if let Some(status) = &app.status {
         lines.push(Line::styled(
