@@ -91,6 +91,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+
       - name: Download packaged CLIs
         uses: actions/download-artifact@v8
         with:
