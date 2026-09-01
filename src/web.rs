@@ -19,7 +19,7 @@ use crate::{
             ManageTransferError, TransferChanges, create_transfer, delete_transfer, get_transfer,
             list_account_transfers, update_transfer,
         },
-        monthly_trend::get_monthly_trend,
+        monthly_trend::{MonthlyTrendError, get_monthly_trend},
         ranged_summary::get_ranged_summary,
         record_transaction::record_transaction,
     },
@@ -473,9 +473,7 @@ async fn reports(
             let to = parse_budget_month(to)?;
             let trends =
                 get_monthly_trend(&accounts, &transactions, account_id, from, to, time_zone)
-                    .map_err(|error| {
-                        WebError::bad_request(format!("Could not build trend: {error:?}"))
-                    })?;
+                    .map_err(map_trend_error)?;
             let statuses = get_budget_statuses(
                 &accounts,
                 &transactions,
@@ -608,6 +606,19 @@ async fn reports(
     );
 
     Ok(Html(page("Reports", &content)))
+}
+
+/// The application layer owns the `from <= to` rule; the web layer only turns
+/// the existing error into a message the user can act on.
+fn map_trend_error(error: MonthlyTrendError) -> WebError {
+    match error {
+        MonthlyTrendError::InvalidRange { from, to } => WebError::bad_request(format!(
+            "The report start ({}) must be on or before the end ({}).",
+            format_budget_month(from),
+            format_budget_month(to)
+        )),
+        other => WebError::bad_request(format!("Could not build trend: {other:?}")),
+    }
 }
 
 async fn data_tools(State(state): State<WebState>) -> Result<Html<String>, WebError> {
@@ -1232,7 +1243,8 @@ async fn transfer_edit(
         source_name = escape_html(source.name()),
         transfer_id = transfer.id().value(),
         source_options = account_options(&all_accounts, Some(destination.id()), Some(source.id())),
-        destination_options = account_options(&all_accounts, Some(source.id()), Some(destination.id())),
+        destination_options =
+            account_options(&all_accounts, Some(source.id()), Some(destination.id())),
         source_currency = currency_code(source.currency()),
         destination_currency = currency_code(destination.currency()),
         source_amount = format_major_input(transfer.source_amount().minor_units()),
@@ -2442,6 +2454,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reports_reject_a_reversed_range_with_a_clear_message() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = WebState::new(temp_dir.path().join("web.db"));
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: String::from("Cash"),
+                currency: String::from("CNY"),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let error = reports(
+            State(state),
+            Query(ReportQuery {
+                account_id: Some(1),
+                from: Some(String::from("2026-12")),
+                to: Some(String::from("2026-01")),
+                time_zone: Some(String::from("Asia/Shanghai")),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("must be on or before"));
+    }
+
+    #[tokio::test]
     async fn data_tools_export_link_and_atomic_csv_import_work() {
         let temp_dir = tempfile::tempdir().unwrap();
         let state = WebState::new(temp_dir.path().join("web.db"));
@@ -2683,10 +2725,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            response
-                .headers()
-                .get("content-security-policy")
-                .unwrap(),
+            response.headers().get("content-security-policy").unwrap(),
             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
         );
         assert_eq!(
