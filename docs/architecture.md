@@ -13,6 +13,14 @@ The project remains a single crate while the shared core is small. The CLI,
 TUI, and Web UI call the same application use cases instead of duplicating
 business rules.
 
+Cargo features preserve that interface boundary at build time. The `tui`
+feature enables the terminal module, binary, and Crossterm/Ratatui dependencies;
+the `web` feature enables the HTTP module, binary, and Axum/Tokio dependencies.
+Both features are enabled by default for development compatibility, while
+release builds explicitly select `tui`, `web`, or both. The CLI and shared
+application, domain, and infrastructure layers compile without either interface
+feature.
+
 The Axum Web interface lives in the `src/web/` module directory, with its
 executable entry point in `src/bin/ledger_web.rs`. Its state contains only the
 SQLite path. Each request opens repository adapters for that path and then calls

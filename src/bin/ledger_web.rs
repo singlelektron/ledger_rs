@@ -3,7 +3,7 @@ use ledger_rs::web;
 use std::{io, net::SocketAddr, path::PathBuf};
 
 #[derive(Debug, Parser)]
-#[command(about = "Run the ledger_rs local Web UI")]
+#[command(name = "ledger_web", version, about = "Run the ledger_rs local Web UI")]
 struct WebCli {
     #[arg(long, default_value = "ledger.db")]
     database: PathBuf,

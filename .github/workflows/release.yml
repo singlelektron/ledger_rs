@@ -1,0 +1,242 @@
+name: Release Interface Variant
+
+on:
+  push:
+    tags:
+      - "tui-v*"
+      - "web-v*"
+      - "tui-web-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-release:
+    name: Resolve release configuration
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      display_name: ${{ steps.release.outputs.display_name }}
+      features: ${{ steps.release.outputs.features }}
+      latest: ${{ steps.release.outputs.latest }}
+      variant: ${{ steps.release.outputs.variant }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+
+      - name: Resolve and verify release tag
+        id: release
+        shell: bash
+        run: |
+          case "$GITHUB_REF_NAME" in
+            tui-web-v*)
+              variant="tui-web"
+              version="${GITHUB_REF_NAME#tui-web-v}"
+              features="tui,web"
+              display_name="TUI and Web"
+              latest="true"
+              ;;
+            tui-v*)
+              variant="tui"
+              version="${GITHUB_REF_NAME#tui-v}"
+              features="tui"
+              display_name="TUI"
+              latest="false"
+              ;;
+            web-v*)
+              variant="web"
+              version="${GITHUB_REF_NAME#web-v}"
+              features="web"
+              display_name="Web"
+              latest="false"
+              ;;
+            *)
+              echo "Unsupported release tag: $GITHUB_REF_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          package_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          test -n "$package_version"
+          test "$version" = "$package_version"
+
+          echo "display_name=$display_name" >> "$GITHUB_OUTPUT"
+          echo "features=$features" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "variant=$variant" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build-release:
+    name: Build ${{ needs.resolve-release.outputs.display_name }} (${{ matrix.target }})
+    needs: resolve-release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+    env:
+      CARGO_TERM_COLOR: always
+      FEATURES: ${{ needs.resolve-release.outputs.features }}
+      VARIANT: ${{ needs.resolve-release.outputs.variant }}
+      VERSION: ${{ needs.resolve-release.outputs.version }}
+      ASSET_NAME: ledger_rs-${{ needs.resolve-release.outputs.variant }}-v${{ needs.resolve-release.outputs.version }}-${{ matrix.target }}
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+
+      - name: Select current stable Rust
+        run: rustup update stable && rustup default stable
+        shell: bash
+
+      - name: Verify runner target
+        shell: bash
+        run: |
+          rust_host=$(rustc -vV | sed -n 's/^host: //p')
+          test "$rust_host" = "${{ matrix.target }}"
+
+      - name: Test release profile
+        shell: bash
+        run: cargo test --locked --no-default-features --features "$FEATURES" --lib --bins
+
+      - name: Build release binaries
+        shell: bash
+        run: cargo build --release --locked --no-default-features --features "$FEATURES" --bins
+
+      - name: Verify binary versions
+        shell: bash
+        run: |
+          executable_suffix=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            executable_suffix=".exe"
+          fi
+
+          test "$(target/release/ledger_rs${executable_suffix} --version)" = "ledger_rs $VERSION"
+          case "$VARIANT" in
+            tui)
+              test "$(target/release/ledger_tui${executable_suffix} --version)" = "ledger_tui $VERSION"
+              ;;
+            web)
+              test "$(target/release/ledger_web${executable_suffix} --version)" = "ledger_web $VERSION"
+              ;;
+            tui-web)
+              test "$(target/release/ledger_tui${executable_suffix} --version)" = "ledger_tui $VERSION"
+              test "$(target/release/ledger_web${executable_suffix} --version)" = "ledger_web $VERSION"
+              ;;
+          esac
+
+      - name: Package Unix release
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir "$ASSET_NAME"
+          cp target/release/ledger_rs "$ASSET_NAME/"
+          case "$VARIANT" in
+            tui)
+              cp target/release/ledger_tui "$ASSET_NAME/"
+              ;;
+            web)
+              cp target/release/ledger_web "$ASSET_NAME/"
+              ;;
+            tui-web)
+              cp target/release/ledger_tui target/release/ledger_web "$ASSET_NAME/"
+              ;;
+          esac
+          cp README.md "$ASSET_NAME/"
+          tar -czf "$ASSET_NAME.tar.gz" "$ASSET_NAME"
+
+      - name: Package Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path $env:ASSET_NAME
+          Copy-Item target/release/ledger_rs.exe "$env:ASSET_NAME/"
+          switch ($env:VARIANT) {
+            "tui" {
+              Copy-Item target/release/ledger_tui.exe "$env:ASSET_NAME/"
+            }
+            "web" {
+              Copy-Item target/release/ledger_web.exe "$env:ASSET_NAME/"
+            }
+            "tui-web" {
+              Copy-Item target/release/ledger_tui.exe "$env:ASSET_NAME/"
+              Copy-Item target/release/ledger_web.exe "$env:ASSET_NAME/"
+            }
+          }
+          Copy-Item README.md "$env:ASSET_NAME/"
+          Compress-Archive -Path $env:ASSET_NAME -DestinationPath "$env:ASSET_NAME.zip"
+
+      - name: Upload packaged release
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.resolve-release.outputs.variant }}-${{ matrix.target }}
+          path: ${{ env.ASSET_NAME }}.${{ matrix.archive }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish-release:
+    name: Publish ${{ needs.resolve-release.outputs.display_name }} release
+    needs:
+      - resolve-release
+      - build-release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      DISPLAY_NAME: ${{ needs.resolve-release.outputs.display_name }}
+      LATEST: ${{ needs.resolve-release.outputs.latest }}
+      VARIANT: ${{ needs.resolve-release.outputs.variant }}
+      VERSION: ${{ needs.resolve-release.outputs.version }}
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+
+      - name: Download packaged releases
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum ledger_rs-"$VARIANT"-v"$VERSION"-* > SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          latest_argument="--latest=false"
+          if [ "$LATEST" = "true" ]; then
+            latest_argument="--latest"
+          fi
+
+          notes="Prebuilt $DISPLAY_NAME distribution for ledger_rs v$VERSION. Every archive includes the ledger_rs CLI and README.md. Verify the downloaded archive against SHA256SUMS before running it."
+
+          gh release create "$GITHUB_REF_NAME" \
+            dist/ledger_rs-"$VARIANT"-v"$VERSION"-* \
+            dist/SHA256SUMS \
+            --verify-tag \
+            --title "ledger_rs $DISPLAY_NAME v$VERSION" \
+            --notes "$notes" \
+            "$latest_argument"

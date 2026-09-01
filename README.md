@@ -103,7 +103,7 @@ SQLite persistence layer are implemented and tested:
 - A local-only, server-rendered Web workspace with account, transaction,
   transfer, and budget management; filtering; trend, range, category, and
   budget reports; CSV exchange; and JSON backup/empty-ledger restore
-- 290 passing unit and workflow tests, including a shared in-memory/SQLite
+- 292 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract, a complete CLI backup/restore scenario, Web form
   workflows, and an append-only audit trail
 
@@ -606,19 +606,44 @@ version are rejected explicitly.
 
 ## Running a Prebuilt Binary
 
-Release artifacts can contain the compiled `ledger_rs` executable without a
-Rust installation or any separate SQLite library. After extracting an artifact,
-show the available commands:
+Version 0.2.0 is prepared as three independent GitHub Releases. Each release
+provides one archive per supported target (Linux x86-64, Windows x86-64, macOS
+Intel, and macOS Apple Silicon) plus a `SHA256SUMS` file:
+
+| Tag | Archive prefix | Included executables | Latest |
+| --- | --- | --- | --- |
+| `tui-v0.2.0` | `ledger_rs-tui-v0.2.0-` | `ledger_rs`, `ledger_tui` | No |
+| `web-v0.2.0` | `ledger_rs-web-v0.2.0-` | `ledger_rs`, `ledger_web` | No |
+| `tui-web-v0.2.0` | `ledger_rs-tui-web-v0.2.0-` | `ledger_rs`, `ledger_tui`, `ledger_web` | Yes |
+
+All archives contain `README.md`. They run without a Rust installation or a
+separate SQLite library because SQLite is bundled into the executables. Verify
+the archive against the release's `SHA256SUMS` before extracting it.
+
+Show the CLI commands after extracting any variant:
 
 ```bash
 ./ledger_rs --help
 ```
 
-On Windows, run `ledger_rs.exe --help` instead. The executable reports its
-release version with `ledger_rs --version`.
+The TUI and combined variants start the terminal interface with:
 
-Unless `--database PATH` is supplied, the application stores its SQLite database
-in the current user's platform data directory:
+```bash
+./ledger_tui
+```
+
+The Web and combined variants start the local server with:
+
+```bash
+./ledger_web
+```
+
+Then open `http://127.0.0.1:3000`. On Windows, append `.exe` to executable
+names. Every executable accepts `--help` and `--version` without starting its
+interactive interface or server.
+
+Unless `--database PATH` is supplied, the CLI and TUI store their SQLite
+database in the current user's platform data directory:
 
 | Platform | Default database path |
 | --- | --- |
@@ -649,10 +674,28 @@ permissions selected by the user and operating system.
 
 The database is user data and must not be placed inside a release artifact;
 replacing the executable therefore does not replace or delete the ledger.
+The Web executable defaults to `ledger.db` in its launch directory, so pass
+`--database PATH` when it should open the same file as another interface.
 
 ## Local Development
 
 Install a stable Rust toolchain that supports Rust 2024 edition.
+
+The default Cargo feature set enables both interactive interfaces, preserving
+the usual `cargo build`, `cargo test`, and `cargo run --bin ...` workflow. To
+compile only one interface and its dependencies, disable default features and
+select the corresponding build profile:
+
+```bash
+cargo build --no-default-features --features tui --bins
+cargo build --no-default-features --features web --bins
+cargo build --no-default-features --features tui,web --bins
+```
+
+Every profile includes the `ledger_rs` CLI. The `tui` profile additionally
+builds `ledger_tui`, the `web` profile builds `ledger_web`, and the combined
+profile builds all three executables. A core-only CLI build remains available
+with `cargo build --no-default-features --bin ledger_rs`.
 
 Start the local Web UI with the default `ledger.db` database:
 

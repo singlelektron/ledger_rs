@@ -2450,7 +2450,6 @@ mod tests {
                         kind,
                         from,
                         to,
-                        time_zone: _,
                         ..
                     },
             } => {
