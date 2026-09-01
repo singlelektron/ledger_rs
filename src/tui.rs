@@ -2,6 +2,7 @@ use crate::{
     application::{
         account_activity::{AccountActivity, AccountActivityError, list_account_activity},
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
+        category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
         list_accounts::{ListAccountsError, list_accounts},
         list_transactions::{ListTransactionsError, TransactionFilter, list_account_transactions},
@@ -9,6 +10,8 @@ use crate::{
         manage_transaction::{
             ManageTransactionError, TransactionChanges, delete_transaction, update_transaction,
         },
+        monthly_trend::{MonthlyTrend, MonthlyTrendError, get_monthly_trend},
+        ranged_summary::{GetRangedSummaryError, get_ranged_summary},
         record_transaction::{RecordTransactionError, record_transaction},
         repository::{
             AccountRepository, BudgetRepository, TransactionRepository, TransferRepository,
@@ -16,13 +19,16 @@ use crate::{
     },
     domain::{
         account::{Account, AccountId},
+        budget::BudgetMonth,
         money::{Currency, Money},
+        summary::SummaryReport,
         transaction::{
             Category, NewTransaction, Transaction, TransactionError, TransactionId, TransactionKind,
         },
     },
 };
 use crossterm::event::KeyCode;
+use jiff::ToSpan;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -100,6 +106,7 @@ pub struct App {
     page: Page,
     mode: Mode,
     status: Option<Status>,
+    report: Option<ReportResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +133,7 @@ pub enum Action {
     DeleteTransaction {
         id: TransactionId,
     },
+    RunReport(ReportRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +146,7 @@ pub enum Focus {
 pub enum Page {
     Ledger,
     Activity,
+    Reports,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +156,8 @@ enum Mode {
     ConfirmDeleteAccount(AccountId),
     TransactionForm(TransactionForm),
     ConfirmDeleteTransaction(TransactionId),
+    SummaryReportForm(SummaryReportForm),
+    TrendReportForm(TrendReportForm),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,15 +342,147 @@ pub fn execute_action(
             delete_transaction(transaction_repository, id)?;
             "Deleted transaction".to_string()
         }
-        Action::Continue | Action::Reload | Action::Quit => return Ok(None),
+        Action::Continue | Action::Reload | Action::Quit | Action::RunReport(_) => return Ok(None),
     };
     Ok(Some(message))
+}
+
+pub fn execute_report(
+    request: ReportRequest,
+    account_repository: &impl AccountRepository,
+    transaction_repository: &impl TransactionRepository,
+) -> Result<ReportResult, ReportError> {
+    match request {
+        ReportRequest::Category { account_id } => {
+            let values =
+                get_net_outflow_by_category(account_repository, transaction_repository, account_id)
+                    .map_err(ReportError::Category)?;
+            let mut values = values.into_iter().collect::<Vec<_>>();
+            values.sort_by_key(|(category, _)| category_label(*category));
+            Ok(ReportResult::Category(values))
+        }
+        ReportRequest::Summary {
+            account_id,
+            from,
+            to,
+        } => {
+            let from_value = from
+                .parse()
+                .map_err(|_| ReportError::InvalidOccurredAt(from.clone()))?;
+            let to_value = to
+                .parse()
+                .map_err(|_| ReportError::InvalidOccurredAt(to.clone()))?;
+            let report = get_ranged_summary(
+                account_repository,
+                transaction_repository,
+                account_id,
+                from_value,
+                to_value,
+            )
+            .map_err(ReportError::Summary)?;
+            Ok(ReportResult::Summary { from, to, report })
+        }
+        ReportRequest::Trend {
+            account_id,
+            from,
+            to,
+            time_zone,
+        } => {
+            let from_month = parse_budget_month(&from)?;
+            let to_month = parse_budget_month(&to)?;
+            let rows = get_monthly_trend(
+                account_repository,
+                transaction_repository,
+                account_id,
+                from_month,
+                to_month,
+                &time_zone,
+            )
+            .map_err(ReportError::Trend)?;
+            Ok(ReportResult::Trend(rows))
+        }
+    }
+}
+
+fn parse_budget_month(input: &str) -> Result<BudgetMonth, ReportError> {
+    let (year, month) = input
+        .split_once('-')
+        .ok_or_else(|| ReportError::InvalidMonth(input.to_string()))?;
+    let year = year
+        .parse::<i32>()
+        .map_err(|_| ReportError::InvalidMonth(input.to_string()))?;
+    let month = month
+        .parse::<u8>()
+        .map_err(|_| ReportError::InvalidMonth(input.to_string()))?;
+    BudgetMonth::new(year, month).map_err(|_| ReportError::InvalidMonth(input.to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Status {
     message: String,
     is_error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReportRequest {
+    Category {
+        account_id: AccountId,
+    },
+    Summary {
+        account_id: AccountId,
+        from: String,
+        to: String,
+    },
+    Trend {
+        account_id: AccountId,
+        from: String,
+        to: String,
+        time_zone: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReportResult {
+    Category(Vec<(Category, Money)>),
+    Summary {
+        from: String,
+        to: String,
+        report: SummaryReport,
+    },
+    Trend(Vec<MonthlyTrend>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReportError {
+    InvalidOccurredAt(String),
+    InvalidMonth(String),
+    Category(GetCategoryReportError),
+    Summary(GetRangedSummaryError),
+    Trend(MonthlyTrendError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportField {
+    From,
+    To,
+    TimeZone,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SummaryReportForm {
+    account_id: AccountId,
+    from: String,
+    to: String,
+    field: ReportField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrendReportForm {
+    account_id: AccountId,
+    from: String,
+    to: String,
+    time_zone: String,
+    field: ReportField,
 }
 
 impl App {
@@ -386,6 +529,7 @@ impl App {
             page: Page::Ledger,
             mode: Mode::Browse,
             status: None,
+            report: None,
         })
     }
 
@@ -425,6 +569,14 @@ impl App {
         self.status = Some(Status {
             message: message.into(),
             is_error,
+        });
+    }
+
+    pub fn set_report(&mut self, report: ReportResult) {
+        self.report = Some(report);
+        self.status = Some(Status {
+            message: "Report loaded".to_string(),
+            is_error: false,
         });
     }
 
@@ -504,6 +656,16 @@ impl App {
                     }
                 };
             }
+            Mode::SummaryReportForm(form) => {
+                let (mode, action) = handle_summary_report_form_key(form, key);
+                self.mode = mode;
+                return action;
+            }
+            Mode::TrendReportForm(form) => {
+                let (mode, action) = handle_trend_report_form_key(form, key);
+                self.mode = mode;
+                return action;
+            }
             Mode::Browse => {}
         }
 
@@ -519,7 +681,38 @@ impl App {
                 self.focus = Focus::Accounts;
                 Action::Continue
             }
-            KeyCode::Char('a') => {
+            KeyCode::Char('3') => {
+                self.page = Page::Reports;
+                self.focus = Focus::Accounts;
+                Action::Continue
+            }
+            KeyCode::Char('c') if self.page == Page::Reports => self
+                .selected_account()
+                .map(|account| {
+                    Action::RunReport(ReportRequest::Category {
+                        account_id: account.account().id(),
+                    })
+                })
+                .unwrap_or(Action::Continue),
+            KeyCode::Char('s') if self.page == Page::Reports => {
+                if let Some(account_id) = self
+                    .selected_account()
+                    .map(|account| account.account().id())
+                {
+                    self.mode = Mode::SummaryReportForm(default_summary_form(account_id));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('t') if self.page == Page::Reports => {
+                if let Some(account_id) = self
+                    .selected_account()
+                    .map(|account| account.account().id())
+                {
+                    self.mode = Mode::TrendReportForm(default_trend_form(account_id));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('a') if self.page == Page::Ledger => {
                 self.mode = Mode::AccountForm(AccountForm {
                     kind: AccountFormKind::Create,
                     name: String::new(),
@@ -528,7 +721,7 @@ impl App {
                 });
                 Action::Continue
             }
-            KeyCode::Char('n') => {
+            KeyCode::Char('n') if self.page == Page::Ledger => {
                 if let Some(account) = self.selected_account().map(AccountOverview::account) {
                     self.mode = Mode::TransactionForm(TransactionForm {
                         form_kind: TransactionFormKind::Create,
@@ -544,7 +737,7 @@ impl App {
                 }
                 Action::Continue
             }
-            KeyCode::Char('e') if self.focus == Focus::Accounts => {
+            KeyCode::Char('e') if self.page == Page::Ledger && self.focus == Focus::Accounts => {
                 if let Some(account) = self.selected_account().map(AccountOverview::account) {
                     self.mode = Mode::AccountForm(AccountForm {
                         kind: AccountFormKind::Rename(account.id()),
@@ -555,7 +748,9 @@ impl App {
                 }
                 Action::Continue
             }
-            KeyCode::Char('e') if self.focus == Focus::Transactions => {
+            KeyCode::Char('e')
+                if self.page == Page::Ledger && self.focus == Focus::Transactions =>
+            {
                 if let Some(transaction) = self.selected_transaction() {
                     self.mode = Mode::TransactionForm(TransactionForm {
                         form_kind: TransactionFormKind::Edit(transaction.id()),
@@ -571,7 +766,7 @@ impl App {
                 }
                 Action::Continue
             }
-            KeyCode::Char('d') if self.focus == Focus::Accounts => {
+            KeyCode::Char('d') if self.page == Page::Ledger && self.focus == Focus::Accounts => {
                 if let Some(id) = self
                     .selected_account()
                     .map(|account| account.account().id())
@@ -580,7 +775,9 @@ impl App {
                 }
                 Action::Continue
             }
-            KeyCode::Char('d') if self.focus == Focus::Transactions => {
+            KeyCode::Char('d')
+                if self.page == Page::Ledger && self.focus == Focus::Transactions =>
+            {
                 if let Some(id) = self.selected_transaction().map(Transaction::id) {
                     self.mode = Mode::ConfirmDeleteTransaction(id);
                 }
@@ -656,6 +853,112 @@ fn handle_account_form_key(mut form: AccountForm, key: KeyCode) -> (Mode, Action
         _ => Action::Continue,
     };
     (Mode::AccountForm(form), action)
+}
+
+fn default_summary_form(account_id: AccountId) -> SummaryReportForm {
+    let to = jiff::Zoned::now();
+    let from = to.checked_sub(30.days()).unwrap_or_else(|_| to.clone());
+    SummaryReportForm {
+        account_id,
+        from: from.to_string(),
+        to: to.to_string(),
+        field: ReportField::From,
+    }
+}
+
+fn default_trend_form(account_id: AccountId) -> TrendReportForm {
+    let now = jiff::Zoned::now();
+    let month = format!("{:04}-{:02}", now.year(), now.month());
+    let time_zone = now.time_zone().iana_name().unwrap_or("UTC").to_string();
+    TrendReportForm {
+        account_id,
+        from: month.clone(),
+        to: month,
+        time_zone,
+        field: ReportField::From,
+    }
+}
+
+fn handle_summary_report_form_key(mut form: SummaryReportForm, key: KeyCode) -> (Mode, Action) {
+    match key {
+        KeyCode::Esc => return (Mode::Browse, Action::Continue),
+        KeyCode::Enter => {
+            return (
+                Mode::Browse,
+                Action::RunReport(ReportRequest::Summary {
+                    account_id: form.account_id,
+                    from: form.from,
+                    to: form.to,
+                }),
+            );
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            form.field = match form.field {
+                ReportField::From => ReportField::To,
+                ReportField::To | ReportField::TimeZone => ReportField::From,
+            };
+        }
+        KeyCode::Delete => active_summary_text(&mut form).clear(),
+        KeyCode::Backspace => {
+            active_summary_text(&mut form).pop();
+        }
+        KeyCode::Char(character) => active_summary_text(&mut form).push(character),
+        _ => {}
+    }
+    (Mode::SummaryReportForm(form), Action::Continue)
+}
+
+fn active_summary_text(form: &mut SummaryReportForm) -> &mut String {
+    match form.field {
+        ReportField::From => &mut form.from,
+        ReportField::To | ReportField::TimeZone => &mut form.to,
+    }
+}
+
+fn handle_trend_report_form_key(mut form: TrendReportForm, key: KeyCode) -> (Mode, Action) {
+    match key {
+        KeyCode::Esc => return (Mode::Browse, Action::Continue),
+        KeyCode::Enter => {
+            return (
+                Mode::Browse,
+                Action::RunReport(ReportRequest::Trend {
+                    account_id: form.account_id,
+                    from: form.from,
+                    to: form.to,
+                    time_zone: form.time_zone,
+                }),
+            );
+        }
+        KeyCode::Tab => {
+            form.field = match form.field {
+                ReportField::From => ReportField::To,
+                ReportField::To => ReportField::TimeZone,
+                ReportField::TimeZone => ReportField::From,
+            };
+        }
+        KeyCode::BackTab => {
+            form.field = match form.field {
+                ReportField::From => ReportField::TimeZone,
+                ReportField::To => ReportField::From,
+                ReportField::TimeZone => ReportField::To,
+            };
+        }
+        KeyCode::Delete => active_trend_text(&mut form).clear(),
+        KeyCode::Backspace => {
+            active_trend_text(&mut form).pop();
+        }
+        KeyCode::Char(character) => active_trend_text(&mut form).push(character),
+        _ => {}
+    }
+    (Mode::TrendReportForm(form), Action::Continue)
+}
+
+fn active_trend_text(form: &mut TrendReportForm) -> &mut String {
+    match form.field {
+        ReportField::From => &mut form.from,
+        ReportField::To => &mut form.to,
+        ReportField::TimeZone => &mut form.time_zone,
+    }
 }
 
 fn handle_transaction_form_key(mut form: TransactionForm, key: KeyCode) -> (Mode, Action) {
@@ -846,6 +1149,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 match app.page() {
                     Page::Ledger => "Ledger",
                     Page::Activity => "Activity",
+                    Page::Reports => "Reports",
                 },
                 Style::default().fg(Color::Magenta).bold(),
             ),
@@ -858,15 +1162,23 @@ pub fn render(frame: &mut Frame, app: &App) {
     match app.page() {
         Page::Ledger => render_transactions(frame, app, detail_area),
         Page::Activity => render_activity(frame, app, detail_area),
+        Page::Reports => render_reports(frame, app, detail_area),
     }
     render_footer(frame, app, footer_area);
     render_mode(frame, app);
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let mut lines = vec![Line::from(
-        "1 ledger  2 activity  Tab/←/→ focus  ↑/k ↓/j move  a account  n transaction  e edit  d delete  r refresh  q quit",
-    )];
+    let shortcuts = match app.page() {
+        Page::Ledger => {
+            "1 ledger  2 activity  3 reports  ↑/k ↓/j move  a account  n transaction  e edit  d delete  r refresh  q quit"
+        }
+        Page::Activity => "1 ledger  2 activity  3 reports  ↑/k ↓/j account  r refresh  q quit",
+        Page::Reports => {
+            "1 ledger  2 activity  3 reports  ↑/k ↓/j account  c category  s summary  t trend  r refresh  q quit"
+        }
+    };
+    let mut lines = vec![Line::from(shortcuts)];
     if let Some(status) = &app.status {
         lines.push(Line::styled(
             status.message.clone(),
@@ -888,6 +1200,8 @@ fn render_mode(frame: &mut Frame, app: &App) {
         Mode::Browse => {}
         Mode::AccountForm(form) => render_account_form(frame, form),
         Mode::TransactionForm(form) => render_transaction_form(frame, form),
+        Mode::SummaryReportForm(form) => render_summary_report_form(frame, form),
+        Mode::TrendReportForm(form) => render_trend_report_form(frame, form),
         Mode::ConfirmDeleteAccount(_) => {
             let area = centered_rect(frame.area(), 54, 5);
             frame.render_widget(Clear, area);
@@ -922,6 +1236,55 @@ fn render_mode(frame: &mut Frame, app: &App) {
             );
         }
     }
+}
+
+fn render_summary_report_form(frame: &mut Frame, form: &SummaryReportForm) {
+    let area = centered_rect(frame.area(), 82, 7);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(format!("Account: {}", form.account_id.value())),
+            transaction_form_line("From", form.from.clone(), form.field == ReportField::From),
+            transaction_form_line("To", form.to.clone(), form.field == ReportField::To),
+            Line::from("Use complete zoned timestamps; Tab changes field."),
+            Line::from("Delete clears text; Enter runs; Esc cancels."),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Ranged summary "),
+        ),
+        area,
+    );
+}
+
+fn render_trend_report_form(frame: &mut Frame, form: &TrendReportForm) {
+    let area = centered_rect(frame.area(), 70, 8);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(format!("Account: {}", form.account_id.value())),
+            transaction_form_line(
+                "From month",
+                form.from.clone(),
+                form.field == ReportField::From,
+            ),
+            transaction_form_line("To month", form.to.clone(), form.field == ReportField::To),
+            transaction_form_line(
+                "Time zone",
+                form.time_zone.clone(),
+                form.field == ReportField::TimeZone,
+            ),
+            Line::from("Months use YYYY-MM; Tab changes field."),
+            Line::from("Delete clears text; Enter runs; Esc cancels."),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Monthly trend "),
+        ),
+        area,
+    );
 }
 
 fn render_transaction_form(frame: &mut Frame, form: &TransactionForm) {
@@ -1166,6 +1529,130 @@ fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
             .title(format!(" Activity ({}) ", account.activity().len())),
     );
     frame.render_widget(table, area);
+}
+
+fn render_reports(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(report) = &app.report else {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from("Choose a report for the selected account:"),
+                Line::from(""),
+                Line::from("c  Category net outflow (all time)"),
+                Line::from("s  Cash-flow summary for a zoned time range"),
+                Line::from("t  Monthly cash-flow trend"),
+            ])
+            .block(Block::default().borders(Borders::ALL).title(" Reports ")),
+            area,
+        );
+        return;
+    };
+
+    match report {
+        ReportResult::Category(values) => render_category_report(frame, values, area),
+        ReportResult::Summary { from, to, report } => {
+            render_summary_report(frame, from, to, report, area)
+        }
+        ReportResult::Trend(rows) => render_trend_report(frame, rows, area),
+    }
+}
+
+fn render_category_report(frame: &mut Frame, values: &[(Category, Money)], area: Rect) {
+    let rows = values.iter().map(|(category, amount)| {
+        Row::new([
+            Cell::from(category_label(*category)),
+            Cell::from(format_money(amount)),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [Constraint::Percentage(55), Constraint::Percentage(45)],
+    )
+    .header(Row::new(["Category", "Net outflow"]).style(Style::default().fg(Color::Cyan).bold()))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Category report "),
+    );
+    frame.render_widget(table, area);
+}
+
+fn render_summary_report(
+    frame: &mut Frame,
+    from: &str,
+    to: &str,
+    report: &SummaryReport,
+    area: Rect,
+) {
+    let mut categories = report.net_outflow_by_category().iter().collect::<Vec<_>>();
+    categories.sort_by_key(|(category, _)| category_label(**category));
+    let mut lines = vec![
+        Line::from(format!("From: {from}")),
+        Line::from(format!("To:   {to}")),
+        Line::from(""),
+        Line::from(format!(
+            "Income total:      {}",
+            format_money(report.income_total())
+        )),
+        Line::from(format!(
+            "Net expense total: {}",
+            format_money(report.net_expense_total())
+        )),
+        Line::from(format!(
+            "Net change:        {}",
+            format_money(report.net_change())
+        )),
+        Line::from(""),
+        Line::styled("Net outflow by category", Style::default().bold()),
+    ];
+    lines.extend(categories.into_iter().map(|(category, amount)| {
+        Line::from(format!(
+            "{:<18} {}",
+            category_label(*category),
+            format_money(amount)
+        ))
+    }));
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Ranged summary "),
+        ),
+        area,
+    );
+}
+
+fn render_trend_report(frame: &mut Frame, rows: &[MonthlyTrend], area: Rect) {
+    let rows = rows.iter().map(|row| {
+        Row::new([
+            Cell::from(format_budget_month(row.month)),
+            Cell::from(format_money(row.summary.income_total())),
+            Cell::from(format_money(row.summary.net_expense_total())),
+            Cell::from(format_money(row.summary.net_change())),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(9),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+        ],
+    )
+    .header(
+        Row::new(["Month", "Income", "Net expense", "Net change"])
+            .style(Style::default().fg(Color::Cyan).bold()),
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Monthly trend "),
+    );
+    frame.render_widget(table, area);
+}
+
+fn format_budget_month(month: BudgetMonth) -> String {
+    format!("{:04}-{:02}", month.year(), month.month())
 }
 
 fn focus_border(focused: bool) -> Style {
@@ -1486,6 +1973,138 @@ mod tests {
         assert!(screen.contains("Transfer out"));
         assert!(screen.contains("-1.00 CNY"));
         assert!(screen.contains("Salary"));
+    }
+
+    #[test]
+    fn report_page_emits_category_summary_and_trend_requests() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('3'));
+        assert_eq!(app.page(), Page::Reports);
+        assert_eq!(
+            app.handle_key(KeyCode::Char('c')),
+            Action::RunReport(ReportRequest::Category {
+                account_id: account.id()
+            })
+        );
+        app.handle_key(KeyCode::Char('s'));
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::RunReport(ReportRequest::Summary { account_id, .. })
+                if account_id == account.id()
+        ));
+        app.handle_key(KeyCode::Char('t'));
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::RunReport(ReportRequest::Trend { account_id, .. })
+                if account_id == account.id()
+        ));
+    }
+
+    #[test]
+    fn executes_and_renders_existing_report_use_cases() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let account = Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap();
+        accounts.save(account.clone()).unwrap();
+        for (id, kind, amount, description, category) in [
+            (
+                1,
+                TransactionKind::Income,
+                1_000,
+                "Salary",
+                Category::Salary,
+            ),
+            (2, TransactionKind::Expense, 200, "Lunch", Category::Food),
+        ] {
+            transactions
+                .save(
+                    Transaction::new(
+                        TransactionId::new(id),
+                        account.id(),
+                        kind,
+                        Money::from_minor_units(amount, Currency::Cny),
+                        "2026-08-15T12:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                        description.to_string(),
+                        category,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let category = execute_report(
+            ReportRequest::Category {
+                account_id: account.id(),
+            },
+            &accounts,
+            &transactions,
+        )
+        .unwrap();
+        let ReportResult::Category(values) = category else {
+            panic!("expected category report");
+        };
+        assert_eq!(
+            values
+                .iter()
+                .find(|(category, _)| *category == Category::Food)
+                .unwrap()
+                .1
+                .minor_units(),
+            200
+        );
+
+        let summary = execute_report(
+            ReportRequest::Summary {
+                account_id: account.id(),
+                from: "2026-08-01T00:00:00+08:00[Asia/Shanghai]".to_string(),
+                to: "2026-09-01T00:00:00+08:00[Asia/Shanghai]".to_string(),
+            },
+            &accounts,
+            &transactions,
+        )
+        .unwrap();
+        let ReportResult::Summary { report, .. } = &summary else {
+            panic!("expected summary report");
+        };
+        assert_eq!(report.income_total().minor_units(), 1_000);
+        assert_eq!(report.net_expense_total().minor_units(), 200);
+        assert_eq!(report.net_change().minor_units(), 800);
+
+        let trend = execute_report(
+            ReportRequest::Trend {
+                account_id: account.id(),
+                from: "2026-08".to_string(),
+                to: "2026-09".to_string(),
+                time_zone: "Asia/Shanghai".to_string(),
+            },
+            &accounts,
+            &transactions,
+        )
+        .unwrap();
+        let ReportResult::Trend(rows) = trend else {
+            panic!("expected trend report");
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].summary.net_change().minor_units(), 800);
+        assert_eq!(rows[1].summary.net_change().minor_units(), 0);
+
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('3'));
+        app.set_report(summary);
+        let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Ranged summary"));
+        assert!(screen.contains("Income total"));
+        assert!(screen.contains("10.00 CNY"));
+        assert!(screen.contains("Net change"));
     }
 
     #[test]

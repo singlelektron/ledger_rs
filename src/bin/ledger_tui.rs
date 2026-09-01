@@ -2,7 +2,7 @@ use crossterm::event::{self, Event, KeyEventKind};
 use ledger_rs::{
     app_paths::{prepare_database_parent, resolve_database_path, secure_database_file},
     infrastructure::sqlite::open_complete_repositories,
-    tui::{Action, App, execute_action, render},
+    tui::{Action, App, execute_action, execute_report, render},
 };
 use std::{io, path::PathBuf};
 
@@ -54,6 +54,12 @@ fn main() -> io::Result<()> {
                         app = App::load(&accounts, &transactions, &transfers).map_err(|error| {
                             io::Error::other(format!("failed to refresh dashboard: {error:?}"))
                         })?;
+                    }
+                    Action::RunReport(request) => {
+                        match execute_report(request, &accounts, &transactions) {
+                            Ok(report) => app.set_report(report),
+                            Err(error) => app.set_status(format!("Report failed: {error:?}"), true),
+                        }
                     }
                     action => match execute_action(
                         action,
