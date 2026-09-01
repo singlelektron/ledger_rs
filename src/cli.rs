@@ -2,6 +2,7 @@ use crate::{
     app_paths::{prepare_database_parent, resolve_database_path, secure_database_file},
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
+        audit_log::{ListAuditLogError, list_recent_audit_entries},
         backup::{BackupError, create_json_backup, validate_json_backup},
         budget_report::{BudgetReportError, get_budget_statuses},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
@@ -36,7 +37,9 @@ use crate::{
         transaction::{Category, NewTransaction, TransactionError, TransactionId, TransactionKind},
         transfer::{NewTransfer, TransferError, TransferId},
     },
-    infrastructure::sqlite::{open_complete_repositories, restore_backup},
+    infrastructure::sqlite::{
+        open_audit_log_repository, open_complete_repositories, restore_backup,
+    },
 };
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
@@ -91,6 +94,10 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum DataCommand {
+    AuditLog {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
     Backup {
         #[arg(long)]
         output: PathBuf,
@@ -511,6 +518,7 @@ pub enum CliError {
     MonthlyTrend(MonthlyTrendError),
     CsvExchange(CsvExchangeError),
     Backup(BackupError),
+    ListAuditLog(ListAuditLogError),
     Io { path: PathBuf, message: String },
 }
 
@@ -625,6 +633,12 @@ impl From<CsvExchangeError> for CliError {
 impl From<BackupError> for CliError {
     fn from(error: BackupError) -> Self {
         Self::Backup(error)
+    }
+}
+
+impl From<ListAuditLogError> for CliError {
+    fn from(error: ListAuditLogError) -> Self {
+        Self::ListAuditLog(error)
     }
 }
 
@@ -1303,6 +1317,37 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
         },
 
         Command::Data { command } => match command {
+            DataCommand::AuditLog { limit } => {
+                let audit_repository = open_audit_log_repository(database.path())?;
+                let entries = list_recent_audit_entries(&audit_repository, limit)?;
+                if entries.is_empty() {
+                    return Ok("No database changes recorded".to_string());
+                }
+                Ok(entries
+                    .into_iter()
+                    .map(|entry| {
+                        let before = entry
+                            .before_state()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "-".to_string());
+                        let after = entry
+                            .after_state()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "-".to_string());
+                        format!(
+                            "{} | {} | {} {} | {} | before {} | after {}",
+                            entry.id(),
+                            entry.changed_at(),
+                            entry.entity().as_str(),
+                            entry.entity_id(),
+                            entry.operation().as_str(),
+                            before,
+                            after,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
             DataCommand::Backup { output } => {
                 let contents = create_json_backup(
                     &account_repository,
@@ -1428,6 +1473,26 @@ mod tests {
         let cli = Cli::try_parse_from(["ledger_rs", "account", "list"]).unwrap();
 
         assert_eq!(cli.database, None);
+    }
+
+    #[test]
+    fn parses_audit_log_limit_and_uses_default() {
+        let default = Cli::try_parse_from(["ledger_rs", "data", "audit-log"]).unwrap();
+        assert!(matches!(
+            default.command,
+            Command::Data {
+                command: DataCommand::AuditLog { limit: 50 }
+            }
+        ));
+
+        let explicit =
+            Cli::try_parse_from(["ledger_rs", "data", "audit-log", "--limit", "10"]).unwrap();
+        assert!(matches!(
+            explicit.command,
+            Command::Data {
+                command: DataCommand::AuditLog { limit: 10 }
+            }
+        ));
     }
 
     #[test]
@@ -3163,6 +3228,40 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].description(), "晚餐, \"朋友\"");
         assert_eq!(stored[0].id(), TransactionId::new(1));
+    }
+
+    #[test]
+    fn displays_recent_database_changes_with_snapshots() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let database = temp_dir.path().join("audit.db");
+        run(create_account_cli(database.clone(), 0, "Cash")).unwrap();
+        run(Cli {
+            database: Some(database.clone()),
+            command: Command::Account {
+                command: AccountCommand::Update {
+                    id: 1,
+                    name: "Wallet".to_string(),
+                },
+            },
+        })
+        .unwrap();
+
+        let output = run(Cli {
+            database: Some(database),
+            command: Command::Data {
+                command: DataCommand::AuditLog { limit: 2 },
+            },
+        })
+        .unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("2 | "));
+        assert!(lines[0].contains("| account 1 | update |"));
+        assert!(lines[0].contains(r#"before {"currency":"CNY","id":1,"name":"Cash"}"#));
+        assert!(lines[0].contains(r#"after {"currency":"CNY","id":1,"name":"Wallet"}"#));
+        assert!(lines[1].contains("1 | "));
+        assert!(lines[1].contains("| account 1 | create | before - |"));
     }
 
     #[test]

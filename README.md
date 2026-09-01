@@ -79,6 +79,8 @@ SQLite persistence layer are implemented and tested:
   for account and transaction tables with foreign-key enforcement enabled
 - Versioned, transactional SQLite schema migrations that adopt existing
   pre-migration databases without deleting their data
+- An append-only SQLite audit log that records before/after JSON snapshots for
+  account, transaction, transfer, and budget writes in the same transaction
 - A SQLite account repository that saves, queries, and lists accounts while
   reporting duplicate IDs, unsupported ID ranges, and invalid stored data
 - A SQLite transaction repository that shares its connection with the account
@@ -914,6 +916,19 @@ backup preserves account, transaction, transfer, and budget IDs as well as all
 references and original zoned timestamps. Restore validates the entire backup
 before opening one SQLite transaction and refuses any database that already
 contains ledger data.
+
+Display the 50 most recent database changes:
+
+```bash
+./ledger_rs data audit-log
+```
+
+Use `--limit N` to return between 1 and 200 entries. Results are newest first
+and include the UTC write time, entity type and ID, operation, and compact JSON
+snapshots from before and/or after the change. Audit entries are retained when
+the referenced business entity is deleted. Version 1 JSON backups contain
+business aggregates rather than prior audit history; restoring those aggregates
+creates new audit entries for the restore writes.
 
 Query the balance calculated from an account's stored transactions:
 

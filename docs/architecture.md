@@ -41,3 +41,8 @@ a storage concern.
 The in-memory and SQLite implementations run through one shared repository
 contract covering CRUD, dependency errors, and stable cursor pagination. This
 contract is the compatibility boundary future interfaces can rely on.
+
+Database audit history is exposed through a read-only application model and
+repository trait. SQLite owns trigger-based capture and stored JSON validation,
+while interfaces receive typed entity and operation values without querying SQL
+directly.

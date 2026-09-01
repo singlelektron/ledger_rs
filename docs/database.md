@@ -25,13 +25,20 @@ exists, it takes precedence. `--database` always has the highest precedence.
 Schema changes are applied sequentially using SQLite's `PRAGMA user_version`.
 Schema version 1 contains `accounts` and `transactions`; version 2 adds atomic
 transfer aggregates with foreign keys to both participating accounts; version 3
-adds monthly category budgets with a unique account/category/month scope. Databases created before
-migrations were introduced have `user_version = 0`; initialization adopts their
-existing tables, preserves their rows, and records version 1. Opening a database
-whose version is newer than the application supports is rejected.
+adds monthly category budgets with a unique account/category/month scope; version
+4 adds an append-only `audit_log` and triggers for account, transaction, transfer,
+and budget writes. Databases created before migrations were introduced have
+`user_version = 0`; initialization adopts their existing tables, preserves their
+rows, and records version 1. Opening a database whose version is newer than the
+application supports is rejected.
 
 Every migration runs in a transaction. A failed migration must leave both the
 schema version and stored data unchanged.
+
+Audit rows record the entity type and ID, operation, UTC write time, and JSON
+snapshots from before and/or after the write. The triggers run in the same SQLite
+transaction as the original write, so a rollback also removes its audit rows.
+Deleting a business entity does not delete its audit history.
 
 Account and transaction inserts omit their integer primary key and use SQLite's
 generated row ID. Explicit IDs remain an infrastructure-only capability for
@@ -44,4 +51,6 @@ or storage failure cannot leave a partially imported file.
 JSON restore is allowed only when all four data tables are empty. Version 1
 restores accounts first, followed by transactions, transfers, and budgets, with
 their original integer IDs. The empty check and every insert run in one SQLite
-transaction; any constraint or storage error rolls back the whole restore.
+transaction; any constraint or storage error rolls back the whole restore. The
+backup format does not carry earlier audit rows. Restore inserts are audited as
+new writes in the target database.
