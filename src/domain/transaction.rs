@@ -13,6 +13,12 @@ impl TransactionId {
     }
 }
 
+impl std::fmt::Display for TransactionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionKind {
     Income,
@@ -42,6 +48,15 @@ pub enum Category {
 pub enum TransactionError {
     InvalidAmount,
     EmptyDescription,
+}
+
+impl std::fmt::Display for TransactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidAmount => write!(f, "amount must be greater than zero"),
+            Self::EmptyDescription => write!(f, "description must not be empty"),
+        }
+    }
 }
 
 use crate::domain::{account::AccountId, money::Money};

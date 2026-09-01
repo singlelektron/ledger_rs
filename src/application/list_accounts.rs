@@ -8,6 +8,14 @@ pub enum ListAccountsError {
     Repository(RepositoryError),
 }
 
+impl std::fmt::Display for ListAccountsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
 impl From<RepositoryError> for ListAccountsError {
     fn from(error: RepositoryError) -> Self {
         Self::Repository(error)

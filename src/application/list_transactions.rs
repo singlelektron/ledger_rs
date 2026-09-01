@@ -18,6 +18,23 @@ pub enum ListTransactionsError {
     InvalidPageLimit { limit: usize, max: usize },
 }
 
+impl std::fmt::Display for ListTransactionsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+            Self::TimeRangeError { from, to } => write!(f, "invalid time range: {from} to {to}"),
+            Self::InvalidDescriptionFilter => write!(f, "invalid description filter"),
+            Self::InvalidAmountRange { min, max } => {
+                write!(f, "invalid amount range: {min:?} to {max:?}")
+            }
+            Self::InvalidPageLimit { limit, max } => {
+                write!(f, "invalid page limit {limit}; maximum is {max}")
+            }
+        }
+    }
+}
+
 impl From<RepositoryError> for ListTransactionsError {
     fn from(error: RepositoryError) -> Self {
         ListTransactionsError::Repository(error)

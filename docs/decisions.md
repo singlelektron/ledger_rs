@@ -21,6 +21,16 @@ migrations. This keeps file-backed databases usable as the application grows
 and makes unsupported newer databases fail explicitly instead of being opened
 with an incompatible schema.
 
+## Trigger-based database audit log
+
+SQLite triggers append before/after JSON snapshots for every account,
+transaction, transfer, and budget write. Keeping capture in the persistence
+boundary covers CLI, TUI, imports, restores, and future interfaces without
+duplicating audit calls in each use case. Trigger writes share the business
+write's transaction, so failed or rolled-back operations cannot leave misleading
+history. The log is intentionally append-only and has no foreign keys to mutable
+entities, allowing delete events and earlier snapshots to remain available.
+
 ## Shared application core
 
 CLI, TUI, and Web interfaces share domain types and application use

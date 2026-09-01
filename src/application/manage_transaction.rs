@@ -37,6 +37,21 @@ pub enum ManageTransactionError {
     Repository(RepositoryError),
 }
 
+impl std::fmt::Display for ManageTransactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TransactionNotFound(id) => write!(f, "transaction {id} not found"),
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::CurrencyMismatch { expected, found } => {
+                write!(f, "currency mismatch: expected {expected}, found {found}")
+            }
+            Self::NoChanges => write!(f, "no changes to apply"),
+            Self::Transaction(error) => write!(f, "{error}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
 impl From<TransactionError> for ManageTransactionError {
     fn from(error: TransactionError) -> Self {
         Self::Transaction(error)

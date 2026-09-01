@@ -79,6 +79,8 @@ SQLite persistence layer are implemented and tested:
   for account and transaction tables with foreign-key enforcement enabled
 - Versioned, transactional SQLite schema migrations that adopt existing
   pre-migration databases without deleting their data
+- An append-only SQLite audit log that records before/after JSON snapshots for
+  account, transaction, transfer, and budget writes in the same transaction
 - A SQLite account repository that saves, queries, and lists accounts while
   reporting duplicate IDs, unsupported ID ranges, and invalid stored data
 - A SQLite transaction repository that shares its connection with the account
@@ -91,21 +93,67 @@ SQLite persistence layer are implemented and tested:
 - A `clap`-based CLI entry point covering account, transaction, transfer,
   budget, report, and CSV data workflows, with case-insensitive enum parsing,
   configurable database paths, and nonzero exit status on application errors
+- An interactive TUI that opens the same SQLite database, shows balances
+  including transfers, manages accounts, transactions, transfers, and budgets,
+  and presents unified activity plus category, ranged-summary, and monthly-trend
+  reports through the shared application use cases
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
 - A local-only, server-rendered Web workspace with account, transaction,
   transfer, and budget management; filtering; trend, range, category, and
   budget reports; CSV exchange; and JSON backup/empty-ledger restore
-- Unit and workflow coverage including a shared in-memory/SQLite repository
-  contract, a complete CLI backup/restore scenario, and Web form workflows
+- 290 passing unit and workflow tests, including a shared in-memory/SQLite
+  repository contract, a complete CLI backup/restore scenario, Web form
+  workflows, and an append-only audit trail
 
-The shared application core is complete. In-memory and file-backed SQLite
+The shared application core, interactive TUI milestone, and local Web workspace
+are complete. In-memory and file-backed SQLite
 repositories implement the same account, transaction, transfer, budget, and
 pagination behavior. The CLI exercises all shared workflows, including CRUD,
-balances, activity, reports, CSV exchange, and full JSON recovery. The Web UI
-provides the main day-to-day and data-management workflows over the same
-application use cases in a local-only browser workspace.
+balances, activity, reports, CSV exchange, and full JSON recovery. The TUI and
+Web UI call the same application use cases for interactive account,
+transaction, transfer, budget, activity, and report workflows without
+duplicating their business rules.
+
+## TUI
+
+Start the dashboard with the platform-specific default database:
+
+```bash
+cargo run --bin ledger_tui
+```
+
+The TUI uses the same platform data directory, legacy-file compatibility, and
+file protections as the CLI. To open another database, use the shared override:
+
+```bash
+cargo run --bin ledger_tui -- --database path/to/ledger.db
+```
+
+Use number keys to switch pages: `1` for the ledger, `2` for unified activity,
+`3` for reports, `4` for budgets, and `5` for transfers. On the ledger, budgets,
+and transfers pages, use Tab or the left/right arrows to focus the account or
+detail pane, then use the up/down arrows or `k`/`j` to move the selection. The
+activity and reports pages keep focus on the account pane because their content
+is read-only.
+
+On the ledger page, press `a` to create an account and `n` to create a
+transaction. On the transfer page, `n` creates a transfer. Press `e` or `d` to
+edit or delete the focused item. The report page uses `c` for category net
+outflow, `s` for a ranged summary, and `t` for a monthly trend. The budget page
+uses `l` to list limits, `b` to set or update a monthly category limit, and `u`
+to calculate monthly usage. Forms use Tab to move between fields, arrows to
+change enum values, Delete to clear text, Enter to submit, and Escape to cancel.
+Enter validates the form first; invalid input keeps the form open with an
+inline error message so the typed values are preserved.
+Press `r` to reload data, `q` or Ctrl+C to quit. Reloading keeps the current
+page, focus, and selection instead of resetting to the ledger page.
+
+CSV exchange and full-database JSON backup/restore remain CLI batch operations.
+They require explicit file paths, and restore intentionally operates only on an
+empty target database, so keeping them outside the interactive terminal state
+machine preserves a clearer and safer recovery boundary.
 
 ## Goals
 
@@ -309,7 +357,6 @@ The shared application core now:
 
 The current scope does not include:
 
-- Full TUI workflows
 - External exchange-rate lookup or automatic currency conversion
 - Automatic time-zone detection or daylight-saving-time input resolution
 - Remote access, multi-user authentication, and data synchronization; the Web
@@ -542,6 +589,15 @@ version are rejected explicitly.
 
 - Render account activity, balances, budgets, and reports from the shared
   application layer
+- Keep terminal state and keyboard handling outside domain and repository code
+
+### Milestone 11: Interactive TUI Workflows - Completed
+
+- Render accounts, balances, transaction history, and unified transfer activity
+  from the shared application layer
+- Create, edit, and delete accounts, transactions, transfers, and budgets
+  through application use cases
+- Present category reports, ranged summaries, monthly trends, and budget status
 - Keep terminal state and keyboard handling outside domain and repository code
 
 #### Later
@@ -905,6 +961,19 @@ backup preserves account, transaction, transfer, and budget IDs as well as all
 references and original zoned timestamps. Restore validates the entire backup
 before opening one SQLite transaction and refuses any database that already
 contains ledger data.
+
+Display the 50 most recent database changes:
+
+```bash
+./ledger_rs data audit-log
+```
+
+Use `--limit N` to return between 1 and 200 entries. Results are newest first
+and include the UTC write time, entity type and ID, operation, and compact JSON
+snapshots from before and/or after the change. Audit entries are retained when
+the referenced business entity is deleted. Version 1 JSON backups contain
+business aggregates rather than prior audit history; restoring those aggregates
+creates new audit entries for the restore writes.
 
 Query the balance calculated from an account's stored transactions:
 

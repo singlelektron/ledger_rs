@@ -1,6 +1,8 @@
+use crate::application::audit_log::{AuditEntity, AuditLogEntry, AuditOperation};
 use crate::application::backup::ValidatedBackup;
 use crate::application::repository::{
-    AccountRepository, BudgetRepository, RepositoryError, TransactionRepository, TransferRepository,
+    AccountRepository, AuditLogRepository, BudgetRepository, RepositoryError,
+    TransactionRepository, TransferRepository,
 };
 use crate::domain::account::{Account, AccountId, NewAccount};
 use crate::domain::budget::{Budget, BudgetId, BudgetMonth, NewBudget};
@@ -14,7 +16,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// How long a connection waits for a lock held by another connection before
 /// failing with `SQLITE_BUSY`. The local Web UI opens a fresh connection per
@@ -224,6 +226,112 @@ pub struct SqliteTransferRepository {
 }
 pub struct SqliteBudgetRepository {
     connection: Rc<Connection>,
+}
+pub struct SqliteAuditLogRepository {
+    connection: Rc<Connection>,
+}
+
+fn audit_entity_from_code(code: &str) -> Result<AuditEntity, RepositoryError> {
+    match code {
+        "account" => Ok(AuditEntity::Account),
+        "transaction" => Ok(AuditEntity::Transaction),
+        "transfer" => Ok(AuditEntity::Transfer),
+        "budget" => Ok(AuditEntity::Budget),
+        other => Err(RepositoryError::InvalidStoredData(format!(
+            "unsupported audit entity type: {other}"
+        ))),
+    }
+}
+
+fn audit_operation_from_code(code: &str) -> Result<AuditOperation, RepositoryError> {
+    match code {
+        "create" => Ok(AuditOperation::Create),
+        "update" => Ok(AuditOperation::Update),
+        "delete" => Ok(AuditOperation::Delete),
+        other => Err(RepositoryError::InvalidStoredData(format!(
+            "unsupported audit operation: {other}"
+        ))),
+    }
+}
+
+impl AuditLogRepository for SqliteAuditLogRepository {
+    fn list_recent(&self, limit: usize) -> Result<Vec<AuditLogEntry>, RepositoryError> {
+        let limit = i64::try_from(limit).map_err(|_| RepositoryError::InvalidLimit(limit))?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, changed_at, entity_type, entity_id, operation,
+                        before_state, after_state
+                 FROM audit_log
+                 ORDER BY id DESC
+                 LIMIT ?1",
+            )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let stored = statement
+            .query_map(params![limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+
+        let mut entries = Vec::new();
+        for row in stored {
+            let (id, changed_at, entity, entity_id, operation, before_state, after_state) =
+                row.map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            let id = u64::try_from(id).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!("invalid audit log id: {id}"))
+            })?;
+            let entity_id = u64::try_from(entity_id).map_err(|_| {
+                RepositoryError::InvalidStoredData(format!(
+                    "invalid audit log entity id: {entity_id}"
+                ))
+            })?;
+            let changed_at = changed_at.parse().map_err(|error| {
+                RepositoryError::InvalidStoredData(format!(
+                    "invalid audit log changed_at: {changed_at}, error: {error}"
+                ))
+            })?;
+            let parse_state = |state: Option<String>| {
+                state
+                    .map(|value| {
+                        serde_json::from_str(&value).map_err(|error| {
+                            RepositoryError::InvalidStoredData(format!(
+                                "invalid audit log JSON snapshot: {error}"
+                            ))
+                        })
+                    })
+                    .transpose()
+            };
+            entries.push(AuditLogEntry::from_stored(
+                id,
+                changed_at,
+                audit_entity_from_code(&entity)?,
+                entity_id,
+                audit_operation_from_code(&operation)?,
+                parse_state(before_state)?,
+                parse_state(after_state)?,
+            ));
+        }
+        Ok(entries)
+    }
+}
+
+pub fn open_audit_log_repository(
+    path: impl AsRef<Path>,
+) -> Result<SqliteAuditLogRepository, RepositoryError> {
+    let connection =
+        Connection::open(path).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    initialize_schema(&connection).map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    Ok(SqliteAuditLogRepository {
+        connection: Rc::new(connection),
+    })
 }
 
 pub fn in_memory_repositories()
@@ -1306,6 +1414,182 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 4 {
+        transaction.execute_batch(
+            r#"
+            CREATE TABLE audit_log (
+                id           INTEGER PRIMARY KEY,
+                changed_at   TEXT NOT NULL DEFAULT (
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                ),
+                entity_type  TEXT NOT NULL CHECK (
+                    entity_type IN ('account', 'transaction', 'transfer', 'budget')
+                ),
+                entity_id    INTEGER NOT NULL,
+                operation    TEXT NOT NULL CHECK (
+                    operation IN ('create', 'update', 'delete')
+                ),
+                before_state TEXT,
+                after_state  TEXT,
+                CHECK (
+                    (operation = 'create' AND before_state IS NULL AND after_state IS NOT NULL)
+                    OR (operation = 'update' AND before_state IS NOT NULL AND after_state IS NOT NULL)
+                    OR (operation = 'delete' AND before_state IS NOT NULL AND after_state IS NULL)
+                )
+            );
+
+            CREATE TRIGGER protect_audit_log_update BEFORE UPDATE ON audit_log BEGIN
+                SELECT RAISE(ABORT, 'audit log is append-only');
+            END;
+            CREATE TRIGGER protect_audit_log_delete BEFORE DELETE ON audit_log BEGIN
+                SELECT RAISE(ABORT, 'audit log is append-only');
+            END;
+
+            CREATE TRIGGER audit_accounts_create AFTER INSERT ON accounts BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('account', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'name', NEW.name, 'currency', NEW.currency
+                ));
+            END;
+            CREATE TRIGGER audit_accounts_update AFTER UPDATE ON accounts BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('account', NEW.id, 'update',
+                    json_object('id', OLD.id, 'name', OLD.name, 'currency', OLD.currency),
+                    json_object('id', NEW.id, 'name', NEW.name, 'currency', NEW.currency)
+                );
+            END;
+            CREATE TRIGGER audit_accounts_delete AFTER DELETE ON accounts BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('account', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'name', OLD.name, 'currency', OLD.currency
+                ));
+            END;
+
+            CREATE TRIGGER audit_transactions_create AFTER INSERT ON transactions BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('transaction', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'account_id', NEW.account_id, 'kind', NEW.kind,
+                    'amount_minor', NEW.amount_minor, 'currency', NEW.currency,
+                    'occurred_at', NEW.occurred_at, 'description', NEW.description,
+                    'category', NEW.category
+                ));
+            END;
+            CREATE TRIGGER audit_transactions_update AFTER UPDATE ON transactions BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('transaction', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'account_id', OLD.account_id, 'kind', OLD.kind,
+                        'amount_minor', OLD.amount_minor, 'currency', OLD.currency,
+                        'occurred_at', OLD.occurred_at, 'description', OLD.description,
+                        'category', OLD.category
+                    ),
+                    json_object(
+                        'id', NEW.id, 'account_id', NEW.account_id, 'kind', NEW.kind,
+                        'amount_minor', NEW.amount_minor, 'currency', NEW.currency,
+                        'occurred_at', NEW.occurred_at, 'description', NEW.description,
+                        'category', NEW.category
+                    )
+                );
+            END;
+            CREATE TRIGGER audit_transactions_delete AFTER DELETE ON transactions BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('transaction', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'account_id', OLD.account_id, 'kind', OLD.kind,
+                    'amount_minor', OLD.amount_minor, 'currency', OLD.currency,
+                    'occurred_at', OLD.occurred_at, 'description', OLD.description,
+                    'category', OLD.category
+                ));
+            END;
+
+            CREATE TRIGGER audit_transfers_create AFTER INSERT ON transfers BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('transfer', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'source_account_id', NEW.source_account_id,
+                    'destination_account_id', NEW.destination_account_id,
+                    'source_amount_minor', NEW.source_amount_minor,
+                    'source_currency', NEW.source_currency,
+                    'destination_amount_minor', NEW.destination_amount_minor,
+                    'destination_currency', NEW.destination_currency,
+                    'occurred_at', NEW.occurred_at, 'description', NEW.description
+                ));
+            END;
+            CREATE TRIGGER audit_transfers_update AFTER UPDATE ON transfers BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('transfer', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'source_account_id', OLD.source_account_id,
+                        'destination_account_id', OLD.destination_account_id,
+                        'source_amount_minor', OLD.source_amount_minor,
+                        'source_currency', OLD.source_currency,
+                        'destination_amount_minor', OLD.destination_amount_minor,
+                        'destination_currency', OLD.destination_currency,
+                        'occurred_at', OLD.occurred_at, 'description', OLD.description
+                    ),
+                    json_object(
+                        'id', NEW.id, 'source_account_id', NEW.source_account_id,
+                        'destination_account_id', NEW.destination_account_id,
+                        'source_amount_minor', NEW.source_amount_minor,
+                        'source_currency', NEW.source_currency,
+                        'destination_amount_minor', NEW.destination_amount_minor,
+                        'destination_currency', NEW.destination_currency,
+                        'occurred_at', NEW.occurred_at, 'description', NEW.description
+                    )
+                );
+            END;
+            CREATE TRIGGER audit_transfers_delete AFTER DELETE ON transfers BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('transfer', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'source_account_id', OLD.source_account_id,
+                    'destination_account_id', OLD.destination_account_id,
+                    'source_amount_minor', OLD.source_amount_minor,
+                    'source_currency', OLD.source_currency,
+                    'destination_amount_minor', OLD.destination_amount_minor,
+                    'destination_currency', OLD.destination_currency,
+                    'occurred_at', OLD.occurred_at, 'description', OLD.description
+                ));
+            END;
+
+            CREATE TRIGGER audit_budgets_create AFTER INSERT ON budgets BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('budget', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'account_id', NEW.account_id, 'category', NEW.category,
+                    'year', NEW.year, 'month', NEW.month,
+                    'limit_minor', NEW.limit_minor, 'currency', NEW.currency
+                ));
+            END;
+            CREATE TRIGGER audit_budgets_update AFTER UPDATE ON budgets BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('budget', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'account_id', OLD.account_id, 'category', OLD.category,
+                        'year', OLD.year, 'month', OLD.month,
+                        'limit_minor', OLD.limit_minor, 'currency', OLD.currency
+                    ),
+                    json_object(
+                        'id', NEW.id, 'account_id', NEW.account_id, 'category', NEW.category,
+                        'year', NEW.year, 'month', NEW.month,
+                        'limit_minor', NEW.limit_minor, 'currency', NEW.currency
+                    )
+                );
+            END;
+            CREATE TRIGGER audit_budgets_delete AFTER DELETE ON budgets BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('budget', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'account_id', OLD.account_id, 'category', OLD.category,
+                    'year', OLD.year, 'month', OLD.month,
+                    'limit_minor', OLD.limit_minor, 'currency', OLD.currency
+                ));
+            END;
+
+            PRAGMA user_version = 4;
+            "#,
+        )?;
+    }
+
     transaction.commit()
 }
 
@@ -1327,6 +1611,7 @@ mod tests {
         assert!(connection.table_exists(None, "transactions").unwrap());
         assert!(connection.table_exists(None, "transfers").unwrap());
         assert!(connection.table_exists(None, "budgets").unwrap());
+        assert!(connection.table_exists(None, "audit_log").unwrap());
 
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -1407,6 +1692,320 @@ mod tests {
             initialize_schema(&connection),
             Err(rusqlite::Error::InvalidQuery)
         ));
+    }
+
+    #[test]
+    fn migrates_v3_database_without_losing_rows_and_audits_new_writes() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE accounts (
+                    id       INTEGER PRIMARY KEY,
+                    name     TEXT NOT NULL,
+                    currency TEXT NOT NULL
+                );
+                CREATE TABLE transactions (
+                    id           INTEGER PRIMARY KEY,
+                    account_id   INTEGER NOT NULL,
+                    kind         TEXT NOT NULL,
+                    amount_minor INTEGER NOT NULL,
+                    currency     TEXT NOT NULL,
+                    occurred_at  TEXT NOT NULL,
+                    description  TEXT NOT NULL,
+                    category     TEXT NOT NULL,
+                    FOREIGN KEY (account_id) REFERENCES accounts(id)
+                );
+                CREATE TABLE transfers (
+                    id                       INTEGER PRIMARY KEY,
+                    source_account_id        INTEGER NOT NULL,
+                    destination_account_id   INTEGER NOT NULL,
+                    source_amount_minor      INTEGER NOT NULL,
+                    source_currency          TEXT NOT NULL,
+                    destination_amount_minor INTEGER NOT NULL,
+                    destination_currency     TEXT NOT NULL,
+                    occurred_at              TEXT NOT NULL,
+                    description              TEXT NOT NULL,
+                    FOREIGN KEY (source_account_id) REFERENCES accounts(id),
+                    FOREIGN KEY (destination_account_id) REFERENCES accounts(id)
+                );
+                CREATE TABLE budgets (
+                    id          INTEGER PRIMARY KEY,
+                    account_id  INTEGER NOT NULL,
+                    category    TEXT NOT NULL,
+                    year        INTEGER NOT NULL,
+                    month       INTEGER NOT NULL,
+                    limit_minor INTEGER NOT NULL,
+                    currency    TEXT NOT NULL,
+                    UNIQUE (account_id, category, year, month),
+                    FOREIGN KEY (account_id) REFERENCES accounts(id)
+                );
+
+                INSERT INTO accounts (id, name, currency) VALUES
+                    (1, 'Cash', 'CNY'),
+                    (2, 'Bank', 'CNY');
+                INSERT INTO transactions
+                    (id, account_id, kind, amount_minor, currency, occurred_at, description, category)
+                VALUES
+                    (3, 1, 'expense', 100, 'CNY',
+                     '2026-08-10T18:30:00+08:00[Asia/Shanghai]', 'Lunch', 'food');
+                INSERT INTO transfers
+                    (id, source_account_id, destination_account_id, source_amount_minor,
+                     source_currency, destination_amount_minor, destination_currency,
+                     occurred_at, description)
+                VALUES
+                    (4, 1, 2, 200, 'CNY', 200, 'CNY',
+                     '2026-08-10T19:00:00+08:00[Asia/Shanghai]', 'Move');
+                INSERT INTO budgets
+                    (id, account_id, category, year, month, limit_minor, currency)
+                VALUES (5, 1, 'food', 2026, 9, 1000, 'CNY');
+
+                PRAGMA user_version = 3;
+                "#,
+            )
+            .unwrap();
+
+        initialize_schema(&connection).unwrap();
+
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        assert!(connection.table_exists(None, "audit_log").unwrap());
+
+        let stored_name: String = connection
+            .query_row("SELECT name FROM accounts WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored_name, "Cash");
+
+        for (table, expected) in [
+            ("accounts", 2_i64),
+            ("transactions", 1_i64),
+            ("transfers", 1_i64),
+            ("budgets", 1_i64),
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, expected, "{table} rows survive v4 migration");
+        }
+
+        connection
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (6, 'Savings', 'CNY')",
+                [],
+            )
+            .unwrap();
+
+        let (entity_type, entity_id): (String, i64) = connection
+            .query_row(
+                "SELECT entity_type, entity_id FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(entity_type, "account");
+        assert_eq!(entity_id, 6);
+    }
+
+    #[test]
+    fn records_account_create_update_and_delete_with_snapshots() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+
+        connection
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (7, 'Cash', 'CNY')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE accounts SET name = 'Wallet' WHERE id = 7", [])
+            .unwrap();
+        connection
+            .execute("DELETE FROM accounts WHERE id = 7", [])
+            .unwrap();
+
+        let entries = connection
+            .prepare("SELECT operation, before_state, after_state FROM audit_log ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].0, "create");
+        assert_eq!(entries[0].1, None);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(entries[0].2.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"id": 7, "name": "Cash", "currency": "CNY"})
+        );
+        assert_eq!(entries[1].0, "update");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(entries[1].1.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"id": 7, "name": "Cash", "currency": "CNY"})
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(entries[1].2.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"id": 7, "name": "Wallet", "currency": "CNY"})
+        );
+        assert_eq!(entries[2].0, "delete");
+        assert_eq!(entries[2].2, None);
+    }
+
+    #[test]
+    fn rolls_back_audit_entries_with_the_failed_write_transaction() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        transaction
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (1, 'Cash', 'CNY')",
+                [],
+            )
+            .unwrap();
+        transaction.rollback().unwrap();
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn lists_recent_audit_entries_newest_first_with_a_limit() {
+        let connection = Rc::new(Connection::open_in_memory().unwrap());
+        initialize_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (1, 'Cash', 'CNY')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE accounts SET name = 'Wallet' WHERE id = 1", [])
+            .unwrap();
+
+        let repository = SqliteAuditLogRepository { connection };
+        let entries = repository.list_recent(1).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id(), 2);
+        assert_eq!(entries[0].entity(), AuditEntity::Account);
+        assert_eq!(entries[0].entity_id(), 1);
+        assert_eq!(entries[0].operation(), AuditOperation::Update);
+        assert_eq!(
+            entries[0].before_state(),
+            Some(&serde_json::json!({"id": 1, "name": "Cash", "currency": "CNY"}))
+        );
+        assert_eq!(
+            entries[0].after_state(),
+            Some(&serde_json::json!({"id": 1, "name": "Wallet", "currency": "CNY"}))
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn rejects_audit_log_limit_larger_than_i64() {
+        let connection = Rc::new(Connection::open_in_memory().unwrap());
+        initialize_schema(&connection).unwrap();
+
+        let repository = SqliteAuditLogRepository { connection };
+        assert_eq!(
+            repository.list_recent(usize::MAX),
+            Err(RepositoryError::InvalidLimit(usize::MAX))
+        );
+    }
+
+    #[test]
+    fn records_transaction_transfer_and_budget_changes() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO accounts (id, name, currency) VALUES (1, 'Cash', 'CNY');
+                INSERT INTO accounts (id, name, currency) VALUES (2, 'Bank', 'CNY');
+
+                INSERT INTO transactions
+                    (id, account_id, kind, amount_minor, currency, occurred_at, description, category)
+                VALUES
+                    (3, 1, 'expense', 100, 'CNY',
+                     '2026-09-01T10:00:00+08:00[Asia/Shanghai]', 'Lunch', 'food');
+                UPDATE transactions SET description = 'Dinner' WHERE id = 3;
+                DELETE FROM transactions WHERE id = 3;
+
+                INSERT INTO transfers
+                    (id, source_account_id, destination_account_id, source_amount_minor,
+                     source_currency, destination_amount_minor, destination_currency,
+                     occurred_at, description)
+                VALUES
+                    (4, 1, 2, 200, 'CNY', 200, 'CNY',
+                     '2026-09-01T11:00:00+08:00[Asia/Shanghai]', 'Move');
+                UPDATE transfers SET description = 'Savings' WHERE id = 4;
+                DELETE FROM transfers WHERE id = 4;
+
+                INSERT INTO budgets
+                    (id, account_id, category, year, month, limit_minor, currency)
+                VALUES (5, 1, 'food', 2026, 9, 1000, 'CNY');
+                UPDATE budgets SET limit_minor = 1200 WHERE id = 5;
+                DELETE FROM budgets WHERE id = 5;
+                "#,
+            )
+            .unwrap();
+
+        for entity in ["transaction", "transfer", "budget"] {
+            let operations = connection
+                .prepare(
+                    "SELECT operation FROM audit_log
+                     WHERE entity_type = ?1 ORDER BY id",
+                )
+                .unwrap()
+                .query_map(params![entity], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(operations, ["create", "update", "delete"]);
+        }
+    }
+
+    #[test]
+    fn prevents_audit_log_updates_and_deletes() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (1, 'Cash', 'CNY')",
+                [],
+            )
+            .unwrap();
+
+        assert!(
+            connection
+                .execute("UPDATE audit_log SET entity_id = 2 WHERE id = 1", [])
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute("DELETE FROM audit_log WHERE id = 1", [])
+                .is_err()
+        );
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

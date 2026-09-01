@@ -15,6 +15,12 @@ impl TransferId {
     }
 }
 
+impl std::fmt::Display for TransferId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTransfer {
     source_account_id: AccountId,
@@ -42,6 +48,19 @@ pub enum TransferError {
     InvalidAmount,
     SameCurrencyAmountMismatch,
     EmptyDescription,
+}
+
+impl std::fmt::Display for TransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SameAccount => write!(f, "source and destination accounts must differ"),
+            Self::InvalidAmount => write!(f, "transfer amounts must be greater than zero"),
+            Self::SameCurrencyAmountMismatch => {
+                write!(f, "equal-currency transfers must move equal amounts")
+            }
+            Self::EmptyDescription => write!(f, "description must not be empty"),
+        }
+    }
 }
 
 impl NewTransfer {

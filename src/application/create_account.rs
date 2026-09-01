@@ -9,6 +9,15 @@ pub enum CreateAccountError {
     Repository(RepositoryError),
 }
 
+impl std::fmt::Display for CreateAccountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Account(error) => write!(f, "{error}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
 impl From<AccountError> for CreateAccountError {
     fn from(error: AccountError) -> Self {
         CreateAccountError::Account(error)

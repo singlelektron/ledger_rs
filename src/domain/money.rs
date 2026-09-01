@@ -7,10 +7,33 @@ pub enum Currency {
     Myr,
 }
 
+impl std::fmt::Display for Currency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Cny => "CNY",
+            Self::Usd => "USD",
+            Self::Eur => "EUR",
+            Self::Hkd => "HKD",
+            Self::Myr => "MYR",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoneyError {
     CurrencyMismatch { expected: Currency, found: Currency },
     ArithmeticOverflow,
+}
+
+impl std::fmt::Display for MoneyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CurrencyMismatch { expected, found } => {
+                write!(f, "currency mismatch: expected {expected}, found {found}")
+            }
+            Self::ArithmeticOverflow => write!(f, "arithmetic overflow"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

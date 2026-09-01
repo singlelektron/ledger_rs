@@ -1,8 +1,13 @@
+use crate::application::audit_log::AuditLogEntry;
 use crate::domain::account::{Account, AccountId, NewAccount};
 use crate::domain::budget::{Budget, BudgetId, BudgetMonth, NewBudget};
 use crate::domain::transaction::Category;
 use crate::domain::transaction::{NewTransaction, Transaction, TransactionId};
 use crate::domain::transfer::{NewTransfer, Transfer, TransferId};
+
+pub trait AuditLogRepository {
+    fn list_recent(&self, limit: usize) -> Result<Vec<AuditLogEntry>, RepositoryError>;
+}
 
 pub trait AccountRepository {
     fn create(&mut self, account: NewAccount) -> Result<Account, RepositoryError>;
@@ -70,8 +75,26 @@ pub enum RepositoryError {
     DuplicateTransferId(TransferId),
     DuplicateBudgetId(BudgetId),
     InvalidId(u64),
+    InvalidLimit(usize),
     IdExhausted,
     RestoreTargetNotEmpty,
     Storage(String),
     InvalidStoredData(String),
+}
+
+impl std::fmt::Display for RepositoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateAccountId(id) => write!(f, "duplicate account id {id}"),
+            Self::DuplicateTransactionId(id) => write!(f, "duplicate transaction id {id}"),
+            Self::DuplicateTransferId(id) => write!(f, "duplicate transfer id {id}"),
+            Self::DuplicateBudgetId(id) => write!(f, "duplicate budget id {id}"),
+            Self::InvalidId(id) => write!(f, "invalid repository id {id}"),
+            Self::InvalidLimit(limit) => write!(f, "invalid limit {limit}"),
+            Self::IdExhausted => write!(f, "repository exhausted its id space"),
+            Self::RestoreTargetNotEmpty => write!(f, "restore target is not empty"),
+            Self::Storage(message) => write!(f, "storage error: {message}"),
+            Self::InvalidStoredData(message) => write!(f, "invalid stored data: {message}"),
+        }
+    }
 }

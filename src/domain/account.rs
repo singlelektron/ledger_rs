@@ -11,9 +11,23 @@ impl AccountId {
     }
 }
 
+impl std::fmt::Display for AccountId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum AccountError {
     EmptyName,
+}
+
+impl std::fmt::Display for AccountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyName => write!(f, "account name must not be empty"),
+        }
+    }
 }
 
 use crate::domain::money::Currency;
