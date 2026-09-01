@@ -20,6 +20,7 @@ use crate::{
             list_account_transfers, update_transfer,
         },
         monthly_trend::get_monthly_trend,
+        ranged_summary::get_ranged_summary,
         record_transaction::record_transaction,
     },
     domain::{
@@ -322,6 +323,20 @@ async fn reports(
             .map_err(|error| {
                 WebError::bad_request(format!("Could not build budget status: {error:?}"))
             })?;
+            let range_start = parse_local_zoned(
+                &format!("{}-01T00:00", format_budget_month(from)),
+                time_zone,
+            )?;
+            let after_to = next_budget_month_for_report(to)?;
+            let range_end = parse_local_zoned(
+                &format!("{}-01T00:00", format_budget_month(after_to)),
+                time_zone,
+            )?;
+            let summary =
+                get_ranged_summary(&accounts, &transactions, account_id, range_start, range_end)
+                    .map_err(|error| {
+                        WebError::bad_request(format!("Could not build summary: {error:?}"))
+                    })?;
 
             let trend_rows = trends
                 .iter()
@@ -366,12 +381,41 @@ async fn reports(
                     .collect::<Vec<_>>()
                     .join("")
             };
+            let mut categories = summary.net_outflow_by_category().iter().collect::<Vec<_>>();
+            categories.sort_by_key(|(category, _)| category_label(**category));
+            let category_rows = if categories.is_empty() {
+                String::from(
+                    r#"<div class="empty-state inline"><h2>No category activity</h2><p>The selected range contains no transactions.</p></div>"#,
+                )
+            } else {
+                categories
+                    .into_iter()
+                    .map(|(category, amount)| {
+                        let class_name = if amount.minor_units() < 0 {
+                            "positive"
+                        } else {
+                            "negative"
+                        };
+                        format!(
+                            r#"<article class="metric-row"><strong>{}</strong><b class="{}">{}</b></article>"#,
+                            category_label(*category),
+                            class_name,
+                            format_money(amount),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            };
             format!(
-                r#"<section class="report-results"><div class="section-heading"><div><p class="eyebrow">Monthly trend</p><h2>{} · {} to {}</h2></div></div><div class="table-shell"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>{}</tbody></table></div><div class="subsection-heading"><div><p class="eyebrow">Budget execution</p><h2>Ending month status</h2></div></div><div class="metric-list">{}</div></section>"#,
+                r#"<section class="report-results"><div class="section-heading"><div><p class="eyebrow">Range summary</p><h2>{} · {} to {}</h2></div></div><div class="summary-grid"><div><small>Income</small><strong>{}</strong></div><div><small>Net expense</small><strong>{}</strong></div><div><small>Net change</small><strong>{}</strong></div></div><div class="subsection-heading"><div><p class="eyebrow">Monthly trend</p><h2>Cash flow by month</h2></div></div><div class="table-shell"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>{}</tbody></table></div><div class="report-columns"><section><div class="subsection-heading"><div><p class="eyebrow">Category flow</p><h2>Net outflow</h2></div></div><div class="metric-list">{}</div></section><section><div class="subsection-heading"><div><p class="eyebrow">Budget execution</p><h2>Ending month status</h2></div></div><div class="metric-list">{}</div></section></div></section>"#,
                 escape_html(account.name()),
                 format_budget_month(from),
                 format_budget_month(to),
+                format_money(summary.income_total()),
+                format_money(summary.net_expense_total()),
+                format_money(summary.net_change()),
                 trend_rows,
+                category_rows,
                 budget_rows,
             )
         }
@@ -1246,6 +1290,17 @@ fn format_budget_month(month: BudgetMonth) -> String {
     format!("{:04}-{:02}", month.year(), month.month())
 }
 
+fn next_budget_month_for_report(month: BudgetMonth) -> Result<BudgetMonth, WebError> {
+    let (year, month_number) = if month.month() == 12 {
+        (month.year().checked_add(1), 1)
+    } else {
+        (Some(month.year()), month.month() + 1)
+    };
+    let year = year.ok_or_else(|| WebError::bad_request("Reporting range is too large."))?;
+    BudgetMonth::new(year, month_number)
+        .map_err(|error| WebError::bad_request(format!("Invalid reporting range: {error:?}")))
+}
+
 fn parse_transaction_kind(value: &str) -> Option<TransactionKind> {
     match value {
         "income" => Some(TransactionKind::Income),
@@ -1958,6 +2013,9 @@ mod tests {
         assert!(response.0.contains("80.00 CNY"));
         assert!(response.0.contains("Limit 50.00 CNY"));
         assert!(response.0.contains("On track · 30.00 CNY"));
+        assert!(response.0.contains("Range summary"));
+        assert!(response.0.contains("Net outflow"));
+        assert!(response.0.contains("Salary"));
     }
 
     #[tokio::test]
