@@ -4528,6 +4528,71 @@ mod tests {
     }
 
     #[test]
+    fn failed_action_keeps_form_open_with_entered_values() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "250".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Delete);
+        for character in "2026-08-31T12:00:00+08:00[Asia/Shanghai]".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        for character in "Lunch".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::CreateTransaction(_)
+        ));
+
+        app.action_failed("Operation failed: database locked".to_string());
+        assert!(matches!(
+            &app.mode,
+            Mode::TransactionForm(form)
+                if form.error.as_deref() == Some("Operation failed: database locked")
+                    && form.amount_minor == "250"
+                    && form.occurred_at == "2026-08-31T12:00:00+08:00[Asia/Shanghai]"
+                    && form.description == "Lunch"
+        ));
+
+        // The preserved form can be resubmitted as-is once the failure is
+        // resolved, and a success finally dismisses it.
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::CreateTransaction(_)
+        ));
+        app.action_succeeded();
+        assert!(matches!(app.mode, Mode::Browse));
+    }
+
+    #[test]
+    fn failed_action_without_form_goes_to_status_line() {
+        let accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.action_failed("Operation failed: database locked".to_string());
+
+        assert!(matches!(app.mode, Mode::Browse));
+        assert!(matches!(
+            &app.status,
+            Some(status)
+                if status.message == "Operation failed: database locked" && status.is_error
+        ));
+    }
+
+    #[test]
     fn renders_transaction_form_validation_error() {
         let mut accounts = InMemoryAccountRepository::new();
         let transactions = InMemoryTransactionRepository::new();
