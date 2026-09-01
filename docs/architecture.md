@@ -9,9 +9,18 @@ layer; the application layer uses domain types and repository traits; SQLite and
 in-memory repositories implement those traits. Domain code never depends on an
 interface or database.
 
-The project remains a single crate while the shared core is small. A future TUI
-must call the same application use cases as the CLI instead of duplicating
-business rules.
+The project remains a single crate while the shared core is small. The TUI
+loads its dashboard model through the account-listing, account-balance, and
+transaction-listing application use cases. Its terminal code owns only input,
+selection state, formatting, and rendering; it does not query SQLite directly
+or duplicate accounting rules.
+
+TUI forms emit typed actions. A small TUI controller executes those actions by
+calling the existing account and transaction application use cases, then the
+dashboard reloads from the repositories. Domain validation, dependency checks,
+ID allocation, and persistence therefore remain outside rendering and input
+code. Operation errors are retained in the interface status line instead of
+terminating the terminal session.
 
 Bulk CSV import is coordinated in the application layer. It validates every
 row before calling the transaction repository's atomic batch-create operation;
