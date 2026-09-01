@@ -97,7 +97,7 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 212 passing unit and workflow tests, including a shared in-memory/SQLite
+- 223 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract and a complete CLI backup/restore verification scenario
 
 The shared application core and first TUI milestone are complete. In-memory and file-backed SQLite
@@ -109,13 +109,14 @@ without duplicating their business rules.
 
 ## TUI
 
-Start the dashboard with the default `ledger.db` database:
+Start the dashboard with the platform-specific default database:
 
 ```bash
 cargo run --bin ledger_tui
 ```
 
-To open another database, use the same option as the CLI:
+The TUI uses the same platform data directory, legacy-file compatibility, and
+file protections as the CLI. To open another database, use the shared override:
 
 ```bash
 cargo run --bin ledger_tui -- --database path/to/ledger.db
@@ -550,15 +551,15 @@ version are rejected explicitly.
 - Atomic CSV transaction import and filtered export - Completed
 - Versioned JSON backup and restore - Completed
 
-### Later Milestones
+### Milestone 11: TUI Account and Transaction Workflows - Completed
 
-#### Next: TUI
-
-- Render account activity, balances, budgets, and reports from the shared
+- Render accounts, balances, and transaction history from the shared
   application layer
+- Create, edit, and delete accounts and transactions through application use
+  cases
 - Keep terminal state and keyboard handling outside domain and repository code
 
-#### After TUI
+### Later Milestones
 
 - Web API
 - Authentication and synchronization
