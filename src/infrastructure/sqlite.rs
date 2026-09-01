@@ -250,7 +250,7 @@ fn audit_operation_from_code(code: &str) -> Result<AuditOperation, RepositoryErr
 
 impl AuditLogRepository for SqliteAuditLogRepository {
     fn list_recent(&self, limit: usize) -> Result<Vec<AuditLogEntry>, RepositoryError> {
-        let limit = i64::try_from(limit).map_err(|_| RepositoryError::InvalidId(limit as u64))?;
+        let limit = i64::try_from(limit).map_err(|_| RepositoryError::InvalidLimit(limit))?;
         let mut statement = self
             .connection
             .prepare(
@@ -1420,9 +1420,6 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
                 )
             );
 
-            CREATE INDEX audit_log_newest_first
-                ON audit_log (id DESC);
-
             CREATE TRIGGER protect_audit_log_update BEFORE UPDATE ON audit_log BEGIN
                 SELECT RAISE(ABORT, 'audit log is append-only');
             END;
@@ -1680,6 +1677,124 @@ mod tests {
     }
 
     #[test]
+    fn migrates_v3_database_without_losing_rows_and_audits_new_writes() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE accounts (
+                    id       INTEGER PRIMARY KEY,
+                    name     TEXT NOT NULL,
+                    currency TEXT NOT NULL
+                );
+                CREATE TABLE transactions (
+                    id           INTEGER PRIMARY KEY,
+                    account_id   INTEGER NOT NULL,
+                    kind         TEXT NOT NULL,
+                    amount_minor INTEGER NOT NULL,
+                    currency     TEXT NOT NULL,
+                    occurred_at  TEXT NOT NULL,
+                    description  TEXT NOT NULL,
+                    category     TEXT NOT NULL,
+                    FOREIGN KEY (account_id) REFERENCES accounts(id)
+                );
+                CREATE TABLE transfers (
+                    id                       INTEGER PRIMARY KEY,
+                    source_account_id        INTEGER NOT NULL,
+                    destination_account_id   INTEGER NOT NULL,
+                    source_amount_minor      INTEGER NOT NULL,
+                    source_currency          TEXT NOT NULL,
+                    destination_amount_minor INTEGER NOT NULL,
+                    destination_currency     TEXT NOT NULL,
+                    occurred_at              TEXT NOT NULL,
+                    description              TEXT NOT NULL,
+                    FOREIGN KEY (source_account_id) REFERENCES accounts(id),
+                    FOREIGN KEY (destination_account_id) REFERENCES accounts(id)
+                );
+                CREATE TABLE budgets (
+                    id          INTEGER PRIMARY KEY,
+                    account_id  INTEGER NOT NULL,
+                    category    TEXT NOT NULL,
+                    year        INTEGER NOT NULL,
+                    month       INTEGER NOT NULL,
+                    limit_minor INTEGER NOT NULL,
+                    currency    TEXT NOT NULL,
+                    UNIQUE (account_id, category, year, month),
+                    FOREIGN KEY (account_id) REFERENCES accounts(id)
+                );
+
+                INSERT INTO accounts (id, name, currency) VALUES
+                    (1, 'Cash', 'CNY'),
+                    (2, 'Bank', 'CNY');
+                INSERT INTO transactions
+                    (id, account_id, kind, amount_minor, currency, occurred_at, description, category)
+                VALUES
+                    (3, 1, 'expense', 100, 'CNY',
+                     '2026-08-10T18:30:00+08:00[Asia/Shanghai]', 'Lunch', 'food');
+                INSERT INTO transfers
+                    (id, source_account_id, destination_account_id, source_amount_minor,
+                     source_currency, destination_amount_minor, destination_currency,
+                     occurred_at, description)
+                VALUES
+                    (4, 1, 2, 200, 'CNY', 200, 'CNY',
+                     '2026-08-10T19:00:00+08:00[Asia/Shanghai]', 'Move');
+                INSERT INTO budgets
+                    (id, account_id, category, year, month, limit_minor, currency)
+                VALUES (5, 1, 'food', 2026, 9, 1000, 'CNY');
+
+                PRAGMA user_version = 3;
+                "#,
+            )
+            .unwrap();
+
+        initialize_schema(&connection).unwrap();
+
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        assert!(connection.table_exists(None, "audit_log").unwrap());
+
+        let stored_name: String = connection
+            .query_row("SELECT name FROM accounts WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored_name, "Cash");
+
+        for (table, expected) in [
+            ("accounts", 2_i64),
+            ("transactions", 1_i64),
+            ("transfers", 1_i64),
+            ("budgets", 1_i64),
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, expected, "{table} rows survive v4 migration");
+        }
+
+        connection
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (6, 'Savings', 'CNY')",
+                [],
+            )
+            .unwrap();
+
+        let (entity_type, entity_id): (String, i64) = connection
+            .query_row(
+                "SELECT entity_type, entity_id FROM audit_log ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(entity_type, "account");
+        assert_eq!(entity_id, 6);
+    }
+
+    #[test]
     fn records_account_create_update_and_delete_with_snapshots() {
         let connection = Connection::open_in_memory().unwrap();
         initialize_schema(&connection).unwrap();
@@ -1780,6 +1895,19 @@ mod tests {
         assert_eq!(
             entries[0].after_state(),
             Some(&serde_json::json!({"id": 1, "name": "Wallet", "currency": "CNY"}))
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn rejects_audit_log_limit_larger_than_i64() {
+        let connection = Rc::new(Connection::open_in_memory().unwrap());
+        initialize_schema(&connection).unwrap();
+
+        let repository = SqliteAuditLogRepository { connection };
+        assert_eq!(
+            repository.list_recent(usize::MAX),
+            Err(RepositoryError::InvalidLimit(usize::MAX))
         );
     }
 

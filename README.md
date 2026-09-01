@@ -96,7 +96,7 @@ SQLite persistence layer are implemented and tested:
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 218 passing unit and workflow tests, including a shared in-memory/SQLite
+- 220 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract and a complete CLI backup/restore verification scenario
 
 The pre-TUI application core is complete. In-memory and file-backed SQLite

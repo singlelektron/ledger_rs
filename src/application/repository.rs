@@ -75,6 +75,7 @@ pub enum RepositoryError {
     DuplicateTransferId(TransferId),
     DuplicateBudgetId(BudgetId),
     InvalidId(u64),
+    InvalidLimit(usize),
     IdExhausted,
     RestoreTargetNotEmpty,
     Storage(String),
