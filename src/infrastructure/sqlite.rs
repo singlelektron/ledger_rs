@@ -13,7 +13,7 @@ use rusqlite::{Connection, params};
 use std::path::Path;
 use std::rc::Rc;
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 fn currency_to_code(currency: Currency) -> &'static str {
     match currency {
@@ -1288,6 +1288,178 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 4 {
+        transaction.execute_batch(
+            r#"
+            CREATE TABLE audit_log (
+                id           INTEGER PRIMARY KEY,
+                changed_at   TEXT NOT NULL DEFAULT (
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                ),
+                entity_type  TEXT NOT NULL CHECK (
+                    entity_type IN ('account', 'transaction', 'transfer', 'budget')
+                ),
+                entity_id    INTEGER NOT NULL,
+                operation    TEXT NOT NULL CHECK (
+                    operation IN ('create', 'update', 'delete')
+                ),
+                before_state TEXT,
+                after_state  TEXT,
+                CHECK (
+                    (operation = 'create' AND before_state IS NULL AND after_state IS NOT NULL)
+                    OR (operation = 'update' AND before_state IS NOT NULL AND after_state IS NOT NULL)
+                    OR (operation = 'delete' AND before_state IS NOT NULL AND after_state IS NULL)
+                )
+            );
+
+            CREATE INDEX audit_log_newest_first
+                ON audit_log (id DESC);
+
+            CREATE TRIGGER audit_accounts_create AFTER INSERT ON accounts BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('account', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'name', NEW.name, 'currency', NEW.currency
+                ));
+            END;
+            CREATE TRIGGER audit_accounts_update AFTER UPDATE ON accounts BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('account', NEW.id, 'update',
+                    json_object('id', OLD.id, 'name', OLD.name, 'currency', OLD.currency),
+                    json_object('id', NEW.id, 'name', NEW.name, 'currency', NEW.currency)
+                );
+            END;
+            CREATE TRIGGER audit_accounts_delete AFTER DELETE ON accounts BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('account', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'name', OLD.name, 'currency', OLD.currency
+                ));
+            END;
+
+            CREATE TRIGGER audit_transactions_create AFTER INSERT ON transactions BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('transaction', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'account_id', NEW.account_id, 'kind', NEW.kind,
+                    'amount_minor', NEW.amount_minor, 'currency', NEW.currency,
+                    'occurred_at', NEW.occurred_at, 'description', NEW.description,
+                    'category', NEW.category
+                ));
+            END;
+            CREATE TRIGGER audit_transactions_update AFTER UPDATE ON transactions BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('transaction', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'account_id', OLD.account_id, 'kind', OLD.kind,
+                        'amount_minor', OLD.amount_minor, 'currency', OLD.currency,
+                        'occurred_at', OLD.occurred_at, 'description', OLD.description,
+                        'category', OLD.category
+                    ),
+                    json_object(
+                        'id', NEW.id, 'account_id', NEW.account_id, 'kind', NEW.kind,
+                        'amount_minor', NEW.amount_minor, 'currency', NEW.currency,
+                        'occurred_at', NEW.occurred_at, 'description', NEW.description,
+                        'category', NEW.category
+                    )
+                );
+            END;
+            CREATE TRIGGER audit_transactions_delete AFTER DELETE ON transactions BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('transaction', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'account_id', OLD.account_id, 'kind', OLD.kind,
+                    'amount_minor', OLD.amount_minor, 'currency', OLD.currency,
+                    'occurred_at', OLD.occurred_at, 'description', OLD.description,
+                    'category', OLD.category
+                ));
+            END;
+
+            CREATE TRIGGER audit_transfers_create AFTER INSERT ON transfers BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('transfer', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'source_account_id', NEW.source_account_id,
+                    'destination_account_id', NEW.destination_account_id,
+                    'source_amount_minor', NEW.source_amount_minor,
+                    'source_currency', NEW.source_currency,
+                    'destination_amount_minor', NEW.destination_amount_minor,
+                    'destination_currency', NEW.destination_currency,
+                    'occurred_at', NEW.occurred_at, 'description', NEW.description
+                ));
+            END;
+            CREATE TRIGGER audit_transfers_update AFTER UPDATE ON transfers BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('transfer', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'source_account_id', OLD.source_account_id,
+                        'destination_account_id', OLD.destination_account_id,
+                        'source_amount_minor', OLD.source_amount_minor,
+                        'source_currency', OLD.source_currency,
+                        'destination_amount_minor', OLD.destination_amount_minor,
+                        'destination_currency', OLD.destination_currency,
+                        'occurred_at', OLD.occurred_at, 'description', OLD.description
+                    ),
+                    json_object(
+                        'id', NEW.id, 'source_account_id', NEW.source_account_id,
+                        'destination_account_id', NEW.destination_account_id,
+                        'source_amount_minor', NEW.source_amount_minor,
+                        'source_currency', NEW.source_currency,
+                        'destination_amount_minor', NEW.destination_amount_minor,
+                        'destination_currency', NEW.destination_currency,
+                        'occurred_at', NEW.occurred_at, 'description', NEW.description
+                    )
+                );
+            END;
+            CREATE TRIGGER audit_transfers_delete AFTER DELETE ON transfers BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('transfer', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'source_account_id', OLD.source_account_id,
+                    'destination_account_id', OLD.destination_account_id,
+                    'source_amount_minor', OLD.source_amount_minor,
+                    'source_currency', OLD.source_currency,
+                    'destination_amount_minor', OLD.destination_amount_minor,
+                    'destination_currency', OLD.destination_currency,
+                    'occurred_at', OLD.occurred_at, 'description', OLD.description
+                ));
+            END;
+
+            CREATE TRIGGER audit_budgets_create AFTER INSERT ON budgets BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('budget', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'account_id', NEW.account_id, 'category', NEW.category,
+                    'year', NEW.year, 'month', NEW.month,
+                    'limit_minor', NEW.limit_minor, 'currency', NEW.currency
+                ));
+            END;
+            CREATE TRIGGER audit_budgets_update AFTER UPDATE ON budgets BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('budget', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'account_id', OLD.account_id, 'category', OLD.category,
+                        'year', OLD.year, 'month', OLD.month,
+                        'limit_minor', OLD.limit_minor, 'currency', OLD.currency
+                    ),
+                    json_object(
+                        'id', NEW.id, 'account_id', NEW.account_id, 'category', NEW.category,
+                        'year', NEW.year, 'month', NEW.month,
+                        'limit_minor', NEW.limit_minor, 'currency', NEW.currency
+                    )
+                );
+            END;
+            CREATE TRIGGER audit_budgets_delete AFTER DELETE ON budgets BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('budget', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'account_id', OLD.account_id, 'category', OLD.category,
+                    'year', OLD.year, 'month', OLD.month,
+                    'limit_minor', OLD.limit_minor, 'currency', OLD.currency
+                ));
+            END;
+
+            PRAGMA user_version = 4;
+            "#,
+        )?;
+    }
+
     transaction.commit()
 }
 
@@ -1309,6 +1481,7 @@ mod tests {
         assert!(connection.table_exists(None, "transactions").unwrap());
         assert!(connection.table_exists(None, "transfers").unwrap());
         assert!(connection.table_exists(None, "budgets").unwrap());
+        assert!(connection.table_exists(None, "audit_log").unwrap());
 
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -1389,6 +1562,78 @@ mod tests {
             initialize_schema(&connection),
             Err(rusqlite::Error::InvalidQuery)
         ));
+    }
+
+    #[test]
+    fn records_account_create_update_and_delete_with_snapshots() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+
+        connection
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (7, 'Cash', 'CNY')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE accounts SET name = 'Wallet' WHERE id = 7", [])
+            .unwrap();
+        connection
+            .execute("DELETE FROM accounts WHERE id = 7", [])
+            .unwrap();
+
+        let entries = connection
+            .prepare("SELECT operation, before_state, after_state FROM audit_log ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].0, "create");
+        assert_eq!(entries[0].1, None);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(entries[0].2.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"id": 7, "name": "Cash", "currency": "CNY"})
+        );
+        assert_eq!(entries[1].0, "update");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(entries[1].1.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"id": 7, "name": "Cash", "currency": "CNY"})
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(entries[1].2.as_ref().unwrap()).unwrap(),
+            serde_json::json!({"id": 7, "name": "Wallet", "currency": "CNY"})
+        );
+        assert_eq!(entries[2].0, "delete");
+        assert_eq!(entries[2].2, None);
+    }
+
+    #[test]
+    fn rolls_back_audit_entries_with_the_failed_write_transaction() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        transaction
+            .execute(
+                "INSERT INTO accounts (id, name, currency) VALUES (1, 'Cash', 'CNY')",
+                [],
+            )
+            .unwrap();
+        transaction.rollback().unwrap();
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

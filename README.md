@@ -79,6 +79,8 @@ SQLite persistence layer are implemented and tested:
   for account and transaction tables with foreign-key enforcement enabled
 - Versioned, transactional SQLite schema migrations that adopt existing
   pre-migration databases without deleting their data
+- An append-only SQLite audit log that records before/after JSON snapshots for
+  account, transaction, transfer, and budget writes in the same transaction
 - A SQLite account repository that saves, queries, and lists accounts while
   reporting duplicate IDs, unsupported ID ranges, and invalid stored data
 - A SQLite transaction repository that shares its connection with the account
