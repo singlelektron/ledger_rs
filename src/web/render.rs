@@ -66,7 +66,7 @@ pub(crate) fn parse_local_zoned_with_offset(
         .into_iter()
         .flatten()
         {
-            if candidate.offset().seconds() == offset_seconds {
+            if candidate.datetime() == local && candidate.offset().seconds() == offset_seconds {
                 return Ok(candidate);
             }
         }

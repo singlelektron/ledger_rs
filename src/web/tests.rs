@@ -15,8 +15,8 @@ use super::{
     },
     middleware::host_is_loopback,
     render::{
-        format_money, parse_currency, parse_fixed_offset, parse_local_zoned, parse_major_amount,
-        parse_time_zone,
+        format_money, parse_currency, parse_fixed_offset, parse_local_zoned,
+        parse_local_zoned_with_offset, parse_major_amount, parse_time_zone,
     },
 };
 use crate::{
@@ -153,6 +153,16 @@ fn parses_iana_and_fixed_offset_time_zones() {
 
     assert!(parse_time_zone("not-a-zone").is_err());
     assert_eq!(parse_fixed_offset("24:00"), None);
+}
+
+#[test]
+fn rejects_dst_spring_forward_gaps_even_with_an_edit_offset() {
+    for offset in ["-05", "-04"] {
+        assert!(
+            parse_local_zoned_with_offset("2026-03-08T02:30", "America/New_York", Some(offset),)
+                .is_err()
+        );
+    }
 }
 
 #[tokio::test]
