@@ -1,0 +1,116 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-cli:
+    name: Build CLI (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+    env:
+      CARGO_TERM_COLOR: always
+      ASSET_NAME: ledger_rs-${{ github.ref_name }}-${{ matrix.target }}
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+
+      - name: Select current stable Rust
+        run: rustup update stable && rustup default stable
+        shell: bash
+
+      - name: Verify tag and runner target
+        shell: bash
+        run: |
+          package_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          rust_host=$(rustc -vV | sed -n 's/^host: //p')
+          test "$GITHUB_REF_NAME" = "v$package_version"
+          test "$rust_host" = "${{ matrix.target }}"
+
+      - name: Test CLI code
+        run: cargo test --locked --lib --bin ledger_rs
+
+      - name: Build CLI binary
+        run: cargo build --release --locked --bin ledger_rs
+
+      - name: Package Unix CLI
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir "$ASSET_NAME"
+          cp target/release/ledger_rs "$ASSET_NAME/"
+          cp README.md "$ASSET_NAME/"
+          tar -czf "$ASSET_NAME.tar.gz" "$ASSET_NAME"
+
+      - name: Package Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path $env:ASSET_NAME
+          Copy-Item target/release/ledger_rs.exe "$env:ASSET_NAME/"
+          Copy-Item README.md "$env:ASSET_NAME/"
+          Compress-Archive -Path $env:ASSET_NAME -DestinationPath "$env:ASSET_NAME.zip"
+
+      - name: Upload packaged CLI
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET_NAME }}.${{ matrix.archive }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-cli
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged CLIs
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum ledger_rs-* > SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/ledger_rs-* \
+            dist/SHA256SUMS \
+            --verify-tag \
+            --title "ledger_rs $GITHUB_REF_NAME" \
+            --generate-notes
