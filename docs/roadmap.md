@@ -12,6 +12,7 @@ independently tested milestones:
 7. Shared contract and end-to-end workflow hardening (completed)
 8. Minimal read-only TUI dashboard (completed)
 9. TUI account and transaction editing (completed)
+10. TUI activity, reports, budgets, and transfer management (completed)
 
 The Web API follows the TUI. Authentication, synchronization, and external
 exchange-rate services remain out of scope for this phase.
