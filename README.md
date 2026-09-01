@@ -91,18 +91,46 @@ SQLite persistence layer are implemented and tested:
 - A `clap`-based CLI entry point covering account, transaction, transfer,
   budget, report, and CSV data workflows, with case-insensitive enum parsing,
   configurable database paths, and nonzero exit status on application errors
+- An interactive TUI that opens the same SQLite database, shows balances
+  including transfers, browses newest-first transaction history, and manages
+  accounts and transactions through the shared application use cases
 - Transaction time input using either a complete zoned timestamp or a local
   date-time with a separately supplied IANA time-zone name, with invalid and
   daylight-saving-time-ambiguous local times rejected
-- 210 passing unit and workflow tests, including a shared in-memory/SQLite
+- 212 passing unit and workflow tests, including a shared in-memory/SQLite
   repository contract and a complete CLI backup/restore verification scenario
 
-The pre-TUI application core is complete. In-memory and file-backed SQLite
+The shared application core and first TUI milestone are complete. In-memory and file-backed SQLite
 repositories implement the same account, transaction, transfer, budget, and
 pagination behavior. The CLI exercises all shared workflows, including CRUD,
-balances, activity, reports, CSV exchange, and full JSON recovery. The next
-product milestone is a TUI that calls these application use cases without
-duplicating their business rules.
+balances, activity, reports, CSV exchange, and full JSON recovery. The TUI calls
+the same application use cases to provide an account and transaction dashboard
+without duplicating their business rules.
+
+## TUI
+
+Start the dashboard with the default `ledger.db` database:
+
+```bash
+cargo run --bin ledger_tui
+```
+
+To open another database, use the same option as the CLI:
+
+```bash
+cargo run --bin ledger_tui -- --database path/to/ledger.db
+```
+
+Use Tab or the left/right arrows to focus accounts or transactions, then use the
+up/down arrows or `k`/`j` to move the selection. Press `a` to create an account,
+`n` to create a transaction for the selected account, and `e` or `d` to edit or
+delete the item in the focused pane. Forms use Tab to move between fields,
+arrows to change enum values, Delete to clear a text field, Enter to save, and
+Escape to cancel. Press `r` to reload data and `q` to quit.
+
+Transfers, budgets, reports, CSV exchange, and backup/restore remain available
+through the CLI; the TUI covers the interactive account and transaction
+workflow from the roadmap.
 
 ## Goals
 
