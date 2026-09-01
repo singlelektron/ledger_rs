@@ -1124,6 +1124,49 @@ impl App {
         });
     }
 
+    /// Close the active form once its submitted action has succeeded.
+    ///
+    /// Form handlers keep the form open after a valid submit so that a
+    /// failure reported through [`App::action_failed`] can restore every
+    /// entered value; a success is what finally dismisses the form.
+    pub fn action_succeeded(&mut self) {
+        if matches!(
+            self.mode,
+            Mode::AccountForm(_)
+                | Mode::TransactionForm(_)
+                | Mode::TransferForm(_)
+                | Mode::SummaryReportForm(_)
+                | Mode::TrendReportForm(_)
+                | Mode::BudgetForm(_)
+                | Mode::BudgetStatusForm(_)
+        ) {
+            self.mode = Mode::Browse;
+        }
+    }
+
+    /// Report a failed submitted action.
+    ///
+    /// When a form is active it stays open with the error shown inline and
+    /// all entered values preserved; without a form (for example delete
+    /// confirmations) the failure goes to the status line instead.
+    pub fn action_failed(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        match &mut self.mode {
+            Mode::AccountForm(form) => form.error = Some(message),
+            Mode::TransactionForm(form) => form.error = Some(message),
+            Mode::TransferForm(form) => form.error = Some(message),
+            Mode::SummaryReportForm(form) => form.error = Some(message),
+            Mode::TrendReportForm(form) => form.error = Some(message),
+            Mode::BudgetForm(form) => form.error = Some(message),
+            Mode::BudgetStatusForm(form) => form.error = Some(message),
+            Mode::Browse
+            | Mode::ConfirmDeleteAccount(_)
+            | Mode::ConfirmDeleteTransaction(_)
+            | Mode::ConfirmDeleteTransfer(_)
+            | Mode::ConfirmDeleteBudget(_) => self.set_status(message, true),
+        }
+    }
+
     fn selected_budget_id(&self) -> Option<BudgetId> {
         match self.budget.as_ref()? {
             BudgetResult::List(rows) => rows.get(self.selected_transaction).map(Budget::id),
@@ -1627,15 +1670,17 @@ fn handle_account_form_key(mut form: AccountForm, key: KeyCode) -> (Mode, Action
             }
             let action = match form.kind {
                 AccountFormKind::Create => Action::CreateAccount {
-                    name: form.name,
+                    name: form.name.clone(),
                     currency: form.currency,
                 },
                 AccountFormKind::Rename(id) => Action::RenameAccount {
                     id,
-                    name: form.name,
+                    name: form.name.clone(),
                 },
             };
-            return (Mode::Browse, action);
+            // Keep the form open until the application layer confirms the
+            // action succeeded; `action_failed` can then restore the input.
+            return (Mode::AccountForm(form), action);
         }
         KeyCode::Tab if form.kind == AccountFormKind::Create => {
             form.field = match form.field {
@@ -1714,15 +1759,13 @@ fn handle_budget_form_key(mut form: BudgetForm, key: KeyCode) -> (Mode, Action) 
                     Action::Continue,
                 );
             }
-            return (
-                Mode::Browse,
-                Action::RunBudget(BudgetRequest::Set {
-                    account_id: form.account_id,
-                    category: form.category,
-                    month: form.month,
-                    limit_minor: form.limit_minor,
-                }),
-            );
+            let action = Action::RunBudget(BudgetRequest::Set {
+                account_id: form.account_id,
+                category: form.category,
+                month: form.month.clone(),
+                limit_minor: form.limit_minor.clone(),
+            });
+            return (Mode::BudgetForm(form), action);
         }
         KeyCode::Tab => {
             form.field = match form.field {
@@ -1809,14 +1852,12 @@ fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (M
                     Action::Continue,
                 );
             }
-            return (
-                Mode::Browse,
-                Action::RunBudget(BudgetRequest::Status {
-                    account_id: form.account_id,
-                    month: form.month,
-                    time_zone: form.time_zone,
-                }),
-            );
+            let action = Action::RunBudget(BudgetRequest::Status {
+                account_id: form.account_id,
+                month: form.month.clone(),
+                time_zone: form.time_zone.clone(),
+            });
+            return (Mode::BudgetStatusForm(form), action);
         }
         KeyCode::Tab | KeyCode::BackTab => {
             form.field = match form.field {
@@ -1888,14 +1929,12 @@ fn handle_summary_report_form_key(mut form: SummaryReportForm, key: KeyCode) -> 
                     Action::Continue,
                 );
             }
-            return (
-                Mode::Browse,
-                Action::RunReport(ReportRequest::Summary {
-                    account_id: form.account_id,
-                    from: form.from,
-                    to: form.to,
-                }),
-            );
+            let action = Action::RunReport(ReportRequest::Summary {
+                account_id: form.account_id,
+                from: form.from.clone(),
+                to: form.to.clone(),
+            });
+            return (Mode::SummaryReportForm(form), action);
         }
         KeyCode::Tab | KeyCode::BackTab => {
             form.field = match form.field {
@@ -1952,15 +1991,13 @@ fn handle_trend_report_form_key(mut form: TrendReportForm, key: KeyCode) -> (Mod
                     Action::Continue,
                 );
             }
-            return (
-                Mode::Browse,
-                Action::RunReport(ReportRequest::Trend {
-                    account_id: form.account_id,
-                    from: form.from,
-                    to: form.to,
-                    time_zone: form.time_zone,
-                }),
-            );
+            let action = Action::RunReport(ReportRequest::Trend {
+                account_id: form.account_id,
+                from: form.from.clone(),
+                to: form.to.clone(),
+                time_zone: form.time_zone.clone(),
+            });
+            return (Mode::TrendReportForm(form), action);
         }
         KeyCode::Tab => {
             form.field = match form.field {
@@ -2009,12 +2046,12 @@ fn handle_transaction_form_key(mut form: TransactionForm, key: KeyCode) -> (Mode
                     Action::Continue,
                 );
             }
-            let input = form.into_input();
+            let input = form.to_input();
             let action = match form_kind {
                 TransactionFormKind::Create => Action::CreateTransaction(input),
                 TransactionFormKind::Edit(id) => Action::UpdateTransaction { id, input },
             };
-            return (Mode::Browse, action);
+            return (Mode::TransactionForm(form), action);
         }
         KeyCode::Tab => form.field = next_transaction_field(form.field),
         KeyCode::BackTab => form.field = previous_transaction_field(form.field),
@@ -2069,12 +2106,12 @@ fn handle_transfer_form_key(
                 );
             }
             let kind = form.kind;
-            let input = form.into_input();
+            let input = form.to_input();
             let action = match kind {
                 TransferFormKind::Create => Action::CreateTransfer(input),
                 TransferFormKind::Edit(id) => Action::UpdateTransfer { id, input },
             };
-            return (Mode::Browse, action);
+            return (Mode::TransferForm(form), action);
         }
         KeyCode::Tab => form.field = next_transfer_field(form.field),
         KeyCode::BackTab => form.field = previous_transfer_field(form.field),
@@ -2090,14 +2127,14 @@ fn handle_transfer_form_key(
 }
 
 impl TransferForm {
-    fn into_input(self) -> TransferInput {
+    fn to_input(&self) -> TransferInput {
         TransferInput {
-            source_account_id: self.source_account_id,
-            destination_account_id: self.destination_account_id,
-            source_amount_minor: self.source_amount_minor,
-            destination_amount_minor: self.destination_amount_minor,
-            occurred_at: self.occurred_at,
-            description: self.description,
+            source_account_id: self.source_account_id.clone(),
+            destination_account_id: self.destination_account_id.clone(),
+            source_amount_minor: self.source_amount_minor.clone(),
+            destination_amount_minor: self.destination_amount_minor.clone(),
+            occurred_at: self.occurred_at.clone(),
+            description: self.description.clone(),
         }
     }
 
@@ -2163,14 +2200,14 @@ fn previous_transfer_field(field: TransferField) -> TransferField {
 }
 
 impl TransactionForm {
-    fn into_input(self) -> TransactionInput {
+    fn to_input(&self) -> TransactionInput {
         TransactionInput {
             account_id: self.account_id,
             currency: self.currency,
             kind: self.kind,
-            amount_minor: self.amount_minor,
-            occurred_at: self.occurred_at,
-            description: self.description,
+            amount_minor: self.amount_minor.clone(),
+            occurred_at: self.occurred_at.clone(),
+            description: self.description.clone(),
             category: self.category,
         }
     }
@@ -3556,6 +3593,7 @@ mod tests {
             Action::RunReport(ReportRequest::Summary { account_id, .. })
                 if account_id == account.id()
         ));
+        app.action_succeeded();
         app.handle_key(KeyCode::Char('t'));
         assert!(matches!(
             app.handle_key(KeyCode::Enter),
@@ -4059,12 +4097,14 @@ mod tests {
             Action::RunBudget(BudgetRequest::Set { account_id, .. })
                 if account_id == account.id()
         ));
+        app.action_succeeded();
         app.handle_key(KeyCode::Char('u'));
         assert!(matches!(
             app.handle_key(KeyCode::Enter),
             Action::RunBudget(BudgetRequest::Status { account_id, .. })
                 if account_id == account.id()
         ));
+        app.action_succeeded();
 
         let budget = Budget::new(
             BudgetId::new(7),
@@ -4308,6 +4348,7 @@ mod tests {
                 name: "Wallet".to_string(),
             }
         );
+        app.action_succeeded();
 
         app.handle_key(KeyCode::Char('d'));
         assert_eq!(
@@ -4377,6 +4418,7 @@ mod tests {
         assert_eq!(created.amount().minor_units(), 250);
         assert_eq!(created.description(), "Dinner");
         assert_eq!(created.category(), Category::Transportation);
+        app.action_succeeded();
 
         app.handle_key(KeyCode::Right);
         app.handle_key(KeyCode::Char('e'));
@@ -4392,6 +4434,7 @@ mod tests {
             input.into_new_transaction().unwrap().description(),
             "Brunch"
         );
+        app.action_succeeded();
 
         app.handle_key(KeyCode::Char('d'));
         assert_eq!(
@@ -4599,12 +4642,14 @@ mod tests {
                 ..
             }) if source_account_id == "1" && destination_account_id == "2"
         ));
+        app.action_succeeded();
         app.handle_key(KeyCode::Tab);
         app.handle_key(KeyCode::Char('e'));
         assert!(matches!(
             app.handle_key(KeyCode::Enter),
             Action::UpdateTransfer { id, .. } if id == transfer.id()
         ));
+        app.action_succeeded();
         app.handle_key(KeyCode::Char('d'));
         assert_eq!(
             app.handle_key(KeyCode::Char('y')),
