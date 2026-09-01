@@ -10,6 +10,18 @@ pub enum RecordTransactionError {
     Repository(RepositoryError),
 }
 
+impl std::fmt::Display for RecordTransactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::CurrencyMismatch { expected, found } => {
+                write!(f, "currency mismatch: expected {expected}, found {found}")
+            }
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
 impl From<RepositoryError> for RecordTransactionError {
     fn from(error: RepositoryError) -> Self {
         RecordTransactionError::Repository(error)

@@ -33,6 +33,23 @@ pub enum SummaryError {
     ArithmeticOverflow,
 }
 
+impl std::fmt::Display for SummaryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountMismatch { expected, found } => {
+                write!(
+                    f,
+                    "account mismatch: expected account {expected}, found account {found}"
+                )
+            }
+            Self::CurrencyMismatch { expected, found } => {
+                write!(f, "currency mismatch: expected {expected}, found {found}")
+            }
+            Self::ArithmeticOverflow => write!(f, "arithmetic overflow"),
+        }
+    }
+}
+
 impl From<MoneyError> for SummaryError {
     fn from(error: MoneyError) -> Self {
         match error {

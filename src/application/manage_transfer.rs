@@ -28,6 +28,26 @@ pub enum ManageTransferError {
     Repository(RepositoryError),
 }
 
+impl std::fmt::Display for ManageTransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TransferNotFound(id) => write!(f, "transfer {id} not found"),
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::CurrencyMismatch {
+                account_id,
+                expected,
+                found,
+            } => write!(
+                f,
+                "currency mismatch for account {account_id}: expected {expected}, found {found}"
+            ),
+            Self::NoChanges => write!(f, "no changes to apply"),
+            Self::Transfer(error) => write!(f, "{error}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
 impl From<TransferError> for ManageTransferError {
     fn from(error: TransferError) -> Self {
         Self::Transfer(error)

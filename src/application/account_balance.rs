@@ -12,6 +12,16 @@ pub enum GetAccountBalanceError {
     Balance(BalanceError),
 }
 
+impl std::fmt::Display for GetAccountBalanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+            Self::Balance(error) => write!(f, "{error}"),
+        }
+    }
+}
+
 impl From<RepositoryError> for GetAccountBalanceError {
     fn from(error: RepositoryError) -> Self {
         GetAccountBalanceError::Repository(error)

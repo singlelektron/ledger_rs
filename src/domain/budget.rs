@@ -15,6 +15,12 @@ impl BudgetId {
     }
 }
 
+impl std::fmt::Display for BudgetId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BudgetMonth {
     year: i32,
@@ -59,6 +65,15 @@ pub struct Budget {
 pub enum BudgetError {
     InvalidMonth { year: i32, month: u8 },
     InvalidLimit,
+}
+
+impl std::fmt::Display for BudgetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidMonth { year, month } => write!(f, "invalid month {year:04}-{month:02}"),
+            Self::InvalidLimit => write!(f, "budget limit must be greater than zero"),
+        }
+    }
 }
 
 impl NewBudget {

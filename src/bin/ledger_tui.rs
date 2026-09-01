@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
             .map_err(|error| io::Error::other(format!("failed to open database: {error:?}")))?;
     secure_database_file(&database)?;
     let mut app = App::load(&accounts, &transactions, &transfers)
-        .map_err(|error| io::Error::other(format!("failed to load dashboard: {error:?}")))?;
+        .map_err(|error| io::Error::other(format!("failed to load dashboard: {error}")))?;
 
     ratatui::run(|terminal| {
         loop {
@@ -51,14 +51,12 @@ fn main() -> io::Result<()> {
                 match app.handle_key(key.code) {
                     Action::Quit => return Ok(()),
                     Action::Reload => {
-                        app = App::load(&accounts, &transactions, &transfers).map_err(|error| {
-                            io::Error::other(format!("failed to refresh dashboard: {error:?}"))
-                        })?;
+                        app.reload(&accounts, &transactions, &transfers, None);
                     }
                     Action::RunReport(request) => {
                         match execute_report(request, &accounts, &transactions) {
                             Ok(report) => app.set_report(report),
-                            Err(error) => app.set_status(format!("Report failed: {error:?}"), true),
+                            Err(error) => app.set_status(format!("Report failed: {error}"), true),
                         }
                     }
                     Action::RunBudget(request) => {
@@ -75,17 +73,10 @@ fn main() -> io::Result<()> {
                         &budgets,
                     ) {
                         Ok(Some(message)) => {
-                            app = App::load(&accounts, &transactions, &transfers).map_err(
-                                |error| {
-                                    io::Error::other(format!(
-                                        "failed to refresh dashboard: {error:?}"
-                                    ))
-                                },
-                            )?;
-                            app.set_status(message, false);
+                            app.reload(&accounts, &transactions, &transfers, Some(message));
                         }
                         Ok(None) => {}
-                        Err(error) => app.set_status(format!("Operation failed: {error:?}"), true),
+                        Err(error) => app.set_status(format!("Operation failed: {error}"), true),
                     },
                 }
             }

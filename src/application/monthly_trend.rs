@@ -20,6 +20,26 @@ pub enum MonthlyTrendError {
     Repository(RepositoryError),
 }
 
+impl std::fmt::Display for MonthlyTrendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::InvalidRange { from, to } => write!(
+                f,
+                "invalid month range: {:04}-{:02} to {:04}-{:02}",
+                from.year(),
+                from.month(),
+                to.year(),
+                to.month()
+            ),
+            Self::InvalidTimeZone(value) => write!(f, "invalid time zone {value:?}"),
+            Self::InvalidMonthBoundary(value) => write!(f, "invalid month boundary: {value}"),
+            Self::Summary(error) => write!(f, "{error}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
 impl From<SummaryError> for MonthlyTrendError {
     fn from(error: SummaryError) -> Self {
         Self::Summary(error)

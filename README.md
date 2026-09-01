@@ -124,9 +124,10 @@ cargo run --bin ledger_tui -- --database path/to/ledger.db
 ```
 
 Use number keys to switch pages: `1` ledger, `2` unified activity, `3` reports,
-`4` budgets, and `5` transfers. Use Tab or the left/right arrows to focus the
-account or detail pane, then use the up/down arrows or `k`/`j` to move the
-selection.
+`4` budgets, and `5` transfers. On the ledger, budgets, and transfers pages,
+use Tab or the left/right arrows to focus the account or detail pane, then use
+the up/down arrows or `k`/`j` to move the selection. The activity and reports
+pages keep focus on the account pane because their content is read-only.
 
 On the ledger page, press `a` to create an account and `n` to create a
 transaction. On the transfer page, `n` creates a transfer. Press `e` or `d` to
@@ -135,6 +136,8 @@ outflow, `s` for a ranged summary, and `t` for a monthly trend. The budget page
 uses `l` to list limits, `b` to set or update a monthly category limit, and `u`
 to calculate monthly usage. Forms use Tab to move between fields, arrows to
 change enum values, Delete to clear text, Enter to submit, and Escape to cancel.
+Enter validates the form first; invalid input keeps the form open with an
+inline error message so the typed values are preserved.
 Press `r` to reload data and `q` to quit.
 
 CSV exchange and full-database JSON backup/restore remain CLI batch operations.

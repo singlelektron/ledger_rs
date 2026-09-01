@@ -24,8 +24,8 @@ use crate::{
         },
     },
     domain::{
-        account::{Account, AccountId},
-        budget::{Budget, BudgetId, BudgetMonth},
+        account::{Account, AccountId, NewAccount},
+        budget::{Budget, BudgetError, BudgetId, BudgetMonth},
         money::{Currency, Money},
         summary::SummaryReport,
         transaction::{
@@ -78,6 +78,17 @@ impl From<AccountActivityError> for LoadError {
     }
 }
 
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Accounts(error) => write!(f, "failed to list accounts: {error}"),
+            Self::Balance(error) => write!(f, "failed to compute balances: {error}"),
+            Self::Transactions(error) => write!(f, "failed to list transactions: {error}"),
+            Self::Activity(error) => write!(f, "failed to list account activity: {error}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountOverview {
     account: Account,
@@ -108,6 +119,10 @@ impl AccountOverview {
 pub struct App {
     accounts: Vec<AccountOverview>,
     selected_account: usize,
+    /// Index into the selectable rows of the current page. On the Ledger page
+    /// this indexes the selected account's transactions; on the Transfers and
+    /// Budgets pages it indexes the filtered transfer/budget rows. Every page
+    /// or account switch resets it to 0, which keeps this dual meaning safe.
     selected_transaction: usize,
     focus: Focus,
     page: Page,
@@ -202,6 +217,7 @@ struct AccountForm {
     name: String,
     currency: Currency,
     field: AccountField,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +275,7 @@ struct TransferForm {
     occurred_at: String,
     description: String,
     field: TransferField,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +340,30 @@ pub enum TransferInputError {
     Transfer(TransferError),
 }
 
+impl std::fmt::Display for TransferInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidAccountId(value) => {
+                write!(f, "invalid account id {value:?}; expected a numeric id")
+            }
+            Self::AccountNotFound(id) => write!(f, "account {id} not found"),
+            Self::InvalidAmount(value) => {
+                write!(
+                    f,
+                    "invalid amount {value:?}; expected a whole number of minor units"
+                )
+            }
+            Self::InvalidOccurredAt(value) => write!(
+                f,
+                "invalid timestamp {value:?}; expected a zoned timestamp like \
+                 2026-08-31T12:00:00+08:00[Asia/Shanghai]"
+            ),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+            Self::Transfer(error) => write!(f, "{error}"),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecuteActionError {
     CreateAccount(CreateAccountError),
@@ -376,6 +417,20 @@ impl From<ManageTransferError> for ExecuteActionError {
     }
 }
 
+impl std::fmt::Display for ExecuteActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CreateAccount(error) => write!(f, "create account failed: {error}"),
+            Self::ManageAccount(error) => write!(f, "manage account failed: {error}"),
+            Self::TransactionInput(error) => write!(f, "invalid transaction input: {error}"),
+            Self::TransferInput(error) => write!(f, "invalid transfer input: {error}"),
+            Self::RecordTransaction(error) => write!(f, "record transaction failed: {error}"),
+            Self::ManageTransaction(error) => write!(f, "manage transaction failed: {error}"),
+            Self::ManageTransfer(error) => write!(f, "manage transfer failed: {error}"),
+        }
+    }
+}
+
 impl TransactionInput {
     pub fn into_new_transaction(self) -> Result<NewTransaction, TransactionInputError> {
         let amount_minor = self
@@ -403,14 +458,19 @@ impl TransferInput {
         self,
         accounts: &impl AccountRepository,
     ) -> Result<NewTransfer, TransferInputError> {
+        self.into_new_transfer_with(|id| accounts.find_by_id(id))
+    }
+
+    fn into_new_transfer_with(
+        self,
+        resolve_account: impl Fn(AccountId) -> Result<Option<Account>, RepositoryError>,
+    ) -> Result<NewTransfer, TransferInputError> {
         let source_account_id = parse_transfer_account_id(&self.source_account_id)?;
         let destination_account_id = parse_transfer_account_id(&self.destination_account_id)?;
-        let source = accounts
-            .find_by_id(source_account_id)
+        let source = resolve_account(source_account_id)
             .map_err(TransferInputError::Repository)?
             .ok_or(TransferInputError::AccountNotFound(source_account_id))?;
-        let destination = accounts
-            .find_by_id(destination_account_id)
+        let destination = resolve_account(destination_account_id)
             .map_err(TransferInputError::Repository)?
             .ok_or(TransferInputError::AccountNotFound(destination_account_id))?;
         let source_amount = self
@@ -603,16 +663,7 @@ pub fn execute_budget(
 }
 
 fn parse_budget_month_for_budget(input: &str) -> Result<BudgetMonth, BudgetActionError> {
-    let (year, month) = input
-        .split_once('-')
-        .ok_or_else(|| BudgetActionError::InvalidMonth(input.to_string()))?;
-    let year = year
-        .parse::<i32>()
-        .map_err(|_| BudgetActionError::InvalidMonth(input.to_string()))?;
-    let month = month
-        .parse::<u8>()
-        .map_err(|_| BudgetActionError::InvalidMonth(input.to_string()))?;
-    BudgetMonth::new(year, month).map_err(|_| BudgetActionError::InvalidMonth(input.to_string()))
+    parse_budget_month_value(input).map_err(|_| BudgetActionError::InvalidMonth(input.to_string()))
 }
 
 pub fn execute_report(
@@ -673,16 +724,14 @@ pub fn execute_report(
 }
 
 fn parse_budget_month(input: &str) -> Result<BudgetMonth, ReportError> {
-    let (year, month) = input
-        .split_once('-')
-        .ok_or_else(|| ReportError::InvalidMonth(input.to_string()))?;
-    let year = year
-        .parse::<i32>()
-        .map_err(|_| ReportError::InvalidMonth(input.to_string()))?;
-    let month = month
-        .parse::<u8>()
-        .map_err(|_| ReportError::InvalidMonth(input.to_string()))?;
-    BudgetMonth::new(year, month).map_err(|_| ReportError::InvalidMonth(input.to_string()))
+    parse_budget_month_value(input).map_err(|_| ReportError::InvalidMonth(input.to_string()))
+}
+
+fn parse_budget_month_value(input: &str) -> Result<BudgetMonth, ()> {
+    let (year, month) = input.split_once('-').ok_or(())?;
+    let year = year.parse::<i32>().map_err(|_| ())?;
+    let month = month.parse::<u8>().map_err(|_| ())?;
+    BudgetMonth::new(year, month).map_err(|_| ())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -729,6 +778,22 @@ pub enum ReportError {
     Trend(MonthlyTrendError),
 }
 
+impl std::fmt::Display for ReportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidOccurredAt(value) => write!(
+                f,
+                "invalid timestamp {value:?}; expected a zoned timestamp like \
+                 2026-08-31T12:00:00+08:00[Asia/Shanghai]"
+            ),
+            Self::InvalidMonth(value) => write!(f, "invalid month {value:?}; expected YYYY-MM"),
+            Self::Category(error) => write!(f, "category report failed: {error}"),
+            Self::Summary(error) => write!(f, "summary report failed: {error}"),
+            Self::Trend(error) => write!(f, "trend report failed: {error}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReportField {
     From,
@@ -742,6 +807,7 @@ struct SummaryReportForm {
     from: String,
     to: String,
     field: ReportField,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -751,6 +817,7 @@ struct TrendReportForm {
     to: String,
     time_zone: String,
     field: ReportField,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -803,8 +870,8 @@ impl std::fmt::Display for BudgetActionError {
                 f,
                 "invalid budget limit {value:?}; expected a whole number of minor units"
             ),
-            Self::Manage(error) => write!(f, "budget operation failed: {error:?}"),
-            Self::Report(error) => write!(f, "budget report failed: {error:?}"),
+            Self::Manage(error) => write!(f, "budget operation failed: {error}"),
+            Self::Report(error) => write!(f, "budget report failed: {error}"),
         }
     }
 }
@@ -823,6 +890,7 @@ struct BudgetForm {
     month: String,
     limit_minor: String,
     field: BudgetField,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -831,6 +899,7 @@ struct BudgetStatusForm {
     month: String,
     time_zone: String,
     field: ReportField,
+    error: Option<String>,
 }
 
 impl App {
@@ -942,6 +1011,26 @@ impl App {
             message: message.into(),
             is_error,
         });
+    }
+
+    /// Reload the dashboard after a mutation or on the refresh shortcut.
+    ///
+    /// A failed reload never terminates the session: the previous dashboard
+    /// state is retained and the error is surfaced in the status line. When a
+    /// mutation already committed, `success_message` is shown alongside the
+    /// refresh failure so the user knows the write succeeded.
+    pub fn reload(
+        &mut self,
+        accounts: &impl AccountRepository,
+        transactions: &impl TransactionRepository,
+        transfers: &impl TransferRepository,
+        success_message: Option<String>,
+    ) {
+        reload_dashboard_with(
+            self,
+            || App::load(accounts, transactions, transfers),
+            success_message,
+        );
     }
 
     pub fn set_report(&mut self, report: ReportResult) {
@@ -1077,7 +1166,7 @@ impl App {
                 };
             }
             Mode::TransferForm(form) => {
-                let (mode, action) = handle_transfer_form_key(form, key);
+                let (mode, action) = handle_transfer_form_key(form, key, &self.accounts);
                 self.mode = mode;
                 return action;
             }
@@ -1247,7 +1336,8 @@ impl App {
                         destination_amount_minor: String::new(),
                         occurred_at: jiff::Zoned::now().to_string(),
                         description: String::new(),
-                        field: TransferField::DestinationAccount,
+                        field: TransferField::SourceAccount,
+                        error: None,
                     });
                 }
                 Action::Continue
@@ -1271,6 +1361,7 @@ impl App {
                         occurred_at: transfer.occurred_at().to_string(),
                         description: transfer.description().to_string(),
                         field: TransferField::SourceAccount,
+                        error: None,
                     });
                 }
                 Action::Continue
@@ -1289,6 +1380,7 @@ impl App {
                     name: String::new(),
                     currency: Currency::Cny,
                     field: AccountField::Name,
+                    error: None,
                 });
                 Action::Continue
             }
@@ -1316,6 +1408,7 @@ impl App {
                         name: account.name().to_string(),
                         currency: account.currency(),
                         field: AccountField::Name,
+                        error: None,
                     });
                 }
                 Action::Continue
@@ -1357,18 +1450,24 @@ impl App {
                 Action::Continue
             }
             KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Accounts => Focus::Transactions,
-                    Focus::Transactions => Focus::Accounts,
-                };
+                if matches!(self.page, Page::Ledger | Page::Budgets | Page::Transfers) {
+                    self.focus = match self.focus {
+                        Focus::Accounts => Focus::Transactions,
+                        Focus::Transactions => Focus::Accounts,
+                    };
+                }
                 Action::Continue
             }
             KeyCode::Left => {
-                self.focus = Focus::Accounts;
+                if matches!(self.page, Page::Ledger | Page::Budgets | Page::Transfers) {
+                    self.focus = Focus::Accounts;
+                }
                 Action::Continue
             }
             KeyCode::Right => {
-                self.focus = Focus::Transactions;
+                if matches!(self.page, Page::Ledger | Page::Budgets | Page::Transfers) {
+                    self.focus = Focus::Transactions;
+                }
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1384,10 +1483,49 @@ impl App {
     }
 }
 
+fn reload_dashboard_with(
+    app: &mut App,
+    load: impl FnOnce() -> Result<App, LoadError>,
+    success_message: Option<String>,
+) {
+    match load() {
+        Ok(loaded) => {
+            *app = loaded;
+            if let Some(message) = success_message {
+                app.set_status(message, false);
+            }
+        }
+        Err(error) => {
+            let message = match success_message {
+                Some(message) => format!("{message}; dashboard refresh failed: {error}"),
+                None => format!("Failed to refresh dashboard: {error}"),
+            };
+            app.set_status(message, true);
+        }
+    }
+}
+
 fn handle_account_form_key(mut form: AccountForm, key: KeyCode) -> (Mode, Action) {
-    let action = match key {
+    match key {
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
         KeyCode::Enter => {
+            let validation = match form.kind {
+                AccountFormKind::Create => {
+                    NewAccount::new(form.name.clone(), form.currency).map(|_| ())
+                }
+                AccountFormKind::Rename(id) => {
+                    Account::new(id, form.name.clone(), form.currency).map(|_| ())
+                }
+            };
+            if let Err(error) = validation {
+                return (
+                    Mode::AccountForm(AccountForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
             let action = match form.kind {
                 AccountFormKind::Create => Action::CreateAccount {
                     name: form.name,
@@ -1425,7 +1563,8 @@ fn handle_account_form_key(mut form: AccountForm, key: KeyCode) -> (Mode, Action
         }
         _ => Action::Continue,
     };
-    (Mode::AccountForm(form), action)
+    form.error = None;
+    (Mode::AccountForm(form), Action::Continue)
 }
 
 fn default_summary_form(account_id: AccountId) -> SummaryReportForm {
@@ -1436,6 +1575,7 @@ fn default_summary_form(account_id: AccountId) -> SummaryReportForm {
         from: from.to_string(),
         to: to.to_string(),
         field: ReportField::From,
+        error: None,
     }
 }
 
@@ -1447,6 +1587,7 @@ fn default_budget_form(account_id: AccountId) -> BudgetForm {
         month: format!("{:04}-{:02}", now.year(), now.month()),
         limit_minor: String::new(),
         field: BudgetField::Category,
+        error: None,
     }
 }
 
@@ -1457,6 +1598,7 @@ fn default_budget_status_form(account_id: AccountId) -> BudgetStatusForm {
         month: format!("{:04}-{:02}", now.year(), now.month()),
         time_zone: now.time_zone().iana_name().unwrap_or("UTC").to_string(),
         field: ReportField::From,
+        error: None,
     }
 }
 
@@ -1464,6 +1606,15 @@ fn handle_budget_form_key(mut form: BudgetForm, key: KeyCode) -> (Mode, Action) 
     match key {
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
         KeyCode::Enter => {
+            if let Err(error) = validate_budget_form(&form) {
+                return (
+                    Mode::BudgetForm(BudgetForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
             return (
                 Mode::Browse,
                 Action::RunBudget(BudgetRequest::Set {
@@ -1511,7 +1662,22 @@ fn handle_budget_form_key(mut form: BudgetForm, key: KeyCode) -> (Mode, Action) 
         }
         _ => {}
     }
+    form.error = None;
     (Mode::BudgetForm(form), Action::Continue)
+}
+
+fn validate_budget_form(form: &BudgetForm) -> Result<(), BudgetActionError> {
+    parse_budget_month_for_budget(&form.month)?;
+    let limit = form
+        .limit_minor
+        .parse::<i64>()
+        .map_err(|_| BudgetActionError::InvalidLimit(form.limit_minor.clone()))?;
+    if limit <= 0 {
+        return Err(BudgetActionError::Manage(ManageBudgetError::Budget(
+            BudgetError::InvalidLimit,
+        )));
+    }
+    Ok(())
 }
 
 fn active_budget_text(form: &mut BudgetForm) -> Option<&mut String> {
@@ -1526,6 +1692,15 @@ fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (M
     match key {
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
         KeyCode::Enter => {
+            if let Err(error) = parse_budget_month_for_budget(&form.month) {
+                return (
+                    Mode::BudgetStatusForm(BudgetStatusForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
             return (
                 Mode::Browse,
                 Action::RunBudget(BudgetRequest::Status {
@@ -1548,6 +1723,7 @@ fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (M
         KeyCode::Char(character) => active_budget_status_text(&mut form).push(character),
         _ => {}
     }
+    form.error = None;
     (Mode::BudgetStatusForm(form), Action::Continue)
 }
 
@@ -1568,6 +1744,7 @@ fn default_trend_form(account_id: AccountId) -> TrendReportForm {
         to: month,
         time_zone,
         field: ReportField::From,
+        error: None,
     }
 }
 
@@ -1575,6 +1752,34 @@ fn handle_summary_report_form_key(mut form: SummaryReportForm, key: KeyCode) -> 
     match key {
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
         KeyCode::Enter => {
+            if let Err(error) = form
+                .from
+                .parse::<jiff::Zoned>()
+                .map(|_| ())
+                .map_err(|_| TransactionInputError::InvalidOccurredAt(form.from.clone()))
+            {
+                return (
+                    Mode::SummaryReportForm(SummaryReportForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
+            if let Err(error) = form
+                .to
+                .parse::<jiff::Zoned>()
+                .map(|_| ())
+                .map_err(|_| TransactionInputError::InvalidOccurredAt(form.to.clone()))
+            {
+                return (
+                    Mode::SummaryReportForm(SummaryReportForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
             return (
                 Mode::Browse,
                 Action::RunReport(ReportRequest::Summary {
@@ -1597,6 +1802,7 @@ fn handle_summary_report_form_key(mut form: SummaryReportForm, key: KeyCode) -> 
         KeyCode::Char(character) => active_summary_text(&mut form).push(character),
         _ => {}
     }
+    form.error = None;
     (Mode::SummaryReportForm(form), Action::Continue)
 }
 
@@ -1611,6 +1817,24 @@ fn handle_trend_report_form_key(mut form: TrendReportForm, key: KeyCode) -> (Mod
     match key {
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
         KeyCode::Enter => {
+            if let Err(error) = parse_budget_month(&form.from) {
+                return (
+                    Mode::TrendReportForm(TrendReportForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
+            if let Err(error) = parse_budget_month(&form.to) {
+                return (
+                    Mode::TrendReportForm(TrendReportForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
             return (
                 Mode::Browse,
                 Action::RunReport(ReportRequest::Trend {
@@ -1642,6 +1866,7 @@ fn handle_trend_report_form_key(mut form: TrendReportForm, key: KeyCode) -> (Mod
         KeyCode::Char(character) => active_trend_text(&mut form).push(character),
         _ => {}
     }
+    form.error = None;
     (Mode::TrendReportForm(form), Action::Continue)
 }
 
@@ -1713,10 +1938,23 @@ fn handle_transaction_form_key(mut form: TransactionForm, key: KeyCode) -> (Mode
     (Mode::TransactionForm(form), Action::Continue)
 }
 
-fn handle_transfer_form_key(mut form: TransferForm, key: KeyCode) -> (Mode, Action) {
+fn handle_transfer_form_key(
+    mut form: TransferForm,
+    key: KeyCode,
+    accounts: &[AccountOverview],
+) -> (Mode, Action) {
     match key {
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
         KeyCode::Enter => {
+            if let Err(error) = form.validate(accounts) {
+                return (
+                    Mode::TransferForm(TransferForm {
+                        error: Some(error.to_string()),
+                        ..form
+                    }),
+                    Action::Continue,
+                );
+            }
             let kind = form.kind;
             let input = form.into_input();
             let action = match kind {
@@ -1734,6 +1972,7 @@ fn handle_transfer_form_key(mut form: TransferForm, key: KeyCode) -> (Mode, Acti
         KeyCode::Char(character) => active_transfer_text(&mut form).push(character),
         _ => {}
     }
+    form.error = None;
     (Mode::TransferForm(form), Action::Continue)
 }
 
@@ -1747,6 +1986,19 @@ impl TransferForm {
             occurred_at: self.occurred_at,
             description: self.description,
         }
+    }
+
+    fn validate(&self, accounts: &[AccountOverview]) -> Result<(), TransferInputError> {
+        self.clone()
+            .into_input()
+            .into_new_transfer_with(|id| {
+                Ok(accounts
+                    .iter()
+                    .map(AccountOverview::account)
+                    .find(|account| account.id() == id)
+                    .cloned())
+            })
+            .map(|_| ())
     }
 }
 
@@ -1988,7 +2240,7 @@ fn render_mode(frame: &mut Frame, app: &App) {
         Mode::Browse => {}
         Mode::AccountForm(form) => render_account_form(frame, form),
         Mode::TransactionForm(form) => render_transaction_form(frame, form),
-        Mode::TransferForm(form) => render_transfer_form(frame, form),
+        Mode::TransferForm(form) => render_transfer_form(frame, form, &app.accounts),
         Mode::SummaryReportForm(form) => render_summary_report_form(frame, form),
         Mode::TrendReportForm(form) => render_trend_report_form(frame, form),
         Mode::BudgetForm(form) => render_budget_form(frame, form),
@@ -2062,30 +2314,31 @@ fn render_mode(frame: &mut Frame, app: &App) {
 }
 
 fn render_budget_form(frame: &mut Frame, form: &BudgetForm) {
-    let area = centered_rect(frame.area(), 62, 8);
+    let area = centered_rect(frame.area(), 62, 8 + u16::from(form.error.is_some()));
     frame.render_widget(Clear, area);
+    let mut lines = vec![
+        Line::from(format!("Account: {}", form.account_id.value())),
+        transaction_form_line(
+            "Category",
+            category_label(form.category).to_string(),
+            form.field == BudgetField::Category,
+        ),
+        transaction_form_line(
+            "Month",
+            form.month.clone(),
+            form.field == BudgetField::Month,
+        ),
+        transaction_form_line(
+            "Limit (minor units)",
+            form.limit_minor.clone(),
+            form.field == BudgetField::Limit,
+        ),
+        Line::from("Tab changes field; arrows change category."),
+        Line::from("Delete clears text; Enter saves; Esc cancels."),
+    ];
+    push_form_error(&mut lines, form.error.as_deref());
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(format!("Account: {}", form.account_id.value())),
-            transaction_form_line(
-                "Category",
-                category_label(form.category).to_string(),
-                form.field == BudgetField::Category,
-            ),
-            transaction_form_line(
-                "Month",
-                form.month.clone(),
-                form.field == BudgetField::Month,
-            ),
-            transaction_form_line(
-                "Limit (minor units)",
-                form.limit_minor.clone(),
-                form.field == BudgetField::Limit,
-            ),
-            Line::from("Tab changes field; arrows change category."),
-            Line::from("Delete clears text; Enter saves; Esc cancels."),
-        ])
-        .block(
+        Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Set monthly budget "),
@@ -2095,21 +2348,22 @@ fn render_budget_form(frame: &mut Frame, form: &BudgetForm) {
 }
 
 fn render_budget_status_form(frame: &mut Frame, form: &BudgetStatusForm) {
-    let area = centered_rect(frame.area(), 68, 7);
+    let area = centered_rect(frame.area(), 68, 7 + u16::from(form.error.is_some()));
     frame.render_widget(Clear, area);
+    let mut lines = vec![
+        Line::from(format!("Account: {}", form.account_id.value())),
+        transaction_form_line("Month", form.month.clone(), form.field == ReportField::From),
+        transaction_form_line(
+            "Time zone",
+            form.time_zone.clone(),
+            form.field == ReportField::TimeZone,
+        ),
+        Line::from("Month uses YYYY-MM; Tab changes field."),
+        Line::from("Delete clears text; Enter runs; Esc cancels."),
+    ];
+    push_form_error(&mut lines, form.error.as_deref());
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(format!("Account: {}", form.account_id.value())),
-            transaction_form_line("Month", form.month.clone(), form.field == ReportField::From),
-            transaction_form_line(
-                "Time zone",
-                form.time_zone.clone(),
-                form.field == ReportField::TimeZone,
-            ),
-            Line::from("Month uses YYYY-MM; Tab changes field."),
-            Line::from("Delete clears text; Enter runs; Esc cancels."),
-        ])
-        .block(
+        Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Budget status "),
@@ -2118,70 +2372,74 @@ fn render_budget_status_form(frame: &mut Frame, form: &BudgetStatusForm) {
     );
 }
 
-fn render_transfer_form(frame: &mut Frame, form: &TransferForm) {
-    let area = centered_rect(frame.area(), 82, 11);
+fn render_transfer_form(frame: &mut Frame, form: &TransferForm, accounts: &[AccountOverview]) {
+    let area = centered_rect(frame.area(), 82, 11 + u16::from(form.error.is_some()));
     frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(vec![
-            transaction_form_line(
-                "Source account ID",
-                form.source_account_id.clone(),
-                form.field == TransferField::SourceAccount,
-            ),
-            transaction_form_line(
-                "Destination account ID",
-                form.destination_account_id.clone(),
-                form.field == TransferField::DestinationAccount,
-            ),
-            transaction_form_line(
-                "Source amount (minor units)",
-                form.source_amount_minor.clone(),
-                form.field == TransferField::SourceAmount,
-            ),
-            transaction_form_line(
-                "Destination amount (minor units)",
-                form.destination_amount_minor.clone(),
-                form.field == TransferField::DestinationAmount,
-            ),
-            transaction_form_line(
-                "Occurred at",
-                form.occurred_at.clone(),
-                form.field == TransferField::OccurredAt,
-            ),
-            transaction_form_line(
-                "Description",
-                form.description.clone(),
-                form.field == TransferField::Description,
-            ),
-            Line::from(
-                "Amounts use each account's currency; equal currencies require equal amounts.",
-            ),
-            Line::from("Tab/Shift-Tab changes field; Delete clears; Enter saves; Esc cancels."),
-        ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(match form.kind {
-                    TransferFormKind::Create => " Create transfer ",
-                    TransferFormKind::Edit(_) => " Edit transfer ",
-                }),
+    let account_ids = accounts
+        .iter()
+        .map(|overview| overview.account().id().value().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut lines = vec![
+        transaction_form_line(
+            "Source account ID",
+            form.source_account_id.clone(),
+            form.field == TransferField::SourceAccount,
         ),
+        transaction_form_line(
+            "Destination account ID",
+            form.destination_account_id.clone(),
+            form.field == TransferField::DestinationAccount,
+        ),
+        transaction_form_line(
+            "Source amount (minor units)",
+            form.source_amount_minor.clone(),
+            form.field == TransferField::SourceAmount,
+        ),
+        transaction_form_line(
+            "Destination amount (minor units)",
+            form.destination_amount_minor.clone(),
+            form.field == TransferField::DestinationAmount,
+        ),
+        transaction_form_line(
+            "Occurred at",
+            form.occurred_at.clone(),
+            form.field == TransferField::OccurredAt,
+        ),
+        transaction_form_line(
+            "Description",
+            form.description.clone(),
+            form.field == TransferField::Description,
+        ),
+        Line::from(format!("Available account IDs: {account_ids}")),
+        Line::from("Amounts use each account's currency; equal currencies require equal amounts."),
+        Line::from("Tab/Shift-Tab changes field; Delete clears; Enter saves; Esc cancels."),
+    ];
+    push_form_error(&mut lines, form.error.as_deref());
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
+            match form.kind {
+                TransferFormKind::Create => " Create transfer ",
+                TransferFormKind::Edit(_) => " Edit transfer ",
+            },
+        )),
         area,
     );
 }
 
 fn render_summary_report_form(frame: &mut Frame, form: &SummaryReportForm) {
-    let area = centered_rect(frame.area(), 82, 7);
+    let area = centered_rect(frame.area(), 82, 7 + u16::from(form.error.is_some()));
     frame.render_widget(Clear, area);
+    let mut lines = vec![
+        Line::from(format!("Account: {}", form.account_id.value())),
+        transaction_form_line("From", form.from.clone(), form.field == ReportField::From),
+        transaction_form_line("To", form.to.clone(), form.field == ReportField::To),
+        Line::from("Use complete zoned timestamps; Tab changes field."),
+        Line::from("Delete clears text; Enter runs; Esc cancels."),
+    ];
+    push_form_error(&mut lines, form.error.as_deref());
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(format!("Account: {}", form.account_id.value())),
-            transaction_form_line("From", form.from.clone(), form.field == ReportField::From),
-            transaction_form_line("To", form.to.clone(), form.field == ReportField::To),
-            Line::from("Use complete zoned timestamps; Tab changes field."),
-            Line::from("Delete clears text; Enter runs; Esc cancels."),
-        ])
-        .block(
+        Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Ranged summary "),
@@ -2191,26 +2449,27 @@ fn render_summary_report_form(frame: &mut Frame, form: &SummaryReportForm) {
 }
 
 fn render_trend_report_form(frame: &mut Frame, form: &TrendReportForm) {
-    let area = centered_rect(frame.area(), 70, 8);
+    let area = centered_rect(frame.area(), 70, 8 + u16::from(form.error.is_some()));
     frame.render_widget(Clear, area);
+    let mut lines = vec![
+        Line::from(format!("Account: {}", form.account_id.value())),
+        transaction_form_line(
+            "From month",
+            form.from.clone(),
+            form.field == ReportField::From,
+        ),
+        transaction_form_line("To month", form.to.clone(), form.field == ReportField::To),
+        transaction_form_line(
+            "Time zone",
+            form.time_zone.clone(),
+            form.field == ReportField::TimeZone,
+        ),
+        Line::from("Months use YYYY-MM; Tab changes field."),
+        Line::from("Delete clears text; Enter runs; Esc cancels."),
+    ];
+    push_form_error(&mut lines, form.error.as_deref());
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(format!("Account: {}", form.account_id.value())),
-            transaction_form_line(
-                "From month",
-                form.from.clone(),
-                form.field == ReportField::From,
-            ),
-            transaction_form_line("To month", form.to.clone(), form.field == ReportField::To),
-            transaction_form_line(
-                "Time zone",
-                form.time_zone.clone(),
-                form.field == ReportField::TimeZone,
-            ),
-            Line::from("Months use YYYY-MM; Tab changes field."),
-            Line::from("Delete clears text; Enter runs; Esc cancels."),
-        ])
-        .block(
+        Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Monthly trend "),
@@ -2282,7 +2541,11 @@ fn transaction_form_line(label: &str, value: String, selected: bool) -> Line<'st
 
 fn render_account_form(frame: &mut Frame, form: &AccountForm) {
     let is_create = form.kind == AccountFormKind::Create;
-    let area = centered_rect(frame.area(), 58, if is_create { 8 } else { 7 });
+    let area = centered_rect(
+        frame.area(),
+        58,
+        if is_create { 8 } else { 7 } + u16::from(form.error.is_some()),
+    );
     frame.render_widget(Clear, area);
     let mut lines = vec![Line::from(vec![
         Span::raw("Name: "),
@@ -2302,6 +2565,7 @@ fn render_account_form(frame: &mut Frame, form: &AccountForm) {
         lines.push(Line::from("Tab changes field; arrows change currency."));
     }
     lines.push(Line::from("Enter saves; Esc cancels."));
+    push_form_error(&mut lines, form.error.as_deref());
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(if is_create {
             " Create account "
@@ -2310,6 +2574,15 @@ fn render_account_form(frame: &mut Frame, form: &AccountForm) {
         })),
         area,
     );
+}
+
+fn push_form_error(lines: &mut Vec<Line<'static>>, error: Option<&str>) {
+    if let Some(error) = error {
+        lines.push(Line::from(Span::styled(
+            error.to_string(),
+            Style::default().fg(Color::Red),
+        )));
+    }
 }
 
 fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
@@ -2583,71 +2856,64 @@ fn render_budgets(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let (rows, widths, title): (Vec<Row>, [Constraint; 5], String) = match result {
-        BudgetResult::List(budgets) => (
-            budgets
-                .iter()
-                .map(|budget| {
-                    Row::new([
-                        Cell::from(format_budget_month(budget.month())),
-                        Cell::from(category_label(budget.category())),
-                        Cell::from(format_money(budget.limit())),
-                        Cell::from(""),
-                        Cell::from(""),
-                    ])
-                })
-                .collect(),
-            [
-                Constraint::Length(9),
-                Constraint::Percentage(35),
-                Constraint::Percentage(35),
-                Constraint::Length(0),
-                Constraint::Length(0),
-            ],
-            format!(" Budgets ({}) ", budgets.len()),
-        ),
-        BudgetResult::Status {
-            month,
-            time_zone,
-            rows,
-        } => (
-            rows.iter()
-                .map(|status| {
-                    Row::new([
-                        Cell::from(category_label(status.budget.category())),
-                        Cell::from(format_money(status.budget.limit())),
-                        Cell::from(format_money(&status.used)),
-                        Cell::from(format_money(&status.remaining)),
-                        Cell::from(if status.overrun { "Over" } else { "Within" }),
-                    ])
-                    .style(if status.overrun {
-                        Style::default().fg(Color::Red)
-                    } else {
-                        Style::default()
+    let (rows, widths, header_cells, title): (Vec<Row>, Vec<Constraint>, Vec<&str>, String) =
+        match result {
+            BudgetResult::List(budgets) => (
+                budgets
+                    .iter()
+                    .map(|budget| {
+                        Row::new([
+                            Cell::from(format_budget_month(budget.month())),
+                            Cell::from(category_label(budget.category())),
+                            Cell::from(format_money(budget.limit())),
+                        ])
                     })
-                })
-                .collect(),
-            [
-                Constraint::Percentage(25),
-                Constraint::Percentage(20),
-                Constraint::Percentage(20),
-                Constraint::Percentage(20),
-                Constraint::Percentage(15),
-            ],
-            format!(
-                " Budget status {} ({}) ",
-                format_budget_month(*month),
-                time_zone
+                    .collect(),
+                vec![
+                    Constraint::Length(9),
+                    Constraint::Percentage(45),
+                    Constraint::Percentage(46),
+                ],
+                vec!["Month", "Category", "Limit"],
+                format!(" Budgets ({}) ", budgets.len()),
             ),
-        ),
-    };
-    let header = match result {
-        BudgetResult::List(_) => Row::new(["Month", "Category", "Limit", "", ""]),
-        BudgetResult::Status { .. } => {
-            Row::new(["Category", "Limit", "Used", "Remaining", "State"])
-        }
-    }
-    .style(Style::default().fg(Color::Cyan).bold());
+            BudgetResult::Status {
+                month,
+                time_zone,
+                rows,
+            } => (
+                rows.iter()
+                    .map(|status| {
+                        Row::new([
+                            Cell::from(category_label(status.budget.category())),
+                            Cell::from(format_money(status.budget.limit())),
+                            Cell::from(format_money(&status.used)),
+                            Cell::from(format_money(&status.remaining)),
+                            Cell::from(if status.overrun { "Over" } else { "Within" }),
+                        ])
+                        .style(if status.overrun {
+                            Style::default().fg(Color::Red)
+                        } else {
+                            Style::default()
+                        })
+                    })
+                    .collect(),
+                vec![
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(15),
+                ],
+                vec!["Category", "Limit", "Used", "Remaining", "State"],
+                format!(
+                    " Budget status {} ({}) ",
+                    format_budget_month(*month),
+                    time_zone
+                ),
+            ),
+        };
+    let header = Row::new(header_cells).style(Style::default().fg(Color::Cyan).bold());
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
@@ -3170,6 +3436,255 @@ mod tests {
     }
 
     #[test]
+    fn action_report_and_load_errors_display_clear_messages() {
+        assert_eq!(
+            ExecuteActionError::ManageAccount(ManageAccountError::HasTransactions(AccountId::new(
+                1
+            )))
+            .to_string(),
+            "manage account failed: account 1 has transactions"
+        );
+        assert_eq!(
+            ReportError::InvalidMonth("abc".to_string()).to_string(),
+            "invalid month \"abc\"; expected YYYY-MM"
+        );
+        assert_eq!(
+            TransferInputError::InvalidAmount("abc".to_string()).to_string(),
+            "invalid amount \"abc\"; expected a whole number of minor units"
+        );
+        assert_eq!(
+            LoadError::Activity(AccountActivityError::AccountNotFound(AccountId::new(9)))
+                .to_string(),
+            "failed to list account activity: account 9 not found"
+        );
+    }
+
+    #[test]
+    fn reload_failure_keeps_previous_dashboard_and_surfaces_status() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        reload_dashboard_with(
+            &mut app,
+            || {
+                Err(LoadError::Accounts(ListAccountsError::Repository(
+                    RepositoryError::Storage("database unavailable".to_string()),
+                )))
+            },
+            Some("Created transaction 3".to_string()),
+        );
+
+        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.page(), Page::Ledger);
+        let status = app.status.as_ref().unwrap();
+        assert!(status.is_error);
+        assert!(status.message.contains("Created transaction 3"));
+        assert!(status.message.contains("dashboard refresh failed"));
+        assert!(status.message.contains("failed to list accounts"));
+
+        reload_dashboard_with(
+            &mut app,
+            || {
+                Err(LoadError::Balance(GetAccountBalanceError::Repository(
+                    RepositoryError::Storage("unavailable".to_string()),
+                )))
+            },
+            None,
+        );
+        let status = app.status.as_ref().unwrap();
+        assert!(status.is_error);
+        assert!(status.message.starts_with("Failed to refresh dashboard"));
+        assert!(status.message.contains("failed to compute balances"));
+    }
+
+    #[test]
+    fn invalid_account_name_keeps_form_open_and_preserves_input() {
+        let accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('a'));
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(
+            &app.mode,
+            Mode::AccountForm(form) if form.error.as_deref() == Some("account name must not be empty")
+        ));
+
+        for character in "Cash".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::CreateAccount { name, .. } if name == "Cash"
+        ));
+    }
+
+    #[test]
+    fn invalid_transfer_input_keeps_form_open_and_retains_values() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts
+            .save(Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('5'));
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        for character in "abc".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(
+            &app.mode,
+            Mode::TransferForm(form)
+                if form.error.as_deref()
+                    == Some("invalid amount \"abc\"; expected a whole number of minor units")
+        ));
+        assert!(matches!(
+            &app.mode,
+            Mode::TransferForm(form) if form.source_amount_minor == "abc"
+        ));
+
+        app.handle_key(KeyCode::Delete);
+        for character in "500".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        for character in "500".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        for character in "Savings".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        assert!(matches!(
+            app.handle_key(KeyCode::Enter),
+            Action::CreateTransfer(_)
+        ));
+    }
+
+    #[test]
+    fn transfer_form_reports_missing_destination_account_inline() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('5'));
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(
+            &app.mode,
+            Mode::TransferForm(form)
+                if form.error.as_deref() == Some("invalid account id \"\"; expected a numeric id")
+        ));
+    }
+
+    #[test]
+    fn invalid_budget_input_keeps_form_open() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('4'));
+        app.handle_key(KeyCode::Char('b'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        for character in "abc".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(
+            &app.mode,
+            Mode::BudgetForm(form) if form.error.as_deref().is_some()
+        ));
+
+        app.handle_key(KeyCode::BackTab);
+        app.handle_key(KeyCode::Delete);
+        for character in "13".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(
+            &app.mode,
+            Mode::BudgetForm(form)
+                if form.error.as_deref() == Some("invalid budget month \"13\"; expected YYYY-MM")
+        ));
+    }
+
+    #[test]
+    fn invalid_report_input_keeps_form_open() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('3'));
+        app.handle_key(KeyCode::Char('t'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Delete);
+        for character in "abc".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(
+            &app.mode,
+            Mode::TrendReportForm(form)
+                if form.error.as_deref() == Some("invalid month \"abc\"; expected YYYY-MM")
+        ));
+    }
+
+    #[test]
+    fn focus_stays_on_accounts_on_pages_without_selectable_rows() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+
+        app.handle_key(KeyCode::Char('2'));
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.focus(), Focus::Accounts);
+        app.handle_key(KeyCode::Right);
+        assert_eq!(app.focus(), Focus::Accounts);
+
+        app.handle_key(KeyCode::Char('3'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Left);
+        app.handle_key(KeyCode::Right);
+        assert_eq!(app.focus(), Focus::Accounts);
+
+        app.handle_key(KeyCode::Char('5'));
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.focus(), Focus::Transactions);
+    }
+
+    #[test]
     fn budget_page_emits_list_set_status_and_delete_requests() {
         let mut accounts = InMemoryAccountRepository::new();
         let transactions = InMemoryTransactionRepository::new();
@@ -3192,6 +3707,11 @@ mod tests {
             })
         );
         app.handle_key(KeyCode::Char('b'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        for character in "1000".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
         assert!(matches!(
             app.handle_key(KeyCode::Enter),
             Action::RunBudget(BudgetRequest::Set { account_id, .. })
@@ -3665,6 +4185,29 @@ mod tests {
     }
 
     #[test]
+    fn renders_transfer_form_with_available_account_ids() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts
+            .save(Account::new(AccountId::new(2), "Bank".to_string(), Currency::Usd).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('5'));
+        app.handle_key(KeyCode::Char('n'));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Create transfer"));
+        assert!(screen.contains("Available account IDs: 1, 2"));
+    }
+
+    #[test]
     fn transfer_page_emits_create_edit_and_delete_actions() {
         let mut accounts = InMemoryAccountRepository::new();
         let transactions = InMemoryTransactionRepository::new();
@@ -3692,6 +4235,20 @@ mod tests {
         assert_eq!(app.handle_key(KeyCode::Char('5')), Action::Continue);
         assert_eq!(app.page(), Page::Transfers);
         app.handle_key(KeyCode::Char('n'));
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        for character in "500".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        for character in "500".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        for character in "Savings".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
         assert!(matches!(
             app.handle_key(KeyCode::Enter),
             Action::CreateTransfer(TransferInput {
