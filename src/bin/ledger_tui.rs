@@ -57,19 +57,26 @@ fn main() -> io::Result<()> {
                 }
                 match app.handle_key(key.code) {
                     Action::Quit => return Ok(()),
+                    Action::Continue => {}
                     Action::Reload => {
                         app.reload(&accounts, &transactions, &transfers, None);
                     }
                     Action::RunReport(request) => {
                         match execute_report(request, &accounts, &transactions) {
-                            Ok(report) => app.set_report(report),
-                            Err(error) => app.set_status(format!("Report failed: {error}"), true),
+                            Ok(report) => {
+                                app.set_report(report);
+                                app.action_succeeded();
+                            }
+                            Err(error) => app.action_failed(format!("Report failed: {error}")),
                         }
                     }
                     Action::RunBudget(request) => {
                         match execute_budget(request, &accounts, &transactions, &mut budgets) {
-                            Ok(result) => app.set_budget(result),
-                            Err(error) => app.set_status(format!("Budget failed: {error}"), true),
+                            Ok(result) => {
+                                app.set_budget(result);
+                                app.action_succeeded();
+                            }
+                            Err(error) => app.action_failed(format!("Budget failed: {error}")),
                         }
                     }
                     action => match execute_action(
@@ -80,10 +87,11 @@ fn main() -> io::Result<()> {
                         &budgets,
                     ) {
                         Ok(Some(message)) => {
+                            app.action_succeeded();
                             app.reload(&accounts, &transactions, &transfers, Some(message));
                         }
-                        Ok(None) => {}
-                        Err(error) => app.set_status(format!("Operation failed: {error}"), true),
+                        Ok(None) => app.action_succeeded(),
+                        Err(error) => app.action_failed(format!("Operation failed: {error}")),
                     },
                 }
             }
