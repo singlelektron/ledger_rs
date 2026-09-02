@@ -139,6 +139,7 @@ struct ReloadState {
     page: Page,
     focus: Focus,
     selected_account: usize,
+    selected_account_id: Option<AccountId>,
     selected_transaction: usize,
     report: Option<ReportResult>,
     budget: Option<BudgetResult>,
@@ -1161,6 +1162,9 @@ impl App {
             page: self.page,
             focus: self.focus,
             selected_account: self.selected_account,
+            selected_account_id: self
+                .selected_account()
+                .map(|account| account.account().id()),
             selected_transaction: self.selected_transaction,
             report: self.report.clone(),
             budget: self.budget.clone(),
@@ -1176,11 +1180,14 @@ impl App {
             state.selected_account.min(self.accounts.len() - 1)
         };
         // Loaded report/budget results describe the account that was selected
-        // when they were produced; if clamping moved the selection to a
-        // different account (or none remains), keeping them would show stale
-        // data under the wrong account header.
-        let keep_loaded_results =
-            !self.accounts.is_empty() && self.selected_account == state.selected_account;
+        // when they were produced; if that account no longer occupies the
+        // selected position (or no account remains), keeping them would show
+        // stale data under the wrong account header. Comparing IDs instead of
+        // indices also handles an account being replaced at the same index.
+        let keep_loaded_results = self
+            .selected_account()
+            .map(|account| account.account().id())
+            == state.selected_account_id;
         self.report = if keep_loaded_results {
             state.report
         } else {
@@ -3853,6 +3860,33 @@ mod tests {
         app.reload(&shrunk_accounts, &transactions, &transfers, None);
 
         assert_eq!(app.selected_index(), Some(0));
+        assert!(app.report.is_none());
+        assert!(app.budget.is_none());
+    }
+
+    #[test]
+    fn reload_drops_loaded_results_when_selected_account_is_replaced_at_same_index() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts
+            .save(Account::new(AccountId::new(2), "Bank".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.set_report(ReportResult::Category(vec![]));
+        app.set_budget(BudgetResult::List(vec![]));
+
+        accounts.delete(AccountId::new(1)).unwrap();
+        app.reload(&accounts, &transactions, &transfers, None);
+
+        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(
+            app.selected_account().map(|account| account.account().id()),
+            Some(AccountId::new(2))
+        );
         assert!(app.report.is_none());
         assert!(app.budget.is_none());
     }
