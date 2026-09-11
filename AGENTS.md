@@ -1,510 +1,727 @@
 # AGENTS.md
 
-## Project Overview
+This file defines the default development workflow for AI coding agents working in this repository.
 
-This project is a personal accounting system written in Rust.
+The goal is not merely to make code changes that work locally. The goal is to produce changes that are **correct, focused, testable, reviewable, and represented by a clean Git history and Pull Request**.
 
-The primary goal is to deliver a correct, reliable, and maintainable accounting application using professional Rust software engineering practices.
-
-Codex is expected to complete requested project work rigorously and autonomously. It must also explain the reasons, value, and relevant tradeoffs behind important decisions so the developer can understand and evaluate the result.
-
-The application should eventually support:
-
-- CLI interface
-- TUI interface
-- Web interface
-
-All interfaces must share the same core business logic.
-
-The project should be designed as a maintainable long-term software project, not a quick prototype.
+Unless the user explicitly instructs otherwise, follow this workflow for every development task.
 
 ---
 
-# Development Philosophy
+# 1. Default Workflow
 
-This is a delivery-oriented project. Correctness, completeness, maintainability, and verifiable results take priority.
+For any task that requires modifying the repository, use the following workflow:
 
-When modifying or adding code, Codex should:
+**Understand → Plan → Branch → Implement → Commit incrementally → Validate → Self-review → Push → Pull Request**
 
-- Inspect the existing code, architecture, tests, documentation, and repository state before deciding on a solution.
-- Implement the requested change completely when the scope is clear, including necessary tests and documentation updates.
-- Make focused changes and avoid unrelated redesign or speculative abstractions.
-- Preserve existing behavior unless the request or a confirmed defect requires changing it.
-- Explain important design decisions, including why the chosen approach fits the project, what value it provides, and what tradeoffs were considered.
-- Surface assumptions, risks, and unresolved limitations instead of silently hiding them.
-- Verify the result with the strongest relevant checks available and report exactly what was and was not verified.
+The normal endpoint of a task is:
 
-Explanations should support the delivered work rather than replace it. Do not stop at hints, a tutorial, or instructions for the developer when Codex can safely complete the requested work itself.
+> A tested Pull Request ready for human review.
 
-Important Rust concepts should be explained when they materially affect the implementation or its review:
-
-- ownership and borrowing
-- lifetimes
-- traits
-- generics
-- error handling
-- async programming
-- module organization
-- type design
-- concurrency
-
-Keep explanations proportional to the decision. Routine implementation details may be summarized, while domain rules, public API changes, error semantics, persistence behavior, concurrency, and architectural boundaries require explicit reasoning.
+Do **not** merge the Pull Request unless the user explicitly asks you to do so.
 
 ---
 
-# Architecture Principles
+# 2. Sources of Tasks
 
-## General Architecture
+A task may come from either:
 
-Use a layered architecture.
+1. a GitHub Issue; or
+2. a direct instruction from the user.
 
-Recommended structure:
+## GitHub Issue
 
-```
-project/
-├── crates/
-│   ├── core/
-│   ├── cli/
-│   ├── tui/
-│   ├── web/
-│   └── database/
-├── docs/
-└── tests/
-```
+If the user references an Issue, for example:
 
-The exact structure may evolve, but the following principles must remain:
+* `implement #42`
+* `fix issue #42`
+* `work on #42`
 
-- Business logic must not depend on UI.
-- CLI/TUI/Web are only interfaces.
-- Database code should not leak into domain models.
-- Shared logic belongs in core modules.
+retrieve and read the complete Issue before modifying code.
 
-Dependency direction:
+Inspect relevant information including:
 
-```
-web
- |
-tui
- |
-cli
- |
-application layer
- |
-domain layer
- |
-infrastructure
-```
+* title;
+* description;
+* acceptance criteria;
+* comments;
+* labels;
+* linked Issues;
+* linked Pull Requests.
 
-Higher-level modules may depend on lower-level modules.
+Do not implement an Issue based only on its title.
 
-Core domain logic should remain independent.
+Treat the Issue as the primary task specification unless the user's current instruction explicitly overrides part of it.
+
+## Direct user request
+
+If the user directly describes a change, treat that request as the task specification.
+
+Inspect the existing repository to determine how the requested behavior fits the current architecture.
+
+If some implementation detail is unspecified, prefer a reasonable solution consistent with the existing codebase rather than inventing unnecessary new architecture.
+
+Ask the user only when an unresolved ambiguity would materially affect behavior, compatibility, data integrity, or scope.
 
 ---
 
-# Rust Coding Guidelines
+# 3. Inspect Before Editing
 
-## General Rules
+Before modifying files, inspect the repository and understand the relevant implementation.
 
-Use stable Rust.
-
-After modifying Rust code:
-
-Run:
+At minimum, check:
 
 ```bash
-cargo fmt
-cargo clippy --all-targets --all-features
-cargo test --workspace
+git status
+git branch --show-current
+git log --oneline -n 10
 ```
 
-Avoid:
+When relevant, also inspect:
 
-```rust
-unwrap()
-expect()
-panic!()
+```bash
+git diff
+git remote -v
 ```
-
-in production code unless failure is guaranteed impossible.
-
-Prefer:
-
-```rust
-Result<T, E>
-```
-
-for recoverable errors.
-
-Prefer explicit error types over:
-
-```rust
-Box<dyn Error>
-```
-
-when the caller needs to distinguish error cases.
-
----
-
-# Rust Style Preferences
-
-Prefer:
-
-- explicit types when they improve readability
-- small functions
-- meaningful names
-- composition over inheritance-style designs
-- enums for representing states
-- traits for shared behavior
-
-Avoid:
-
-- unnecessary abstraction
-- premature optimization
-- overly generic code
-- complex lifetime tricks unless necessary
-
-Code should be clear to future maintainers and understandable without relying on hidden context.
-
----
-
-# Domain Design Rules
-
-The accounting domain should prioritize correctness.
-
-Important concepts:
-
-- Transaction
-- Account
-- Category
-- Money
-- Currency
-- Balance
-- Budget
-- Report
-
-Avoid representing money with floating point numbers.
-
-Prefer:
-
-```rust
-struct Money {
-    cents: i64,
-}
-```
-
-instead of:
-
-```rust
-f64
-```
-
-because financial calculations require exact precision.
-
----
-
-# Error Handling
-
-Design errors intentionally.
-
-Prefer:
-
-```rust
-enum AccountingError {
-    InvalidAmount,
-    AccountNotFound,
-    DatabaseError,
-}
-```
-
-over:
-
-```rust
-String
-```
-
-as error messages.
-
-Errors should provide useful context.
-
-Use:
-
-```rust
-thiserror
-```
-
-when the project becomes large enough.
-
----
-
-# Testing Requirements
-
-Every important business rule should have tests.
-
-Prefer:
-
-- unit tests near implementation
-- integration tests for public behavior
-
-Examples:
-
-```
-tests/
-├── transaction_test.rs
-├── account_test.rs
-└── import_test.rs
-```
-
-Before adding a feature:
-
-Think about:
-
-1. What should happen?
-2. What invalid inputs exist?
-3. What edge cases exist?
-
----
-
-# Database Guidelines
-
-Database access must be isolated.
-
-Do not put SQL queries directly inside:
-
-- CLI handlers
-- TUI code
-- Web handlers
-
-Preferred flow:
-
-```
-Interface
-    |
-Application Service
-    |
-Repository Trait
-    |
-Database Implementation
-```
-
-Example:
-
-```rust
-trait TransactionRepository {
-    fn save(
-        &self,
-        transaction: Transaction
-    ) -> Result<(), RepositoryError>;
-}
-```
-
----
-
-# CLI Guidelines
-
-CLI should mainly:
-
-- parse arguments
-- validate user input
-- call application services
-- display results
-
-Avoid putting business rules in CLI commands.
-
-Possible tools:
-
-- clap
-
----
-
-# TUI Guidelines
-
-TUI should mainly handle:
-
-- terminal rendering
-- keyboard input
-- application state display
-
-Avoid putting business logic inside widgets.
-
-Possible tools:
-
-- ratatui
-- crossterm
-
----
-
-# Web Guidelines
-
-Web layer should mainly handle:
-
-- HTTP requests
-- authentication
-- serialization
-- responses
-
-Avoid:
-
-```text
-HTTP handler
-    |
-    directly modify database
-```
-
-Prefer:
-
-```
-HTTP handler
-    |
-Service
-    |
-Repository
-```
-
-Possible tools:
-
-- axum
-- tokio
-- serde
-
----
-
-# Documentation
-
-Maintain:
-
-```
-docs/
-├── architecture.md
-├── database.md
-├── roadmap.md
-└── decisions.md
-```
-
-Important architectural decisions should be documented.
-
-When changing architecture:
-
-1. Explain why.
-2. Update documentation.
-3. Avoid unnecessary redesign.
-
----
-
-# Git Workflow
-
-Use meaningful commits.
-
-Examples:
-
-Good:
-
-```
-feat: add transaction creation
-fix: handle invalid money input
-refactor: separate repository layer
-test: add transaction validation tests
-```
-
-Bad:
-
-```
-update
-fix stuff
-changes
-```
-
----
-
-# Code Review Behavior
-
-When reviewing code:
-
-Do not only point out syntax issues.
-
-Focus on:
-
-- correctness
-- maintainability
-- Rust idioms
-- ownership problems
-- API design
-- possible future problems
-
-Explain:
-
-1. What is wrong.
-2. Why it is wrong.
-3. How it should be fixed and why that solution is appropriate.
-4. What risk or value the fix carries.
-
-When the user requests a review, report findings before editing unless they also requested fixes. When fixes are requested, implement confirmed fixes completely and add regression coverage where practical.
-
----
-
-# Working Process
-
-For a new feature:
-
-Follow this order:
-
-## Step 1: Understand
-
-Inspect:
-
-- existing architecture
-- related modules
-- tests
-
-## Step 2: Design
 
 Determine:
 
-- data structures
-- interfaces
-- domain invariants
-- error behavior
-- compatibility and migration concerns
-- relevant tradeoffs
+* the current branch;
+* whether the working tree is clean;
+* whether uncommitted or untracked files already exist;
+* the repository structure;
+* which modules are relevant to the task;
+* existing tests covering the behavior;
+* conventions already used by the project.
 
-## Step 3: Implement
+Do not overwrite, discard, commit, or otherwise interfere with pre-existing user changes.
 
-Complete the requested behavior with focused, coherent changes.
-
-Avoid huge unrelated modifications.
-
-## Step 4: Verify
-
-Run:
-
-```bash
-cargo fmt
-cargo clippy
-cargo test
-```
-
-## Step 5: Review
-
-Check:
-
-- Does this design scale?
-- Is ownership handled correctly?
-- Are errors handled properly?
-- Are tests sufficient?
-- Were documentation and public interfaces updated where necessary?
-- Are remaining risks or limitations clearly reported?
+If unrelated local modifications exist, preserve them and isolate the new task whenever possible.
 
 ---
 
-# Delivery and Explanation Standard
+# 4. Plan Before Implementation
 
-The default outcome is a completed, validated project change, not a lesson plan or a partial exercise.
+Before substantial implementation, establish a concise internal implementation plan.
 
-For each substantive task, Codex should communicate:
+Determine:
 
-1. What changed and whether the requested outcome is complete.
-2. Why the chosen design is appropriate for this project.
-3. What practical value it provides, such as correctness, safety, maintainability, performance, or extensibility.
-4. What tradeoffs, assumptions, risks, or follow-up work remain.
-5. Which checks were run and their results.
+* what behavior needs to change;
+* the likely root cause if this is a bug;
+* which modules need modification;
+* whether the change affects core/domain logic;
+* whether CLI, TUI, or Web interfaces are affected;
+* whether persistence/database behavior changes;
+* what tests are needed;
+* whether documentation needs updating.
 
-When there are multiple reasonable solutions, choose one based on project evidence and explain the meaningful tradeoffs. Do not introduce advanced Rust features or abstractions merely for educational value; use them only when they improve the implementation.
+For small tasks, the plan may be very short.
+
+For larger tasks, break the implementation into logical stages that can become meaningful commits.
+
+Do not expand the task into a large refactor merely because nearby code could be improved.
+
+---
+
+# 5. Branch Policy
+
+Never perform normal feature development or bug fixes directly on the default branch.
+
+Do not commit task changes directly to:
+
+* `main`
+* `master`
+
+Create a dedicated branch before implementation.
+
+Prefer branch names such as:
+
+```text
+issue/<number>-<short-description>
+fix/<short-description>
+feat/<short-description>
+refactor/<short-description>
+docs/<short-description>
+```
+
+Examples:
+
+```text
+issue/42-show-transaction-category
+fix/web-edit-scroll-position
+feat/batch-transactions
+```
+
+When an Issue number exists, prefer including it in the branch name.
+
+Keep one logical task on one branch.
+
+As a general rule:
+
+> 1 task ≈ 1 branch ≈ 1 Pull Request
+
+---
+
+# 6. Scope Discipline
+
+Keep changes focused on the requested task.
+
+Prefer:
+
+* minimal necessary changes;
+* existing abstractions;
+* existing architectural patterns;
+* backwards-compatible behavior where practical;
+* consistency between related interfaces.
+
+Avoid:
+
+* unrelated refactoring;
+* unnecessary dependency updates;
+* repository-wide formatting changes;
+* opportunistic cleanup unrelated to the task;
+* redesigning architecture without a concrete need;
+* fixing unrelated Issues in the same branch.
+
+If you discover an unrelated problem while working:
+
+1. do not silently expand the current task;
+2. document the problem in the final report;
+3. recommend a separate Issue when appropriate.
+
+An unrelated problem may be fixed in the current PR only when it directly blocks the requested task or is inseparable from the correct implementation.
+
+---
+
+# 7. Architecture Awareness
+
+Before introducing new abstractions, inspect how the repository currently separates responsibilities.
+
+Respect existing boundaries between areas such as:
+
+* domain/core logic;
+* persistence/database;
+* CLI;
+* TUI;
+* Web;
+* shared application services.
+
+Do not duplicate business logic across interfaces when an appropriate shared implementation already exists.
+
+When behavior should be consistent across CLI, TUI, and Web, verify whether the change should happen in shared logic rather than independently in each frontend.
+
+Avoid creating abstractions merely for theoretical cleanliness. Introduce them when they meaningfully reduce duplication, improve correctness, or match existing project architecture.
+
+---
+
+# 8. Incremental Commits
+
+Do not accumulate an entire non-trivial task into one large commit.
+
+Create commits at meaningful implementation boundaries.
+
+Each commit should:
+
+* have one clear purpose;
+* contain related changes only;
+* be understandable independently;
+* preferably leave the repository in a buildable state;
+* avoid unrelated formatting or cleanup.
+
+Use clear commit messages, preferably following Conventional Commit style:
+
+```text
+feat: ...
+fix: ...
+refactor: ...
+test: ...
+docs: ...
+chore: ...
+```
+
+Examples:
+
+```text
+feat: expose transaction category in TUI view model
+feat: display category in transaction table
+test: cover transaction category rendering
+```
+
+For Issue-based work, referencing the Issue is acceptable when useful:
+
+```text
+fix: preserve transaction scroll position after edit (#42)
+```
+
+Do not create artificial commits solely to increase the number of commits.
+
+A small bug fix may reasonably require only one commit.
+
+A larger feature might naturally be divided into:
+
+1. core/domain changes;
+2. interface integration;
+3. tests;
+4. documentation.
+
+Use judgment based on logical boundaries.
+
+---
+
+# 9. Staging and Commit Safety
+
+Before every commit, inspect the changes:
+
+```bash
+git status
+git diff
+git diff --staged
+```
+
+Verify that the commit does not contain:
+
+* unrelated files;
+* debugging code;
+* temporary logging;
+* generated junk;
+* secrets;
+* credentials;
+* tokens;
+* local configuration;
+* accidental formatting changes.
+
+Prefer staging the specific files or hunks required for the commit.
+
+Do not blindly run:
+
+```bash
+git add .
+```
+
+without first understanding everything that will be staged.
+
+Never commit secrets or credentials.
+
+---
+
+# 10. Validation
+
+Validate changes throughout implementation rather than waiting until the very end.
+
+For this Rust repository, relevant checks may include:
+
+```bash
+cargo fmt --check
+cargo check
+cargo clippy --all-targets --all-features
+cargo test
+```
+
+For a workspace, use appropriate workspace-level commands when applicable:
+
+```bash
+cargo check --workspace
+cargo test --workspace
+```
+
+Choose validation based on the actual scope of the task.
+
+Do not mechanically run expensive or irrelevant commands when a narrower check is clearly sufficient during intermediate development.
+
+Before creating a Pull Request, however, run the broadest reasonable validation supported by the repository.
+
+If the repository defines its own CI scripts, task runner, Makefile, justfile, or documented validation commands, prefer those where appropriate.
+
+---
+
+# 11. Test Failures
+
+Never hide failing tests.
+
+If a test fails, determine whether the failure was introduced by the current changes.
+
+If the current task caused it:
+
+* investigate;
+* fix the implementation or test as appropriate;
+* rerun validation.
+
+If the failure clearly predates the task or is unrelated:
+
+* do not silently modify unrelated behavior merely to make the suite green;
+* document the existing failure in the final report and PR description.
+
+Do not:
+
+* delete tests;
+* disable tests;
+* weaken assertions;
+* mark tests ignored;
+* alter expected behavior
+
+merely to obtain a passing test suite.
+
+Changes to tests must reflect legitimate changes in intended behavior.
+
+---
+
+# 12. Tests for New Behavior
+
+When adding or changing behavior, add or update tests when practical.
+
+Tests should cover the behavior being changed rather than merely increasing coverage numbers.
+
+For bug fixes, prefer adding a regression test when feasible.
+
+A good bug-fix sequence is:
+
+1. understand the failure;
+2. identify the root cause;
+3. add or identify a test demonstrating the expected behavior;
+4. implement the fix;
+5. verify the test passes.
+
+Do not add low-value tests for trivial implementation details when they provide no meaningful regression protection.
+
+---
+
+# 13. Documentation
+
+Update documentation when the task changes user-visible behavior, configuration, CLI usage, public APIs, data formats, or setup procedures.
+
+Do not create documentation changes unrelated to the task.
+
+If documentation should change but doing so would substantially expand scope, mention it explicitly in the PR.
+
+---
+
+# 14. Final Validation
+
+Before pushing and creating a Pull Request, inspect the entire task as a reviewer would.
+
+Check:
+
+```bash
+git status
+git diff <base-branch>...HEAD
+git log --oneline <base-branch>..HEAD
+```
+
+Verify:
+
+* the requested behavior is implemented;
+* all acceptance criteria are satisfied;
+* no unrelated changes are present;
+* the commit history is understandable;
+* tests cover important new behavior;
+* error handling is appropriate;
+* no obvious regression exists;
+* no accidental public API change occurred;
+* database or persistence changes are safe;
+* related interfaces remain consistent where required.
+
+Run the appropriate final validation commands.
+
+The working tree should normally be clean before the PR is created.
+
+---
+
+# 15. Self-Review
+
+Perform a deliberate self-review of the complete diff before creating the Pull Request.
+
+Review the code as though it had been submitted by another developer.
+
+Look specifically for:
+
+* incorrect assumptions;
+* incomplete Issue requirements;
+* edge cases;
+* regressions;
+* duplicated logic;
+* unnecessary complexity;
+* poor error handling;
+* inconsistent CLI/TUI/Web behavior;
+* unsafe persistence changes;
+* missing tests;
+* stale documentation;
+* accidental unrelated changes.
+
+If you discover a problem, fix it before creating the PR.
+
+Commit the fix appropriately rather than knowingly submitting a broken PR.
+
+---
+
+# 16. Push Policy
+
+After implementation and validation, push the task branch to the configured remote.
+
+Normally use:
+
+```bash
+git push -u origin <branch>
+```
+
+Do not:
+
+* push task commits directly to `main`;
+* force-push;
+* rewrite published history;
+* modify tags;
+* create releases;
+
+unless explicitly instructed by the user.
+
+---
+
+# 17. Pull Request
+
+Every completed development task should normally end with a Pull Request.
+
+Create the PR against the appropriate default/base branch.
+
+Use a concise title describing the actual change.
+
+For Issue-based work, connect the PR to the Issue using GitHub closing syntax when the PR fully resolves it:
+
+```text
+Closes #42
+```
+
+A PR description should normally contain:
+
+```markdown
+## Summary
+
+Briefly explain the problem and the implemented solution.
+
+## Changes
+
+- Major change 1
+- Major change 2
+- Major change 3
+
+## Testing
+
+- `cargo fmt --check`
+- `cargo check`
+- `cargo clippy ...`
+- `cargo test ...`
+
+## Notes
+
+Any known limitations, migrations, compatibility concerns, or follow-up work.
+```
+
+Only claim that a command passed if it was actually run successfully.
+
+If some validation could not be run, state that explicitly.
+
+---
+
+# 18. Do Not Merge by Default
+
+Creating the Pull Request is the default endpoint.
+
+Do not:
+
+* merge the PR;
+* squash-merge the PR;
+* rebase-merge the PR;
+* close the associated Issue manually after creating the PR;
+
+unless explicitly requested.
+
+The user should have an opportunity to review the implementation first.
+
+---
+
+# 19. GitHub Issue Handling
+
+When the task originates from an Issue, make sure the final implementation actually addresses the Issue rather than merely producing a plausible code change.
+
+Before creating the PR, compare the finished implementation against:
+
+* Issue description;
+* acceptance criteria;
+* relevant comments;
+* user-visible expected behavior.
+
+If part of the Issue cannot reasonably be completed, state this explicitly instead of pretending the Issue is fully resolved.
+
+Do not use `Closes #N` if the PR only partially addresses Issue `#N`.
+
+---
+
+# 20. Existing User Changes
+
+Treat existing uncommitted work as user-owned.
+
+Never discard it using commands such as:
+
+```bash
+git reset --hard
+git checkout -- .
+git restore .
+git clean -fd
+```
+
+unless the user explicitly instructs you to discard those changes.
+
+Do not include unrelated pre-existing changes in your commits.
+
+If existing changes prevent safe isolation of the requested task, explain the conflict rather than destroying or silently absorbing the user's work.
+
+---
+
+# 21. Destructive Operations
+
+Do not perform destructive or difficult-to-reverse operations without explicit user authorization.
+
+This includes:
+
+* force push;
+* deleting branches containing work;
+* rewriting published history;
+* deleting data;
+* destructive database migrations;
+* deleting releases or tags;
+* changing repository secrets;
+* modifying production infrastructure.
+
+Prefer reversible operations.
+
+---
+
+# 22. When the User Gives a Short Instruction
+
+The user does not need to manually request every Git operation.
+
+For example, if the user says:
+
+```text
+Handle issue #42.
+```
+
+automatically interpret that as:
+
+```text
+Retrieve Issue
+→ understand requirements
+→ inspect repository
+→ plan implementation
+→ create branch
+→ implement
+→ commit incrementally
+→ test
+→ self-review
+→ push
+→ create Pull Request
+→ report results
+```
+
+Likewise, if the user says:
+
+```text
+Add batch transaction support to the Web UI.
+```
+
+follow the same repository workflow even though no Issue number was provided.
+
+Do not repeatedly ask for permission to perform normal, reversible steps that are already implied by this workflow.
+
+---
+
+# 23. When to Ask the User
+
+Prefer making reasonable implementation decisions independently.
+
+Ask the user before proceeding when the decision involves materially different product behavior or significant risk, such as:
+
+* ambiguous requirements with multiple incompatible interpretations;
+* destructive data migration;
+* breaking public APIs;
+* removing existing functionality;
+* major architectural redesign;
+* security-sensitive behavior;
+* significantly expanding the task scope.
+
+Do not interrupt the workflow for minor implementation choices that can be resolved from repository conventions.
+
+---
+
+# 24. Final Report
+
+After creating the Pull Request, provide a concise completion report.
+
+Use approximately this structure:
+
+```markdown
+## Result
+
+Implemented <short description>.
+
+## Branch
+
+`issue/42-example`
+
+## Commits
+
+- `abc1234` feat: ...
+- `def5678` test: ...
+
+## Validation
+
+- `cargo fmt --check` — passed
+- `cargo check --workspace` — passed
+- `cargo clippy ...` — passed
+- `cargo test --workspace` — passed
+
+## Pull Request
+
+PR #123 — <title>
+<PR URL>
+
+## Notes
+
+Any relevant limitation or follow-up issue.
+```
+
+Omit empty sections when appropriate.
+
+The final report should make it easy for the user to determine:
+
+* what changed;
+* where the changes are;
+* how the work was committed;
+* what was tested;
+* whether anything remains unresolved;
+* which PR should be reviewed.
+
+---
+
+# 25. Core Rules
+
+Always prioritize these rules:
+
+1. **Understand before editing.**
+2. **Never develop directly on `main`/`master`.**
+3. **One logical task should normally produce one branch and one PR.**
+4. **Keep scope focused.**
+5. **Commit at meaningful logical boundaries.**
+6. **Test what you change.**
+7. **Never hide validation failures.**
+8. **Preserve existing user work.**
+9. **Review your own complete diff before submitting it.**
+10. **Push the branch and create a PR when the task is complete.**
+11. **Never merge the PR unless explicitly instructed.**
+12. **Report exactly what was changed and validated.**
+
+The objective is not merely:
+
+> "make the code work."
+
+The objective is:
+
+> **produce a correct, focused, tested, reviewable change with a clean Git history and a Pull Request ready for review.**
