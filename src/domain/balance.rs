@@ -51,6 +51,13 @@ pub fn calculate_balance(
 ) -> Result<Money, BalanceError> {
     let mut balance = Money::from_minor_units(0, account.currency());
 
+    for adjustment in account.adjustments() {
+        balance = balance.add(&Money::from_minor_units(
+            adjustment.amount_minor,
+            account.currency(),
+        ))?;
+    }
+
     for transaction in transactions {
         if transaction.account_id() != account.id() {
             return Err(BalanceError::AccountMismatch {

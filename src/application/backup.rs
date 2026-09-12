@@ -10,7 +10,7 @@ use jiff::Zoned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const BACKUP_FORMAT_VERSION: u32 = 1;
+pub const BACKUP_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BackupError {
@@ -93,6 +93,8 @@ struct BackupAccount {
     id: u64,
     name: String,
     currency: String,
+    #[serde(default)]
+    adjustments: Vec<crate::domain::account::BalanceAdjustment>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -255,6 +257,7 @@ pub fn create_json_backup(
             .map(|account| BackupAccount {
                 id: account.id().value(),
                 name: account.name().to_string(),
+                adjustments: account.adjustments().to_vec(),
                 currency: currency_code(account.currency()).to_string(),
             })
             .collect(),
@@ -306,7 +309,7 @@ pub fn create_json_backup(
 pub fn validate_json_backup(input: &str) -> Result<ValidatedBackup, BackupError> {
     let document: BackupDocument =
         serde_json::from_str(input).map_err(|error| BackupError::InvalidJson(error.to_string()))?;
-    if document.format_version != BACKUP_FORMAT_VERSION {
+    if document.format_version != 1 && document.format_version != BACKUP_FORMAT_VERSION {
         return Err(BackupError::UnknownVersion(document.format_version));
     }
 
@@ -324,6 +327,7 @@ pub fn validate_json_backup(input: &str) -> Result<ValidatedBackup, BackupError>
         let currency = parse_currency(&value.currency)
             .ok_or_else(|| invalid_entity("account", value.id, "unsupported currency"))?;
         let account = Account::new(AccountId::new(value.id), value.name, currency)
+            .and_then(|account| account.with_adjustments(value.adjustments))
             .map_err(|error| invalid_entity("account", value.id, format!("{error:?}")))?;
         account_currencies.insert(value.id, currency);
         accounts.push(account);
@@ -581,8 +585,8 @@ mod tests {
     fn rejects_unknown_version_duplicate_ids_and_broken_references() {
         let empty_arrays = r#""accounts":[],"transactions":[],"transfers":[],"budgets":[]"#;
         assert_eq!(
-            validate_json_backup(&format!(r#"{{"format_version":2,{empty_arrays}}}"#)),
-            Err(BackupError::UnknownVersion(2))
+            validate_json_backup(&format!(r#"{{"format_version":99,{empty_arrays}}}"#)),
+            Err(BackupError::UnknownVersion(99))
         );
 
         let duplicate = r#"{
