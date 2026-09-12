@@ -406,6 +406,8 @@ button:hover,
 
 .transaction-row:last-child { border-bottom: 0; }
 .transaction-row div { display: grid; gap: 3px; }
+.transaction-row .transaction-details { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.transaction-kind { font-weight: 600; }
 .transaction-row b { font: 650 .84rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .transaction-row .expense { color: var(--negative); }
 .transaction-row .income { color: var(--positive); }

@@ -251,6 +251,14 @@ pub(crate) fn category_options_selected(selected: Option<Category>, include_any:
     options
 }
 
+pub(crate) fn transaction_kind_label(kind: TransactionKind) -> &'static str {
+    match kind {
+        TransactionKind::Income => "Income",
+        TransactionKind::Expense => "Expense",
+        TransactionKind::ExpenseRefund => "Expense refund",
+    }
+}
+
 pub(crate) fn transaction_kind_options(
     selected: Option<TransactionKind>,
     include_any: bool,
@@ -260,20 +268,17 @@ pub(crate) fn transaction_kind_options(
     } else {
         String::new()
     };
-    for (kind, value, label) in [
-        (TransactionKind::Expense, "expense", "Expense"),
-        (TransactionKind::Income, "income", "Income"),
-        (
-            TransactionKind::ExpenseRefund,
-            "expense_refund",
-            "Expense refund",
-        ),
+    for (kind, value) in [
+        (TransactionKind::Expense, "expense"),
+        (TransactionKind::Income, "income"),
+        (TransactionKind::ExpenseRefund, "expense_refund"),
     ] {
         let selected_attribute = if selected == Some(kind) {
             " selected"
         } else {
             ""
         };
+        let label = transaction_kind_label(kind);
         options.push_str(&format!(
             r#"<option value="{value}"{selected_attribute}>{label}</option>"#
         ));

@@ -51,7 +51,8 @@ use super::{
         currency_code, currency_options, edit_time_zone, escape_html, format_budget_month,
         format_major_input, format_money, next_budget_month_for_report, page, parse_budget_month,
         parse_category, parse_currency, parse_local_zoned, parse_local_zoned_with_offset,
-        parse_major_amount, parse_transaction_kind, transaction_kind_options,
+        parse_major_amount, parse_transaction_kind, transaction_kind_label,
+        transaction_kind_options,
     },
 };
 
@@ -484,8 +485,9 @@ pub(crate) async fn account_detail(
                     TransactionKind::Income | TransactionKind::ExpenseRefund => ("+", "income"),
                 };
                 format!(
-                    r#"<article class="transaction-row"><div><strong>{}</strong><small>{} · {}</small></div><span class="transaction-end"><b class="{}">{}{}</b><a href="/transactions/{}/edit">Edit</a></span></article>"#,
+                    r#"<article class="transaction-row"><div class="transaction-details"><strong>{}</strong><small><span class="transaction-kind">{}</span> · {} · {}</small></div><span class="transaction-end"><b class="{}">{}{}</b><a href="/transactions/{}/edit">Edit</a></span></article>"#,
                     escape_html(transaction.description()),
+                    transaction_kind_label(transaction.kind()),
                     category_label(transaction.category()),
                     escape_html(&transaction.occurred_at().to_string()),
                     class_name,
@@ -635,7 +637,7 @@ pub(crate) async fn account_detail(
             <div class="form-card">
               <p class="eyebrow">New transaction</p><h2>Record money in or out</h2>
               <form method="post" action="/accounts/{account_id}/transactions">
-                <label>Type<select name="kind"><option value="expense">Expense</option><option value="income">Income</option><option value="expense_refund">Expense refund</option></select></label>
+                <label>Type<select name="kind">{new_transaction_kind_options}</select></label>
                 <label>Amount ({currency})<input name="amount" required inputmode="decimal" placeholder="0.00"></label>
                 <label>Description<input name="description" required maxlength="120" placeholder="What was it for?"></label>
                 <label>Category<select name="category">{category_options}</select></label>
@@ -653,6 +655,7 @@ pub(crate) async fn account_detail(
         name = escape_html(account.name()),
         currency = currency_code(account.currency()),
         balance = format_money(&balance),
+        new_transaction_kind_options = transaction_kind_options(None, false),
         transaction_count = transactions.len(),
         transfer_count = account_transfers.len(),
         transfer_rows = transfer_rows,
