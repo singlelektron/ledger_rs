@@ -580,6 +580,8 @@ version are rejected explicitly.
 - List accounts and transfer-aware balances through application use cases
 - Manage accounts, transactions, cross-account transfers, and monthly budgets
 - Filter stable newest-first transaction history
+- Show Income, Expense, or Expense refund on each transaction row, alongside
+  category and time, with wrapping metadata on narrow screens
 - Display monthly trends, ranged summaries, category flow, and budget status
 - Exchange CSV transactions and download/restore versioned JSON backups
 - Enforce loopback-only listening for the single-user local product boundary
