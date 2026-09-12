@@ -565,15 +565,22 @@ impl AccountRepository for SqliteAccountRepository {
     }
 
     fn update(&mut self, account: Account) -> Result<bool, RepositoryError> {
+        let Some(current) = self.find_by_id(account.id())? else {
+            return Ok(false);
+        };
+        if account.currency() != current.currency()
+            || !account.adjustments().starts_with(current.adjustments())
+        {
+            return Err(RepositoryError::Storage(
+                "account balance history changed; reload before updating".into(),
+            ));
+        }
         let id = i64::try_from(account.id().value())
             .map_err(|_| RepositoryError::InvalidId(account.id().value()))?;
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE accounts SET name = ?1, adjustments = ?3 WHERE id = ?2",
-                params![account.name(), id, encode_adjustments(&account)?],
-            )
-            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let changed = self.connection.execute(
+            "UPDATE accounts SET name = ?1, adjustments = ?3 WHERE id = ?2 AND adjustments = ?4",
+            params![account.name(), id, encode_adjustments(&account)?, encode_adjustments(&current)?],
+        ).map_err(|error| RepositoryError::Storage(error.to_string()))?;
         Ok(changed == 1)
     }
 
@@ -1673,6 +1680,45 @@ mod tests {
     use crate::domain::transaction::Category;
 
     use super::*;
+
+    #[test]
+    fn migrates_v4_account_and_preserves_existing_audit_history() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(r#"
+            CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, currency TEXT NOT NULL);
+            CREATE TABLE audit_log (id INTEGER PRIMARY KEY, entity_type TEXT, entity_id INTEGER, operation TEXT, before_state TEXT, after_state TEXT);
+            INSERT INTO accounts VALUES (1, 'Legacy', 'CNY');
+            INSERT INTO audit_log VALUES (1, 'account', 1, 'create', NULL, '{"name":"Legacy"}');
+            CREATE TRIGGER audit_accounts_create AFTER INSERT ON accounts BEGIN SELECT 1; END;
+            CREATE TRIGGER audit_accounts_update AFTER UPDATE ON accounts BEGIN SELECT 1; END;
+            CREATE TRIGGER audit_accounts_delete AFTER DELETE ON accounts BEGIN SELECT 1; END;
+            PRAGMA user_version = 4;
+        "#).unwrap();
+        initialize_schema(&connection).unwrap();
+        initialize_schema(&connection).unwrap();
+        let stored: (String, String) = connection
+            .query_row(
+                "SELECT name, adjustments FROM accounts WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, ("Legacy".into(), "[]".into()));
+        let history: String = connection
+            .query_row(
+                "SELECT after_state FROM audit_log WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history, r#"{"name":"Legacy"}"#);
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            5
+        );
+    }
 
     #[test]
     fn initializes_schema() {

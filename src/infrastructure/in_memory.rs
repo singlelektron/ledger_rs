@@ -91,6 +91,13 @@ impl AccountRepository for InMemoryAccountRepository {
         else {
             return Ok(false);
         };
+        if account.currency() != stored.currency()
+            || !account.adjustments().starts_with(stored.adjustments())
+        {
+            return Err(RepositoryError::Storage(
+                "account balance history changed; reload before updating".into(),
+            ));
+        }
         *stored = account;
         Ok(true)
     }

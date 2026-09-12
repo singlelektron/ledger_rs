@@ -59,8 +59,8 @@ pub fn reconcile_balance(
         }
         if all_transactions
             .iter()
-            .any(|value| value.occurred_at() < &at)
-            || all_transfers.iter().any(|value| value.occurred_at() < &at)
+            .any(|value| value.occurred_at() < at)
+            || all_transfers.iter().any(|value| value.occurred_at() < at)
         {
             return Err(ReconcileError::OpeningAfterActivity);
         }
@@ -81,12 +81,12 @@ pub fn reconcile_balance(
             .expect("existing account adjustments are valid");
         let dated_transactions = all_transactions
             .into_iter()
-            .filter(|value| value.occurred_at() <= &at)
+            .filter(|value| value.occurred_at() <= at)
             .collect::<Vec<_>>();
         let mut calculated = calculate_balance(&dated_account, &dated_transactions)?;
         for transfer in all_transfers
             .iter()
-            .filter(|value| value.occurred_at() <= &at)
+            .filter(|value| value.occurred_at() <= at)
         {
             calculated = if transfer.source_account_id() == id {
                 calculated.sub(transfer.source_amount())
@@ -113,4 +113,376 @@ pub fn reconcile_balance(
         return Err(ReconcileError::AccountChanged);
     }
     Ok(adjustment)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::{
+        account_balance::get_account_balance_with_transfers,
+        backup::{create_json_backup, validate_json_backup},
+        manage_account::{ManageAccountError, delete_account, rename_account},
+        ranged_summary::get_ranged_summary,
+    };
+    use crate::domain::{
+        account::NewAccount,
+        money::Currency,
+        transaction::{Category, NewTransaction, TransactionKind},
+        transfer::NewTransfer,
+    };
+    use crate::infrastructure::sqlite::{
+        in_memory_complete_repositories, open_complete_repositories, restore_backup,
+    };
+
+    fn at(day: u8) -> Zoned {
+        format!("2026-08-{day:02}T10:00:00+08:00[Asia/Shanghai]")
+            .parse()
+            .unwrap()
+    }
+    fn money(value: i64) -> Money {
+        Money::from_minor_units(value, Currency::Cny)
+    }
+
+    #[test]
+    fn opening_reconciliation_transfers_and_reports_survive_backup() {
+        let (mut accounts, mut transactions, mut transfers, budgets) =
+            in_memory_complete_repositories().unwrap();
+        let a = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let b = accounts
+            .create(NewAccount::new("Bank".into(), Currency::Cny).unwrap())
+            .unwrap();
+        reconcile_balance(
+            &mut accounts,
+            &transactions,
+            &transfers,
+            a.id(),
+            money(1000),
+            at(1),
+            "Initial".into(),
+            BalanceAdjustmentKind::Opening,
+        )
+        .unwrap();
+        assert_eq!(
+            get_account_balance_with_transfers(&accounts, &transactions, &transfers, a.id())
+                .unwrap(),
+            money(1000)
+        );
+        transactions
+            .create(
+                NewTransaction::new(
+                    a.id(),
+                    TransactionKind::Expense,
+                    money(200),
+                    at(2),
+                    "Lunch".into(),
+                    Category::Food,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        transfers
+            .create(
+                NewTransfer::new(a.id(), b.id(), money(100), money(100), at(3), "Move".into())
+                    .unwrap(),
+            )
+            .unwrap();
+        // Future activity must not affect reconciliation at day 4.
+        transactions
+            .create(
+                NewTransaction::new(
+                    a.id(),
+                    TransactionKind::Income,
+                    money(50),
+                    at(8),
+                    "Pay".into(),
+                    Category::Salary,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let positive = reconcile_balance(
+            &mut accounts,
+            &transactions,
+            &transfers,
+            a.id(),
+            money(900),
+            at(4),
+            "Observed".into(),
+            BalanceAdjustmentKind::Reconciliation,
+        )
+        .unwrap();
+        assert_eq!(positive.amount_minor, 200);
+        let negative = reconcile_balance(
+            &mut accounts,
+            &transactions,
+            &transfers,
+            a.id(),
+            money(800),
+            at(5),
+            "Correction".into(),
+            BalanceAdjustmentKind::Reconciliation,
+        )
+        .unwrap();
+        assert_eq!(negative.amount_minor, -100);
+        assert_eq!(
+            get_account_balance_with_transfers(&accounts, &transactions, &transfers, a.id())
+                .unwrap(),
+            money(850)
+        );
+        assert_eq!(
+            get_account_balance_with_transfers(&accounts, &transactions, &transfers, b.id())
+                .unwrap(),
+            money(100)
+        );
+        let report = get_ranged_summary(&accounts, &transactions, a.id(), at(1), at(10)).unwrap();
+        assert_eq!(report.income_total(), &money(50));
+        assert_eq!(report.net_expense_total(), &money(200));
+        assert_eq!(report.net_change(), &money(-150));
+        assert_eq!(
+            report.net_outflow_by_category().get(&Category::Food),
+            Some(&money(200))
+        );
+        assert_eq!(
+            rename_account(&mut accounts, a.id(), "Wallet".into())
+                .unwrap()
+                .adjustments()
+                .len(),
+            3
+        );
+        assert_eq!(
+            delete_account(&mut accounts, &transactions, a.id()),
+            Err(ManageAccountError::HasAdjustments(a.id()))
+        );
+        let json = create_json_backup(&accounts, &transactions, &transfers, &budgets).unwrap();
+        assert!(json.contains("\"format_version\": 2"));
+        let backup = validate_json_backup(&json).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("restored.db");
+        restore_backup(&path, &backup).unwrap();
+        let (restored, tx, tr, _) = open_complete_repositories(&path).unwrap();
+        assert_eq!(
+            restored.find_all().unwrap()[0].adjustments(),
+            accounts.find_by_id(a.id()).unwrap().unwrap().adjustments()
+        );
+        assert_eq!(
+            get_account_balance_with_transfers(&restored, &tx, &tr, a.id()).unwrap(),
+            money(850)
+        );
+        let mut malformed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        malformed["accounts"][0]["adjustments"][0]["currency"] = "USD".into();
+        assert!(validate_json_backup(&malformed.to_string()).is_err());
+    }
+
+    #[test]
+    fn invalid_currency_duplicate_opening_and_overflow_write_nothing() {
+        let (mut accounts, transactions, transfers, _) = in_memory_complete_repositories().unwrap();
+        let a = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        assert!(
+            reconcile_balance(
+                &mut accounts,
+                &transactions,
+                &transfers,
+                a.id(),
+                Money::from_minor_units(1, Currency::Usd),
+                at(1),
+                "".into(),
+                BalanceAdjustmentKind::Opening
+            )
+            .is_err()
+        );
+        assert!(
+            accounts
+                .find_by_id(a.id())
+                .unwrap()
+                .unwrap()
+                .adjustments()
+                .is_empty()
+        );
+        reconcile_balance(
+            &mut accounts,
+            &transactions,
+            &transfers,
+            a.id(),
+            money(i64::MIN),
+            at(1),
+            "".into(),
+            BalanceAdjustmentKind::Opening,
+        )
+        .unwrap();
+        assert_eq!(
+            reconcile_balance(
+                &mut accounts,
+                &transactions,
+                &transfers,
+                a.id(),
+                money(1),
+                at(2),
+                "".into(),
+                BalanceAdjustmentKind::Opening
+            ),
+            Err(ReconcileError::OpeningAlreadySet)
+        );
+        assert_eq!(
+            reconcile_balance(
+                &mut accounts,
+                &transactions,
+                &transfers,
+                a.id(),
+                money(i64::MAX),
+                at(2),
+                "".into(),
+                BalanceAdjustmentKind::Reconciliation
+            ),
+            Err(ReconcileError::Balance(BalanceError::ArithmeticOverflow))
+        );
+        assert_eq!(
+            accounts
+                .find_by_id(a.id())
+                .unwrap()
+                .unwrap()
+                .adjustments()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn reconciliation_includes_activity_at_exact_timestamp_and_excludes_later_adjustments() {
+        let (mut accounts, mut transactions, transfers, _) =
+            in_memory_complete_repositories().unwrap();
+        let a = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        transactions
+            .create(
+                NewTransaction::new(
+                    a.id(),
+                    TransactionKind::Expense,
+                    money(200),
+                    at(2),
+                    "Lunch".into(),
+                    Category::Food,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            reconcile_balance(
+                &mut accounts,
+                &transactions,
+                &transfers,
+                a.id(),
+                money(100),
+                at(3),
+                "".into(),
+                BalanceAdjustmentKind::Opening
+            ),
+            Err(ReconcileError::OpeningAfterActivity)
+        );
+        reconcile_balance(
+            &mut accounts,
+            &transactions,
+            &transfers,
+            a.id(),
+            money(500),
+            at(4),
+            "".into(),
+            BalanceAdjustmentKind::Reconciliation,
+        )
+        .unwrap();
+        let earlier = reconcile_balance(
+            &mut accounts,
+            &transactions,
+            &transfers,
+            a.id(),
+            money(100),
+            at(2),
+            "".into(),
+            BalanceAdjustmentKind::Reconciliation,
+        )
+        .unwrap();
+        assert_eq!(earlier.amount_minor, 300);
+        // Adjustments remain fixed; backdated edits do not rewrite later observations.
+        assert_eq!(
+            get_account_balance_with_transfers(&accounts, &transactions, &transfers, a.id())
+                .unwrap(),
+            money(800)
+        );
+    }
+
+    #[test]
+    fn stale_account_updates_cannot_erase_adjustments_in_either_repository() {
+        fn verify(
+            accounts: &mut impl AccountRepository,
+            transactions: &impl TransactionRepository,
+            transfers: &impl TransferRepository,
+        ) {
+            let original = accounts
+                .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+                .unwrap();
+            reconcile_balance(
+                accounts,
+                transactions,
+                transfers,
+                original.id(),
+                money(100),
+                at(1),
+                "".into(),
+                BalanceAdjustmentKind::Opening,
+            )
+            .unwrap();
+            assert!(accounts.update(original.clone()).is_err());
+            assert_eq!(
+                accounts
+                    .find_by_id(original.id())
+                    .unwrap()
+                    .unwrap()
+                    .adjustments()
+                    .len(),
+                1
+            );
+        }
+        let (mut accounts, transactions, transfers, _) = in_memory_complete_repositories().unwrap();
+        verify(&mut accounts, &transactions, &transfers);
+        use crate::infrastructure::in_memory::*;
+        verify(
+            &mut InMemoryAccountRepository::new(),
+            &InMemoryTransactionRepository::new(),
+            &InMemoryTransferRepository::new(),
+        );
+    }
+
+    #[test]
+    fn failed_write_transaction_rolls_back_adjustment() {
+        let (mut accounts, transactions, transfers, _) = in_memory_complete_repositories().unwrap();
+        let a = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let result: Result<(), ReconcileError> = accounts.with_write_transaction(|accounts| {
+            reconcile_balance(
+                accounts,
+                &transactions,
+                &transfers,
+                a.id(),
+                money(500),
+                at(1),
+                "".into(),
+                BalanceAdjustmentKind::Opening,
+            )?;
+            Err(ReconcileError::AccountChanged)
+        });
+        assert_eq!(result, Err(ReconcileError::AccountChanged));
+        assert!(
+            accounts
+                .find_by_id(a.id())
+                .unwrap()
+                .unwrap()
+                .adjustments()
+                .is_empty()
+        );
+    }
 }
