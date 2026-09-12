@@ -994,8 +994,21 @@ Import all CSV rows atomically into existing accounts:
 cargo run -- data import-transactions --input transactions.csv
 ```
 
-The columns are
+The native export/import columns are
 `account_id,kind,amount_minor,currency,occurred_at,description,category`.
+For external migration, CLI and Web imports also detect this exact header:
+
+```csv
+account,kind,amount,currency,occurred_at,description,category
+Cash,expense,12.50,CNY,2026-08-20T10:00:00+08:00[Asia/Shanghai],Lunch,food
+```
+
+Account names match exactly (case-sensitive); unknown or duplicate names are
+rejected with a row number. Amounts must be positive decimals with at most two
+fractional digits, without grouping separators or exponent notation. Conversion
+to minor units is exact and rejects overflow. Currency must match the account.
+Export continues using the native format, which can disambiguate duplicate names.
+
 Internal transaction IDs are deliberately omitted and allocated by the target
 repository. The importer parses and validates every row before writing; an
 invalid row leaves the database unchanged. Re-importing the same file creates
