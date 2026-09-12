@@ -3622,6 +3622,111 @@ mod tests {
     }
 
     #[test]
+    fn ledger_categories_remain_readable_across_terminal_widths() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        for (index, category) in CATEGORIES.iter().enumerate() {
+            transactions
+                .save(
+                    Transaction::new(
+                        TransactionId::new(index as u64 + 1),
+                        AccountId::new(1),
+                        TransactionKind::Expense,
+                        Money::from_minor_units(100, Currency::Cny),
+                        "2026-08-30T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                        format!("Purchase {index}"),
+                        *category,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Tab);
+        for width in [80, 100, 120, 135, 136, 160] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            // Navigate beyond the viewport to also cover scrolling multi-line rows.
+            for index in 0..CATEGORIES.len() {
+                app.selected_transaction = index;
+                let transaction = app.selected_transaction().unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let screen = terminal.backend().to_string();
+                for expected in [
+                    "Category",
+                    category_label(transaction.category()),
+                    transaction.description(),
+                    "Expense",
+                    "-1.00 CNY",
+                    "2026-08-30T10:00:00",
+                ] {
+                    assert!(
+                        screen.contains(expected),
+                        "width {width}, missing {expected}:\n{screen}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ledger_displays_edited_category_after_reload() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let mut transfers = InMemoryTransferRepository::new();
+        let budgets = InMemoryBudgetRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        transactions
+            .save(
+                Transaction::new(
+                    TransactionId::new(1),
+                    AccountId::new(1),
+                    TransactionKind::Expense,
+                    Money::from_minor_units(100, Currency::Cny),
+                    "2026-08-30T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "Purchase".to_string(),
+                    Category::Food,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(terminal.backend().to_string().contains("Food"));
+
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char('e'));
+        // Editing starts on Description; Category is the next field.
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Right);
+        let action = app.handle_key(KeyCode::Enter);
+        assert!(matches!(action, Action::UpdateTransaction { .. }));
+        let message = execute_action(
+            action,
+            &mut accounts,
+            &mut transactions,
+            &mut transfers,
+            &budgets,
+        )
+        .unwrap();
+        app.action_succeeded();
+        app.reload(&accounts, &transactions, &transfers, message);
+        for width in [80, 160] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let screen = terminal.backend().to_string();
+            assert!(screen.contains("Transportation"));
+            assert!(!screen.contains("Food"));
+        }
+    }
+
+    #[test]
     fn budgets_footer_advertises_shared_and_refresh_shortcuts() {
         let mut accounts = InMemoryAccountRepository::new();
         let transactions = InMemoryTransactionRepository::new();
