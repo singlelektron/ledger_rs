@@ -69,7 +69,7 @@ SQLite persistence layer are implemented and tested:
   explicit zero rows for months without transactions
 - Atomic CSV transaction import and filtered export using a fixed, ID-free
   exchange format with quoting, Unicode, and original zoned timestamps
-- Version 1 JSON backup and empty-database restore for accounts, transactions,
+- Version 2 JSON backup and empty-database restore for accounts, transactions,
   transfers, and budgets, preserving IDs, relationships, and IANA time zones
 - An application-level transaction-history query that rejects unknown
   accounts, preserves repository errors, and returns transactions in stable
@@ -1001,7 +1001,9 @@ cargo run -- \
   --input ledger-backup.json
 ```
 
-The top-level `format_version` is currently `1`. Unlike CSV exchange, JSON
+The top-level `format_version` is currently `2`; version 1 backups remain readable.
+Version 2 includes dated balance adjustments; older binaries reject version 2
+instead of silently dropping balance data. Unlike CSV exchange, JSON
 backup preserves account, transaction, transfer, and budget IDs as well as all
 references and original zoned timestamps. Restore validates the entire backup
 before opening one SQLite transaction and refuses any database that already
@@ -1016,7 +1018,7 @@ Display the 50 most recent database changes:
 Use `--limit N` to return between 1 and 200 entries. Results are newest first
 and include the UTC write time, entity type and ID, operation, and compact JSON
 snapshots from before and/or after the change. Audit entries are retained when
-the referenced business entity is deleted. Version 1 JSON backups contain
+the referenced business entity is deleted. JSON backups contain
 business aggregates rather than prior audit history; restoring those aggregates
 creates new audit entries for the restore writes.
 
@@ -1115,3 +1117,46 @@ docs/
 
 These documents should be created when the relevant design actually exists,
 rather than describing implementations that have not been built yet.
+
+
+## Opening balances and reconciliation
+
+When historical income is incomplete, use explicit balance adjustments instead
+of inventing income transactions. Amounts below are in minor units (50000 = 500.00).
+Create the account first, then set its opening balance before its tracked activity:
+
+```bash
+cargo run -- account opening-balance --id 1 --amount-minor 50000 --currency MYR \
+  --at '2025-09-01T00:00:00+08:00[Asia/Kuala_Lumpur]'
+```
+
+An opening balance can be negative or zero and can be set only before any existing
+adjustments, at or before the earliest transaction/transfer. Activity at exactly
+the opening timestamp follows that opening balance. If the opening balance is
+unknown, import known transactions and reconcile against an observed balance:
+
+```bash
+cargo run -- account reconcile --id 1 --balance-minor 450000 --currency MYR \
+  --at '2026-09-01T18:00:00+08:00[Asia/Kuala_Lumpur]' \
+  --description 'Observed bank balance after historical import'
+cargo run -- account adjustments --id 1
+```
+
+Reconciliation includes transactions, transfers, and earlier adjustments at or
+before the specified instant. It records observed minus calculated balance in
+one SQLite write transaction. Later activity is excluded from this calculation.
+Adjustments are fixed historical corrections: backdated imports/edits may change
+balances after an earlier reconciliation; reconcile again after such changes.
+Repeated reconciliation to the same balance at the same instant records a zero
+adjustment when the underlying history has not changed.
+
+CLI, TUI, and Web balance displays include adjustments. Income, expense, category,
+monthly trend, and budget reports exclude them. Entry and adjustment history are
+available through the CLI; `data audit-log` also records before/after adjustment
+snapshots. Renaming retains adjustments and account deletion refuses accounts
+with adjustment history. JSON backup/restore preserves adjustments; transaction
+CSV exchange does not include them.
+
+SQLite schema version 5 adds adjustment storage without changing existing
+transactions. Existing accounts retain a zero baseline. Version 2 JSON backups
+preserve adjustment amounts, currency, timestamps, descriptions, and kinds.
