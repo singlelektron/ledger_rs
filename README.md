@@ -644,7 +644,7 @@ Then open `http://127.0.0.1:3000`. On Windows, append `.exe` to executable
 names. Every executable accepts `--help` and `--version` without starting its
 interactive interface or server.
 
-Unless `--database PATH` is supplied, the CLI and TUI store their SQLite
+Unless `--database PATH` or `LEDGER_RS_DATABASE` is supplied, CLI, TUI, and Web store their SQLite
 database in the current user's platform data directory:
 
 | Platform | Default database path |
@@ -676,8 +676,18 @@ permissions selected by the user and operating system.
 
 The database is user data and must not be placed inside a release artifact;
 replacing the executable therefore does not replace or delete the ledger.
-The Web executable defaults to `ledger.db` in its launch directory, so pass
-`--database PATH` when it should open the same file as another interface.
+All three executables use this precedence: explicit `--database PATH`, then
+nonempty `LEDGER_RS_DATABASE`, then the platform default with the legacy fallback
+above. Empty environment values are ignored. Relative paths resolve against the
+launch directory; use an absolute path for a stable location across launchers.
+To persist the setting for shell launches, add this to your shell profile:
+
+```bash
+export LEDGER_RS_DATABASE="$HOME/Documents/ledger/ledger.db"
+```
+
+GUI/service launchers must inherit the variable or set it in their own environment.
+Configured paths retain user-selected permissions, just like explicit paths.
 
 ## Local Development
 
@@ -699,7 +709,7 @@ builds `ledger_tui`, the `web` profile builds `ledger_web`, and the combined
 profile builds all three executables. A core-only CLI build remains available
 with `cargo build --no-default-features --bin ledger_rs`.
 
-Start the local Web UI with the default `ledger.db` database:
+Start the local Web UI with the shared default database:
 
 ```bash
 cargo run --bin ledger_web

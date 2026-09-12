@@ -38,7 +38,7 @@ impl ResolvedDatabasePath {
     }
 }
 
-/// Resolves an explicit database path or the platform default.
+/// Resolves an explicit path, nonempty LEDGER_RS_DATABASE, or the platform default.
 ///
 /// When upgrading from the previous current-directory default, an existing
 /// `./ledger.db` remains in use until the user explicitly migrates it.
@@ -203,6 +203,21 @@ mod tests {
 
         assert_eq!(resolved.path(), Path::new("chosen.db"));
         assert_eq!(resolved.source, DatabasePathSource::Explicit);
+    }
+
+    #[test]
+    fn configured_database_wins_over_existing_platform_and_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = dir.path().join("platform.db");
+        let legacy = dir.path().join("legacy.db");
+        std::fs::write(&platform, []).unwrap();
+        std::fs::write(&legacy, []).unwrap();
+        let chosen = dir.path().join("configured.db");
+        let resolved =
+            resolve_database_path_from(None, Some(chosen.clone()), Some(platform), legacy);
+        assert_eq!(resolved.path(), chosen);
+        assert_eq!(resolved.source, DatabasePathSource::Environment);
+        assert_eq!(resolved.migration_target(), None);
     }
 
     #[test]
