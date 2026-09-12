@@ -10,7 +10,7 @@ use jiff::Zoned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const BACKUP_FORMAT_VERSION: u32 = 1;
+pub const BACKUP_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BackupError {
@@ -93,6 +93,8 @@ struct BackupAccount {
     id: u64,
     name: String,
     currency: String,
+    #[serde(default)]
+    adjustments: Vec<crate::domain::account::BalanceAdjustment>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -255,6 +257,7 @@ pub fn create_json_backup(
             .map(|account| BackupAccount {
                 id: account.id().value(),
                 name: account.name().to_string(),
+                adjustments: account.adjustments().to_vec(),
                 currency: currency_code(account.currency()).to_string(),
             })
             .collect(),
@@ -306,7 +309,7 @@ pub fn create_json_backup(
 pub fn validate_json_backup(input: &str) -> Result<ValidatedBackup, BackupError> {
     let document: BackupDocument =
         serde_json::from_str(input).map_err(|error| BackupError::InvalidJson(error.to_string()))?;
-    if document.format_version != BACKUP_FORMAT_VERSION {
+    if document.format_version != 1 && document.format_version != BACKUP_FORMAT_VERSION {
         return Err(BackupError::UnknownVersion(document.format_version));
     }
 
@@ -324,6 +327,7 @@ pub fn validate_json_backup(input: &str) -> Result<ValidatedBackup, BackupError>
         let currency = parse_currency(&value.currency)
             .ok_or_else(|| invalid_entity("account", value.id, "unsupported currency"))?;
         let account = Account::new(AccountId::new(value.id), value.name, currency)
+            .and_then(|account| account.with_adjustments(value.adjustments))
             .map_err(|error| invalid_entity("account", value.id, format!("{error:?}")))?;
         account_currencies.insert(value.id, currency);
         accounts.push(account);
@@ -511,6 +515,69 @@ mod tests {
         "2026-08-20T10:00:00+08:00[Asia/Shanghai]".parse().unwrap()
     }
 
+    fn backup_with_adjustment_kinds(kinds: &[&str]) -> String {
+        let adjustments = kinds
+            .iter()
+            .map(|kind| {
+                serde_json::json!({
+                    "kind": kind, "amount_minor": 100, "currency": "CNY",
+                    "occurred_at": "2026-08-20T10:00:00+08:00[Asia/Shanghai]",
+                    "description": "Imported adjustment"
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "format_version": 2,
+            "accounts": [{"id": 1, "name": "Cash", "currency": "CNY", "adjustments": adjustments}],
+            "transactions": [], "transfers": [], "budgets": []
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn rejects_duplicate_or_late_opening_adjustments_in_backup() {
+        for kinds in [
+            vec!["opening", "opening"],
+            vec!["reconciliation", "opening"],
+            vec!["opening", "reconciliation", "opening"],
+        ] {
+            assert_eq!(
+                validate_json_backup(&backup_with_adjustment_kinds(&kinds)),
+                Err(invalid_entity(
+                    "account",
+                    1,
+                    "InvalidOpeningAdjustmentOrder"
+                )),
+                "{kinds:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_optional_first_opening_and_retains_adjustment_order() {
+        for kinds in [
+            vec![],
+            vec!["opening"],
+            vec!["reconciliation", "reconciliation"],
+            vec!["opening", "reconciliation", "reconciliation"],
+        ] {
+            let json = backup_with_adjustment_kinds(&kinds);
+            let backup = validate_json_backup(&json).unwrap();
+            assert_eq!(backup.accounts()[0].adjustments().len(), kinds.len());
+        }
+        // Backdated reconciliation is allowed; order is recording order, not date order.
+        let mut json: serde_json::Value = serde_json::from_str(&backup_with_adjustment_kinds(&[
+            "opening",
+            "reconciliation",
+        ]))
+        .unwrap();
+        json["accounts"][0]["adjustments"][1]["occurred_at"] =
+            "2026-08-19T10:00:00+08:00[Asia/Shanghai]".into();
+        let backup = validate_json_backup(&json.to_string()).unwrap();
+        let adjustments = backup.accounts()[0].adjustments();
+        assert!(adjustments[0].occurred_at > adjustments[1].occurred_at);
+    }
+
     #[test]
     fn round_trips_all_aggregate_types_and_ids() {
         let mut accounts = InMemoryAccountRepository::new();
@@ -581,8 +648,8 @@ mod tests {
     fn rejects_unknown_version_duplicate_ids_and_broken_references() {
         let empty_arrays = r#""accounts":[],"transactions":[],"transfers":[],"budgets":[]"#;
         assert_eq!(
-            validate_json_backup(&format!(r#"{{"format_version":2,{empty_arrays}}}"#)),
-            Err(BackupError::UnknownVersion(2))
+            validate_json_backup(&format!(r#"{{"format_version":99,{empty_arrays}}}"#)),
+            Err(BackupError::UnknownVersion(99))
         );
 
         let duplicate = r#"{

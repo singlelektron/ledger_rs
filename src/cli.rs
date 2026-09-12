@@ -1,3 +1,5 @@
+use crate::application::reconcile_balance::{ReconcileError, reconcile_balance};
+use crate::domain::account::BalanceAdjustmentKind;
 use crate::{
     app_paths::{prepare_database_parent, resolve_database_path, secure_database_file},
     application::{
@@ -237,6 +239,37 @@ pub enum TransferCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AccountCommand {
+    /// Set the balance before tracked activity (minor units).
+    OpeningBalance {
+        #[arg(long)]
+        id: u64,
+        #[arg(long, allow_hyphen_values = true)]
+        amount_minor: i64,
+        #[arg(long, ignore_case = true)]
+        currency: CurrencyArg,
+        #[arg(long)]
+        at: Zoned,
+        #[arg(long, default_value = "Opening balance")]
+        description: String,
+    },
+    /// Match an observed balance at a timestamp without recording income.
+    Reconcile {
+        #[arg(long)]
+        id: u64,
+        #[arg(long, allow_hyphen_values = true)]
+        balance_minor: i64,
+        #[arg(long, ignore_case = true)]
+        currency: CurrencyArg,
+        #[arg(long)]
+        at: Zoned,
+        #[arg(long, default_value = "Balance reconciliation")]
+        description: String,
+    },
+    Adjustments {
+        #[arg(long)]
+        id: u64,
+    },
+
     Create {
         #[arg(long)]
         name: String,
@@ -491,6 +524,7 @@ impl From<CategoryArg> for Category {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliError {
+    Reconcile(ReconcileError),
     Repository(RepositoryError),
     CreateAccount(CreateAccountError),
 
@@ -735,6 +769,76 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
 
     match cli.command {
         Command::Account { command } => match command {
+            AccountCommand::OpeningBalance {
+                id,
+                amount_minor,
+                currency,
+                at,
+                description,
+            } => {
+                let adjustment = account_repository
+                    .with_write_transaction(|accounts| {
+                        reconcile_balance(
+                            accounts,
+                            &transaction_repository,
+                            &transfer_repository,
+                            AccountId::new(id),
+                            Money::from_minor_units(amount_minor, currency.into()),
+                            at,
+                            description,
+                            BalanceAdjustmentKind::Opening,
+                        )
+                    })
+                    .map_err(CliError::Reconcile)?;
+                Ok(format!(
+                    "Opening balance adjustment: {} {}",
+                    adjustment.amount_minor, adjustment.currency
+                ))
+            }
+            AccountCommand::Reconcile {
+                id,
+                balance_minor,
+                currency,
+                at,
+                description,
+            } => {
+                let adjustment = account_repository
+                    .with_write_transaction(|accounts| {
+                        reconcile_balance(
+                            accounts,
+                            &transaction_repository,
+                            &transfer_repository,
+                            AccountId::new(id),
+                            Money::from_minor_units(balance_minor, currency.into()),
+                            at,
+                            description,
+                            BalanceAdjustmentKind::Reconciliation,
+                        )
+                    })
+                    .map_err(CliError::Reconcile)?;
+                Ok(format!(
+                    "Reconciliation adjustment: {} {}",
+                    adjustment.amount_minor, adjustment.currency
+                ))
+            }
+            AccountCommand::Adjustments { id } => {
+                let account = get_account(&account_repository, AccountId::new(id))?;
+                Ok(account
+                    .adjustments()
+                    .iter()
+                    .map(|value| {
+                        format!(
+                            "{:?}: {} {} at {} — {}",
+                            value.kind,
+                            value.amount_minor,
+                            value.currency,
+                            value.occurred_at,
+                            value.description
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
             AccountCommand::Create { name, currency } => {
                 let account =
                     create_account(&mut account_repository, name, Currency::from(currency))?;
@@ -3257,8 +3361,13 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("2 | "));
         assert!(lines[0].contains("| account 1 | update |"));
-        assert!(lines[0].contains(r#"before {"currency":"CNY","id":1,"name":"Cash"}"#));
-        assert!(lines[0].contains(r#"after {"currency":"CNY","id":1,"name":"Wallet"}"#));
+        assert!(
+            lines[0].contains(r#"before {"adjustments":[],"currency":"CNY","id":1,"name":"Cash"}"#)
+        );
+        assert!(
+            lines[0]
+                .contains(r#"after {"adjustments":[],"currency":"CNY","id":1,"name":"Wallet"}"#)
+        );
         assert!(lines[1].contains("1 | "));
         assert!(lines[1].contains("| account 1 | create | before - |"));
     }

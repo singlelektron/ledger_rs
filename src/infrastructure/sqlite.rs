@@ -16,7 +16,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
-const CURRENT_SCHEMA_VERSION: i64 = 4;
+const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 /// How long a connection waits for a lock held by another connection before
 /// failing with `SQLITE_BUSY`. The local Web UI opens a fresh connection per
@@ -402,6 +402,24 @@ pub fn in_memory_complete_repositories() -> Result<
 }
 
 impl SqliteAccountRepository {
+    /// Keep reconciliation reads and the adjustment write in one SQLite snapshot.
+    pub fn with_write_transaction<T, E: From<RepositoryError>>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let connection = Rc::clone(&self.connection);
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let result = operation(self)?;
+        transaction
+            .commit()
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        Ok(result)
+    }
+
     pub fn in_memory() -> Result<Self, RepositoryError> {
         let connection = Connection::open_in_memory()
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
@@ -413,6 +431,20 @@ impl SqliteAccountRepository {
             connection: Rc::new(connection),
         })
     }
+}
+
+fn encode_adjustments(account: &Account) -> Result<String, RepositoryError> {
+    serde_json::to_string(account.adjustments())
+        .map_err(|error| RepositoryError::Storage(error.to_string()))
+}
+
+fn decode_adjustments(account: Account, value: &str) -> Result<Account, RepositoryError> {
+    let adjustments = serde_json::from_str(value).map_err(|error| {
+        RepositoryError::InvalidStoredData(format!("invalid balance adjustments: {error}"))
+    })?;
+    account
+        .with_adjustments(adjustments)
+        .map_err(|error| RepositoryError::InvalidStoredData(error.to_string()))
 }
 
 impl AccountRepository for SqliteAccountRepository {
@@ -434,10 +466,15 @@ impl AccountRepository for SqliteAccountRepository {
         self.connection
             .execute(
                 "
-            INSERT INTO accounts (id, name, currency)
-            VALUES (?1, ?2, ?3)
+            INSERT INTO accounts (id, name, currency, adjustments)
+            VALUES (?1, ?2, ?3, ?4)
             ",
-                params![id, account.name(), currency_to_code(account.currency()),],
+                params![
+                    id,
+                    account.name(),
+                    currency_to_code(account.currency()),
+                    encode_adjustments(&account)?
+                ],
             )
             .map_err(|error| match error {
                 rusqlite::Error::SqliteFailure(error_code, _)
@@ -457,26 +494,32 @@ impl AccountRepository for SqliteAccountRepository {
             .connection
             .query_row(
                 "
-                SELECT name, currency
+                SELECT name, currency, adjustments
                 FROM accounts
                 WHERE id = ?1
                 ",
                 params![database_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
 
         match stored {
             None => Ok(None),
-            Some((name, currency_code)) => {
+            Some((name, currency_code, adjustments)) => {
                 let currency = currency_from_code(&currency_code)?;
 
                 let account = Account::new(id, name, currency).map_err(|error| {
                     RepositoryError::InvalidStoredData(format!("invalid account data: {error:?}"))
                 })?;
 
-                Ok(Some(account))
+                Ok(Some(decode_adjustments(account, &adjustments)?))
             }
         }
     }
@@ -486,7 +529,7 @@ impl AccountRepository for SqliteAccountRepository {
             .connection
             .prepare(
                 "
-                SELECT id, name, currency
+                SELECT id, name, currency, adjustments
                 FROM accounts
                 ",
             )
@@ -498,13 +541,13 @@ impl AccountRepository for SqliteAccountRepository {
                 let name: String = row.get(1)?;
                 let currency_code: String = row.get(2)?;
 
-                Ok((id, name, currency_code))
+                Ok((id, name, currency_code, row.get::<_, String>(3)?))
             })
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
 
         let mut accounts = Vec::new();
         for account_result in accounts_iter {
-            let (id, name, currency_code) =
+            let (id, name, currency_code, adjustments) =
                 account_result.map_err(|error| RepositoryError::Storage(error.to_string()))?;
 
             let account_id = AccountId::new(u64::try_from(id).map_err(|_| {
@@ -516,21 +559,28 @@ impl AccountRepository for SqliteAccountRepository {
                 RepositoryError::InvalidStoredData(format!("invalid account data: {error:?}"))
             })?;
 
-            accounts.push(account);
+            accounts.push(decode_adjustments(account, &adjustments)?);
         }
         Ok(accounts)
     }
 
     fn update(&mut self, account: Account) -> Result<bool, RepositoryError> {
+        let Some(current) = self.find_by_id(account.id())? else {
+            return Ok(false);
+        };
+        if account.currency() != current.currency()
+            || !account.adjustments().starts_with(current.adjustments())
+        {
+            return Err(RepositoryError::Storage(
+                "account balance history changed; reload before updating".into(),
+            ));
+        }
         let id = i64::try_from(account.id().value())
             .map_err(|_| RepositoryError::InvalidId(account.id().value()))?;
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE accounts SET name = ?1 WHERE id = ?2",
-                params![account.name(), id],
-            )
-            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        let changed = self.connection.execute(
+            "UPDATE accounts SET name = ?1, adjustments = ?3 WHERE id = ?2 AND adjustments = ?4",
+            params![account.name(), id, encode_adjustments(&account)?, encode_adjustments(&current)?],
+        ).map_err(|error| RepositoryError::Storage(error.to_string()))?;
         Ok(changed == 1)
     }
 
@@ -1193,12 +1243,13 @@ pub fn restore_backup(
     for account in backup.accounts() {
         transaction
             .execute(
-                "INSERT INTO accounts (id, name, currency) VALUES (?1, ?2, ?3)",
+                "INSERT INTO accounts (id, name, currency, adjustments) VALUES (?1, ?2, ?3, ?4)",
                 params![
                     i64::try_from(account.id().value())
                         .map_err(|_| RepositoryError::InvalidId(account.id().value()))?,
                     account.name(),
                     currency_to_code(account.currency()),
+                    encode_adjustments(account)?,
                 ],
             )
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
@@ -1590,6 +1641,36 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if version < 5 {
+        transaction.execute_batch(r#"
+            ALTER TABLE accounts ADD COLUMN adjustments TEXT NOT NULL DEFAULT '[]';
+            DROP TRIGGER audit_accounts_create;
+            DROP TRIGGER audit_accounts_update;
+            DROP TRIGGER audit_accounts_delete;
+            CREATE TRIGGER audit_accounts_create AFTER INSERT ON accounts BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                VALUES ('account', NEW.id, 'create', json_object(
+                    'id', NEW.id, 'name', NEW.name, 'currency', NEW.currency, 'adjustments', json(NEW.adjustments)
+                ));
+            END;
+            CREATE TRIGGER audit_accounts_update AFTER UPDATE ON accounts BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('account', NEW.id, 'update',
+                    json_object('id', OLD.id, 'name', OLD.name, 'currency', OLD.currency, 'adjustments', json(OLD.adjustments)),
+                    json_object('id', NEW.id, 'name', NEW.name, 'currency', NEW.currency, 'adjustments', json(NEW.adjustments))
+                );
+            END;
+            CREATE TRIGGER audit_accounts_delete AFTER DELETE ON accounts BEGIN
+                INSERT INTO audit_log (entity_type, entity_id, operation, before_state)
+                VALUES ('account', OLD.id, 'delete', json_object(
+                    'id', OLD.id, 'name', OLD.name, 'currency', OLD.currency, 'adjustments', json(OLD.adjustments)
+                ));
+            END;
+
+            PRAGMA user_version = 5;
+        "#)?;
+    }
     transaction.commit()
 }
 
@@ -1599,6 +1680,76 @@ mod tests {
     use crate::domain::transaction::Category;
 
     use super::*;
+
+    #[test]
+    fn rejects_stored_duplicate_opening_adjustments() {
+        let mut accounts = SqliteAccountRepository::in_memory().unwrap();
+        let account = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let opening = serde_json::json!({
+            "kind": "opening", "amount_minor": 100, "currency": "CNY",
+            "occurred_at": "2026-08-20T10:00:00+08:00[Asia/Shanghai]",
+            "description": "Opening"
+        });
+        accounts
+            .connection
+            .execute(
+                "UPDATE accounts SET adjustments = ?1 WHERE id = ?2",
+                params![
+                    serde_json::json!([opening, opening]).to_string(),
+                    i64::try_from(account.id().value()).unwrap()
+                ],
+            )
+            .unwrap();
+        let expected = RepositoryError::InvalidStoredData(
+            "opening balance must be the first and only opening adjustment".into(),
+        );
+        assert_eq!(accounts.find_by_id(account.id()), Err(expected));
+        assert!(matches!(
+            accounts.find_all(),
+            Err(RepositoryError::InvalidStoredData(_))
+        ));
+    }
+
+    #[test]
+    fn migrates_v4_account_and_preserves_existing_audit_history() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(r#"
+            CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, currency TEXT NOT NULL);
+            CREATE TABLE audit_log (id INTEGER PRIMARY KEY, entity_type TEXT, entity_id INTEGER, operation TEXT, before_state TEXT, after_state TEXT);
+            INSERT INTO accounts VALUES (1, 'Legacy', 'CNY');
+            INSERT INTO audit_log VALUES (1, 'account', 1, 'create', NULL, '{"name":"Legacy"}');
+            CREATE TRIGGER audit_accounts_create AFTER INSERT ON accounts BEGIN SELECT 1; END;
+            CREATE TRIGGER audit_accounts_update AFTER UPDATE ON accounts BEGIN SELECT 1; END;
+            CREATE TRIGGER audit_accounts_delete AFTER DELETE ON accounts BEGIN SELECT 1; END;
+            PRAGMA user_version = 4;
+        "#).unwrap();
+        initialize_schema(&connection).unwrap();
+        initialize_schema(&connection).unwrap();
+        let stored: (String, String) = connection
+            .query_row(
+                "SELECT name, adjustments FROM accounts WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, ("Legacy".into(), "[]".into()));
+        let history: String = connection
+            .query_row(
+                "SELECT after_state FROM audit_log WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history, r#"{"name":"Legacy"}"#);
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            5
+        );
+    }
 
     #[test]
     fn initializes_schema() {
@@ -1849,16 +2000,16 @@ mod tests {
         assert_eq!(entries[0].1, None);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(entries[0].2.as_ref().unwrap()).unwrap(),
-            serde_json::json!({"id": 7, "name": "Cash", "currency": "CNY"})
+            serde_json::json!({"id": 7, "name": "Cash", "currency": "CNY", "adjustments": []})
         );
         assert_eq!(entries[1].0, "update");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(entries[1].1.as_ref().unwrap()).unwrap(),
-            serde_json::json!({"id": 7, "name": "Cash", "currency": "CNY"})
+            serde_json::json!({"id": 7, "name": "Cash", "currency": "CNY", "adjustments": []})
         );
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(entries[1].2.as_ref().unwrap()).unwrap(),
-            serde_json::json!({"id": 7, "name": "Wallet", "currency": "CNY"})
+            serde_json::json!({"id": 7, "name": "Wallet", "currency": "CNY", "adjustments": []})
         );
         assert_eq!(entries[2].0, "delete");
         assert_eq!(entries[2].2, None);
@@ -1908,11 +2059,15 @@ mod tests {
         assert_eq!(entries[0].operation(), AuditOperation::Update);
         assert_eq!(
             entries[0].before_state(),
-            Some(&serde_json::json!({"id": 1, "name": "Cash", "currency": "CNY"}))
+            Some(
+                &serde_json::json!({"id": 1, "name": "Cash", "currency": "CNY", "adjustments": []})
+            )
         );
         assert_eq!(
             entries[0].after_state(),
-            Some(&serde_json::json!({"id": 1, "name": "Wallet", "currency": "CNY"}))
+            Some(
+                &serde_json::json!({"id": 1, "name": "Wallet", "currency": "CNY", "adjustments": []})
+            )
         );
     }
 

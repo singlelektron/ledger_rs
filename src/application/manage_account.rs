@@ -9,6 +9,7 @@ pub enum ManageAccountError {
     HasTransactions(AccountId),
     HasTransfers(AccountId),
     HasBudgets(AccountId),
+    HasAdjustments(AccountId),
     Account(AccountError),
     Repository(RepositoryError),
 }
@@ -19,6 +20,7 @@ impl std::fmt::Display for ManageAccountError {
             Self::AccountNotFound(id) => write!(f, "account {id} not found"),
             Self::HasTransactions(id) => write!(f, "account {id} has transactions"),
             Self::HasTransfers(id) => write!(f, "account {id} has transfers"),
+            Self::HasAdjustments(id) => write!(f, "account {id} has balance adjustments"),
             Self::HasBudgets(id) => write!(f, "account {id} has budgets"),
             Self::Account(error) => write!(f, "{error}"),
             Self::Repository(error) => write!(f, "repository error: {error}"),
@@ -53,7 +55,8 @@ pub fn rename_account(
     name: String,
 ) -> Result<Account, ManageAccountError> {
     let current = get_account(repository, id)?;
-    let updated = Account::new(id, name, current.currency())?;
+    let updated = Account::new(id, name, current.currency())?
+        .with_adjustments(current.adjustments().to_vec())?;
     if !repository.update(updated.clone())? {
         return Err(ManageAccountError::AccountNotFound(id));
     }
@@ -65,7 +68,12 @@ pub fn delete_account(
     transaction_repository: &impl TransactionRepository,
     id: AccountId,
 ) -> Result<(), ManageAccountError> {
-    get_account(account_repository, id)?;
+    if !get_account(account_repository, id)?
+        .adjustments()
+        .is_empty()
+    {
+        return Err(ManageAccountError::HasAdjustments(id));
+    }
     if !transaction_repository.find_by_account_id(id)?.is_empty() {
         return Err(ManageAccountError::HasTransactions(id));
     }
@@ -81,7 +89,12 @@ pub fn delete_account_with_transfers(
     transfer_repository: &impl TransferRepository,
     id: AccountId,
 ) -> Result<(), ManageAccountError> {
-    get_account(account_repository, id)?;
+    if !get_account(account_repository, id)?
+        .adjustments()
+        .is_empty()
+    {
+        return Err(ManageAccountError::HasAdjustments(id));
+    }
     if !transaction_repository.find_by_account_id(id)?.is_empty() {
         return Err(ManageAccountError::HasTransactions(id));
     }
@@ -101,7 +114,12 @@ pub fn delete_account_with_dependencies(
     budget_repository: &impl BudgetRepository,
     id: AccountId,
 ) -> Result<(), ManageAccountError> {
-    get_account(account_repository, id)?;
+    if !get_account(account_repository, id)?
+        .adjustments()
+        .is_empty()
+    {
+        return Err(ManageAccountError::HasAdjustments(id));
+    }
     if !transaction_repository.find_by_account_id(id)?.is_empty() {
         return Err(ManageAccountError::HasTransactions(id));
     }

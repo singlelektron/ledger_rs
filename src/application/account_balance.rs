@@ -2,7 +2,7 @@ use crate::application::repository::{
     AccountRepository, RepositoryError, TransactionRepository, TransferRepository,
 };
 use crate::domain::account::AccountId;
-use crate::domain::balance::{BalanceError, calculate_balance};
+use crate::domain::balance::{BalanceError, calculate_balance, calculate_balance_with_transfers};
 use crate::domain::money::Money;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -55,19 +55,16 @@ pub fn get_account_balance_with_transfers(
     transfer_repository: &impl TransferRepository,
     account_id: AccountId,
 ) -> Result<Money, GetAccountBalanceError> {
-    let mut balance = get_account_balance(account_repository, transaction_repository, account_id)?;
-    for transfer in transfer_repository.find_by_account_id(account_id)? {
-        if transfer.source_account_id() == account_id {
-            balance = balance
-                .sub(transfer.source_amount())
-                .map_err(BalanceError::from)?;
-        } else {
-            balance = balance
-                .add(transfer.destination_amount())
-                .map_err(BalanceError::from)?;
-        }
-    }
-    Ok(balance)
+    let account = account_repository
+        .find_by_id(account_id)?
+        .ok_or(GetAccountBalanceError::AccountNotFound(account_id))?;
+    let transactions = transaction_repository.find_by_account_id(account_id)?;
+    let transfers = transfer_repository.find_by_account_id(account_id)?;
+    Ok(calculate_balance_with_transfers(
+        &account,
+        &transactions,
+        &transfers,
+    )?)
 }
 
 #[cfg(test)]

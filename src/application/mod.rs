@@ -16,3 +16,5 @@ pub mod monthly_trend;
 pub mod ranged_summary;
 pub mod record_transaction;
 pub mod repository;
+
+pub mod reconcile_balance;

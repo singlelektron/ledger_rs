@@ -20,11 +20,22 @@ impl std::fmt::Display for AccountId {
 #[derive(Debug, PartialEq, Eq)]
 pub enum AccountError {
     EmptyName,
+    AdjustmentCurrencyMismatch,
+    InvalidOpeningAdjustmentOrder,
 }
 
 impl std::fmt::Display for AccountError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AdjustmentCurrencyMismatch => {
+                write!(f, "adjustment currency does not match account")
+            }
+            Self::InvalidOpeningAdjustmentOrder => {
+                write!(
+                    f,
+                    "opening balance must be the first and only opening adjustment"
+                )
+            }
             Self::EmptyName => write!(f, "account name must not be empty"),
         }
     }
@@ -60,6 +71,7 @@ impl NewAccount {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     id: AccountId,
+    adjustments: Vec<BalanceAdjustment>,
     name: String,
     currency: Currency,
 }
@@ -72,9 +84,37 @@ impl Account {
     pub fn from_new(id: AccountId, account: NewAccount) -> Self {
         Self {
             id,
+            adjustments: Vec::new(),
             name: account.name,
             currency: account.currency,
         }
+    }
+
+    pub fn adjustments(&self) -> &[BalanceAdjustment] {
+        &self.adjustments
+    }
+
+    pub fn with_adjustments(
+        mut self,
+        adjustments: Vec<BalanceAdjustment>,
+    ) -> Result<Self, AccountError> {
+        if adjustments
+            .iter()
+            .any(|value| value.currency != self.currency.to_string())
+        {
+            return Err(AccountError::AdjustmentCurrencyMismatch);
+        }
+        // Adjustment history is in recording order; reconciliations may be backdated.
+        // An opening can only be recorded before any other adjustment exists.
+        if adjustments
+            .iter()
+            .skip(1)
+            .any(|value| value.kind == BalanceAdjustmentKind::Opening)
+        {
+            return Err(AccountError::InvalidOpeningAdjustmentOrder);
+        }
+        self.adjustments = adjustments;
+        Ok(self)
     }
 
     pub fn id(&self) -> AccountId {
@@ -88,6 +128,23 @@ impl Account {
     pub fn currency(&self) -> Currency {
         self.currency
     }
+}
+
+/// An explicit balance correction, never a transaction or report cash flow.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BalanceAdjustment {
+    pub amount_minor: i64,
+    pub currency: String,
+    pub occurred_at: jiff::Zoned,
+    pub description: String,
+    pub kind: BalanceAdjustmentKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BalanceAdjustmentKind {
+    Opening,
+    Reconciliation,
 }
 
 #[cfg(test)]
