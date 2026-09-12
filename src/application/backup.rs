@@ -515,6 +515,69 @@ mod tests {
         "2026-08-20T10:00:00+08:00[Asia/Shanghai]".parse().unwrap()
     }
 
+    fn backup_with_adjustment_kinds(kinds: &[&str]) -> String {
+        let adjustments = kinds
+            .iter()
+            .map(|kind| {
+                serde_json::json!({
+                    "kind": kind, "amount_minor": 100, "currency": "CNY",
+                    "occurred_at": "2026-08-20T10:00:00+08:00[Asia/Shanghai]",
+                    "description": "Imported adjustment"
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "format_version": 2,
+            "accounts": [{"id": 1, "name": "Cash", "currency": "CNY", "adjustments": adjustments}],
+            "transactions": [], "transfers": [], "budgets": []
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn rejects_duplicate_or_late_opening_adjustments_in_backup() {
+        for kinds in [
+            vec!["opening", "opening"],
+            vec!["reconciliation", "opening"],
+            vec!["opening", "reconciliation", "opening"],
+        ] {
+            assert_eq!(
+                validate_json_backup(&backup_with_adjustment_kinds(&kinds)),
+                Err(invalid_entity(
+                    "account",
+                    1,
+                    "InvalidOpeningAdjustmentOrder"
+                )),
+                "{kinds:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_optional_first_opening_and_retains_adjustment_order() {
+        for kinds in [
+            vec![],
+            vec!["opening"],
+            vec!["reconciliation", "reconciliation"],
+            vec!["opening", "reconciliation", "reconciliation"],
+        ] {
+            let json = backup_with_adjustment_kinds(&kinds);
+            let backup = validate_json_backup(&json).unwrap();
+            assert_eq!(backup.accounts()[0].adjustments().len(), kinds.len());
+        }
+        // Backdated reconciliation is allowed; order is recording order, not date order.
+        let mut json: serde_json::Value = serde_json::from_str(&backup_with_adjustment_kinds(&[
+            "opening",
+            "reconciliation",
+        ]))
+        .unwrap();
+        json["accounts"][0]["adjustments"][1]["occurred_at"] =
+            "2026-08-19T10:00:00+08:00[Asia/Shanghai]".into();
+        let backup = validate_json_backup(&json.to_string()).unwrap();
+        let adjustments = backup.accounts()[0].adjustments();
+        assert!(adjustments[0].occurred_at > adjustments[1].occurred_at);
+    }
+
     #[test]
     fn round_trips_all_aggregate_types_and_ids() {
         let mut accounts = InMemoryAccountRepository::new();

@@ -1682,6 +1682,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_stored_duplicate_opening_adjustments() {
+        let mut accounts = SqliteAccountRepository::in_memory().unwrap();
+        let account = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let opening = serde_json::json!({
+            "kind": "opening", "amount_minor": 100, "currency": "CNY",
+            "occurred_at": "2026-08-20T10:00:00+08:00[Asia/Shanghai]",
+            "description": "Opening"
+        });
+        accounts
+            .connection
+            .execute(
+                "UPDATE accounts SET adjustments = ?1 WHERE id = ?2",
+                params![
+                    serde_json::json!([opening, opening]).to_string(),
+                    i64::try_from(account.id().value()).unwrap()
+                ],
+            )
+            .unwrap();
+        let expected = RepositoryError::InvalidStoredData(
+            "opening balance must be the first and only opening adjustment".into(),
+        );
+        assert_eq!(accounts.find_by_id(account.id()), Err(expected));
+        assert!(matches!(
+            accounts.find_all(),
+            Err(RepositoryError::InvalidStoredData(_))
+        ));
+    }
+
+    #[test]
     fn migrates_v4_account_and_preserves_existing_audit_history() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(r#"

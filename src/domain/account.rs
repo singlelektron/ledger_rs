@@ -21,6 +21,7 @@ impl std::fmt::Display for AccountId {
 pub enum AccountError {
     EmptyName,
     AdjustmentCurrencyMismatch,
+    InvalidOpeningAdjustmentOrder,
 }
 
 impl std::fmt::Display for AccountError {
@@ -28,6 +29,12 @@ impl std::fmt::Display for AccountError {
         match self {
             Self::AdjustmentCurrencyMismatch => {
                 write!(f, "adjustment currency does not match account")
+            }
+            Self::InvalidOpeningAdjustmentOrder => {
+                write!(
+                    f,
+                    "opening balance must be the first and only opening adjustment"
+                )
             }
             Self::EmptyName => write!(f, "account name must not be empty"),
         }
@@ -96,6 +103,15 @@ impl Account {
             .any(|value| value.currency != self.currency.to_string())
         {
             return Err(AccountError::AdjustmentCurrencyMismatch);
+        }
+        // Adjustment history is in recording order; reconciliations may be backdated.
+        // An opening can only be recorded before any other adjustment exists.
+        if adjustments
+            .iter()
+            .skip(1)
+            .any(|value| value.kind == BalanceAdjustmentKind::Opening)
+        {
+            return Err(AccountError::InvalidOpeningAdjustmentOrder);
         }
         self.adjustments = adjustments;
         Ok(self)

@@ -1160,3 +1160,6 @@ CSV exchange does not include them.
 SQLite schema version 5 adds adjustment storage without changing existing
 transactions. Existing accounts retain a zero baseline. Version 2 JSON backups
 preserve adjustment amounts, currency, timestamps, descriptions, and kinds.
+Backup validation and database reads reject duplicate opening adjustments or an
+opening recorded after another adjustment. Adjustment order is recording order;
+backdated reconciliations remain supported.
