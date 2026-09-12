@@ -2,6 +2,7 @@ use crate::domain::{
     account::{Account, AccountId},
     money::{Currency, Money, MoneyError},
     transaction::{Transaction, TransactionKind},
+    transfer::Transfer,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -49,15 +50,35 @@ pub fn calculate_balance(
     account: &Account,
     transactions: &[Transaction],
 ) -> Result<Money, BalanceError> {
-    let mut balance = Money::from_minor_units(0, account.currency());
+    calculate_balance_with_transfers(account, transactions, &[])
+}
 
+/// Keep all offsets in a wide accumulator; only the completed balance must fit
+/// in Money. Narrowing before applying transfers can reject a valid ledger.
+pub(crate) fn calculate_balance_with_transfers(
+    account: &Account,
+    transactions: &[Transaction],
+    transfers: &[Transfer],
+) -> Result<Money, BalanceError> {
+    let mut minor_units = 0i128;
+    let mut accumulate = |amount: &Money, direction: i128| -> Result<(), BalanceError> {
+        if amount.currency() != account.currency() {
+            return Err(BalanceError::CurrencyMismatch {
+                expected: account.currency(),
+                found: amount.currency(),
+            });
+        }
+        minor_units = minor_units
+            .checked_add(i128::from(amount.minor_units()) * direction)
+            .ok_or(BalanceError::ArithmeticOverflow)?;
+        Ok(())
+    };
     for adjustment in account.adjustments() {
-        balance = balance.add(&Money::from_minor_units(
-            adjustment.amount_minor,
-            account.currency(),
-        ))?;
+        accumulate(
+            &Money::from_minor_units(adjustment.amount_minor, account.currency()),
+            1,
+        )?;
     }
-
     for transaction in transactions {
         if transaction.account_id() != account.id() {
             return Err(BalanceError::AccountMismatch {
@@ -65,21 +86,26 @@ pub fn calculate_balance(
                 found: transaction.account_id(),
             });
         }
-
-        match transaction.kind() {
-            TransactionKind::Income => {
-                balance = balance.add(transaction.amount())?;
-            }
-            TransactionKind::Expense => {
-                balance = balance.sub(transaction.amount())?;
-            }
-            TransactionKind::ExpenseRefund => {
-                balance = balance.add(transaction.amount())?;
-            }
+        let direction = match transaction.kind() {
+            TransactionKind::Income | TransactionKind::ExpenseRefund => 1,
+            TransactionKind::Expense => -1,
+        };
+        accumulate(transaction.amount(), direction)?;
+    }
+    for transfer in transfers {
+        if transfer.source_account_id() == account.id() {
+            accumulate(transfer.source_amount(), -1)?;
+        } else if transfer.destination_account_id() == account.id() {
+            accumulate(transfer.destination_amount(), 1)?;
+        } else {
+            return Err(BalanceError::AccountMismatch {
+                expected: account.id(),
+                found: transfer.source_account_id(),
+            });
         }
     }
-
-    Ok(balance)
+    let minor_units = i64::try_from(minor_units).map_err(|_| BalanceError::ArithmeticOverflow)?;
+    Ok(Money::from_minor_units(minor_units, account.currency()))
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ use crate::application::repository::{
 };
 use crate::domain::{
     account::{AccountId, BalanceAdjustment, BalanceAdjustmentKind},
-    balance::{BalanceError, calculate_balance},
+    balance::{BalanceError, calculate_balance_with_transfers},
     money::Money,
 };
 use jiff::Zoned;
@@ -83,18 +83,15 @@ pub fn reconcile_balance(
             .into_iter()
             .filter(|value| value.occurred_at() <= at)
             .collect::<Vec<_>>();
-        let mut calculated = calculate_balance(&dated_account, &dated_transactions)?;
-        for transfer in all_transfers
-            .iter()
+        let dated_transfers = all_transfers
+            .into_iter()
             .filter(|value| value.occurred_at() <= at)
-        {
-            calculated = if transfer.source_account_id() == id {
-                calculated.sub(transfer.source_amount())
-            } else {
-                calculated.add(transfer.destination_amount())
-            }
-            .map_err(BalanceError::from)?;
-        }
+            .collect::<Vec<_>>();
+        let calculated = calculate_balance_with_transfers(
+            &dated_account,
+            &dated_transactions,
+            &dated_transfers,
+        )?;
         observed.sub(&calculated).map_err(BalanceError::from)?
     };
     let adjustment = BalanceAdjustment {
@@ -141,6 +138,150 @@ mod tests {
     }
     fn money(value: i64) -> Money {
         Money::from_minor_units(value, Currency::Cny)
+    }
+
+    #[test]
+    fn offsetting_activity_preserves_reconciled_balances_at_integer_limits() {
+        for use_transfer in [false, true] {
+            for observed in [i64::MAX, i64::MIN] {
+                let (mut accounts, mut transactions, mut transfers, _) =
+                    in_memory_complete_repositories().unwrap();
+                let a = accounts
+                    .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+                    .unwrap();
+                let b = accounts
+                    .create(NewAccount::new("Bank".into(), Currency::Cny).unwrap())
+                    .unwrap();
+                reconcile_balance(
+                    &mut accounts,
+                    &transactions,
+                    &transfers,
+                    a.id(),
+                    money(observed),
+                    at(1),
+                    "".into(),
+                    BalanceAdjustmentKind::Opening,
+                )
+                .unwrap();
+                if use_transfer {
+                    let (source, destination) = if observed > 0 {
+                        (a.id(), b.id())
+                    } else {
+                        (b.id(), a.id())
+                    };
+                    transfers
+                        .create(
+                            NewTransfer::new(
+                                source,
+                                destination,
+                                money(i64::MAX),
+                                money(i64::MAX),
+                                at(2),
+                                "Offset".into(),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                } else {
+                    let kind = if observed > 0 {
+                        TransactionKind::Expense
+                    } else {
+                        TransactionKind::Income
+                    };
+                    transactions
+                        .create(
+                            NewTransaction::new(
+                                a.id(),
+                                kind,
+                                money(i64::MAX),
+                                at(2),
+                                "Offset".into(),
+                                Category::Other,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                }
+                reconcile_balance(
+                    &mut accounts,
+                    &transactions,
+                    &transfers,
+                    a.id(),
+                    money(observed),
+                    at(3),
+                    "".into(),
+                    BalanceAdjustmentKind::Reconciliation,
+                )
+                .unwrap();
+                assert_eq!(
+                    get_account_balance_with_transfers(
+                        &accounts,
+                        &transactions,
+                        &transfers,
+                        a.id()
+                    )
+                    .unwrap(),
+                    money(observed)
+                );
+                // Repeating the observation uses the same sum and needs no correction.
+                assert_eq!(
+                    reconcile_balance(
+                        &mut accounts,
+                        &transactions,
+                        &transfers,
+                        a.id(),
+                        money(observed),
+                        at(3),
+                        "".into(),
+                        BalanceAdjustmentKind::Reconciliation
+                    )
+                    .unwrap()
+                    .amount_minor,
+                    0
+                );
+                if !use_transfer {
+                    assert_eq!(
+                        crate::application::account_balance::get_account_balance(
+                            &accounts,
+                            &transactions,
+                            a.id()
+                        )
+                        .unwrap(),
+                        money(observed)
+                    );
+                }
+                transactions
+                    .create(
+                        NewTransaction::new(
+                            a.id(),
+                            if observed > 0 {
+                                TransactionKind::Income
+                            } else {
+                                TransactionKind::Expense
+                            },
+                            money(1),
+                            at(4),
+                            "Beyond range".into(),
+                            Category::Other,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    get_account_balance_with_transfers(
+                        &accounts,
+                        &transactions,
+                        &transfers,
+                        a.id()
+                    ),
+                    Err(
+                        crate::application::account_balance::GetAccountBalanceError::Balance(
+                            BalanceError::ArithmeticOverflow
+                        )
+                    )
+                );
+            }
+        }
     }
 
     #[test]
