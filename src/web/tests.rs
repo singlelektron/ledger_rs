@@ -999,6 +999,41 @@ async fn data_tools_export_link_and_atomic_csv_import_work() {
 }
 
 #[tokio::test]
+async fn data_tools_explains_and_imports_the_external_csv_format() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = WebState::new(directory.path().join("web.db"));
+    let _redirect = create_account_handler(
+        State(state.clone()),
+        Form(CreateAccountForm {
+            name: "Cash".into(),
+            currency: "CNY".into(),
+        }),
+    )
+    .await
+    .unwrap();
+    let page = data_tools(State(state.clone())).await.unwrap();
+    assert!(
+        page.0
+            .contains("account,kind,amount,currency,occurred_at,description,category")
+    );
+    assert!(
+        page.0
+            .contains("account_id,kind,amount_minor,currency,occurred_at,description,category")
+    );
+    assert!(page.0.contains("case-sensitive"));
+    assert!(page.0.contains("two fractional digits"));
+    assert!(page.0.contains("one invalid row writes nothing"));
+    let _redirect = import_csv_handler(State(state.clone()), Form(CsvImportForm {
+        csv: "account,kind,amount,currency,occurred_at,description,category\nCash,expense,12.50,CNY,2026-09-01T12:00:00+08:00[Asia/Shanghai],External lunch,food\n".into(),
+    })).await.unwrap();
+    let detail = account_detail(State(state), Path(1), Query(TransactionQuery::default()))
+        .await
+        .unwrap();
+    assert!(detail.0.contains("External lunch"));
+    assert!(detail.0.contains("−12.50 CNY"));
+}
+
+#[tokio::test]
 async fn account_csv_download_uses_account_specific_filename() {
     let temp_dir = tempfile::tempdir().unwrap();
     let state = WebState::new(temp_dir.path().join("web.db"));

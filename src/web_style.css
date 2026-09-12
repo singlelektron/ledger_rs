@@ -490,6 +490,7 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 
 .data-card > p:not(.eyebrow), .muted { color: var(--muted); font-size: .78rem; }
+.data-card code { overflow-wrap: anywhere; }
 .data-card > .button { margin-top: 12px; }
 .data-card form { margin-top: 16px; }
 .danger-zone { border-color: #43232c; }
