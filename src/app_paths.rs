@@ -7,6 +7,7 @@ const DATABASE_FILENAME: &str = "ledger.db";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DatabasePathSource {
     Explicit,
+    Environment,
     PlatformDefault,
     LegacyCurrentDirectory,
     CurrentDirectoryFallback,
@@ -37,13 +38,14 @@ impl ResolvedDatabasePath {
     }
 }
 
-/// Resolves an explicit database path or the platform default.
+/// Resolves an explicit path, nonempty LEDGER_RS_DATABASE, or the platform default.
 ///
 /// When upgrading from the previous current-directory default, an existing
 /// `./ledger.db` remains in use until the user explicitly migrates it.
 pub fn resolve_database_path(explicit: Option<PathBuf>) -> ResolvedDatabasePath {
     resolve_database_path_from(
         explicit,
+        nonempty_environment_path("LEDGER_RS_DATABASE"),
         platform_default_database_path(),
         PathBuf::from(DATABASE_FILENAME),
     )
@@ -51,6 +53,7 @@ pub fn resolve_database_path(explicit: Option<PathBuf>) -> ResolvedDatabasePath 
 
 fn resolve_database_path_from(
     explicit: Option<PathBuf>,
+    configured: Option<PathBuf>,
     platform_default: Option<PathBuf>,
     legacy: PathBuf,
 ) -> ResolvedDatabasePath {
@@ -58,6 +61,14 @@ fn resolve_database_path_from(
         return ResolvedDatabasePath {
             path,
             source: DatabasePathSource::Explicit,
+            migration_target: None,
+        };
+    }
+
+    if let Some(path) = configured {
+        return ResolvedDatabasePath {
+            path,
+            source: DatabasePathSource::Environment,
             migration_target: None,
         };
     }
@@ -185,6 +196,7 @@ mod tests {
     fn explicit_database_always_wins() {
         let resolved = resolve_database_path_from(
             Some(PathBuf::from("chosen.db")),
+            Some(PathBuf::from("configured.db")),
             Some(PathBuf::from("platform.db")),
             PathBuf::from("legacy.db"),
         );
@@ -194,13 +206,29 @@ mod tests {
     }
 
     #[test]
+    fn configured_database_wins_over_existing_platform_and_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform = dir.path().join("platform.db");
+        let legacy = dir.path().join("legacy.db");
+        std::fs::write(&platform, []).unwrap();
+        std::fs::write(&legacy, []).unwrap();
+        let chosen = dir.path().join("configured.db");
+        let resolved =
+            resolve_database_path_from(None, Some(chosen.clone()), Some(platform), legacy);
+        assert_eq!(resolved.path(), chosen);
+        assert_eq!(resolved.source, DatabasePathSource::Environment);
+        assert_eq!(resolved.migration_target(), None);
+    }
+
+    #[test]
     fn keeps_existing_legacy_database_when_platform_database_is_absent() {
         let temporary_directory = tempfile::tempdir().unwrap();
         let legacy = temporary_directory.path().join("legacy.db");
         let platform = temporary_directory.path().join("platform.db");
         std::fs::write(&legacy, []).unwrap();
 
-        let resolved = resolve_database_path_from(None, Some(platform.clone()), legacy.clone());
+        let resolved =
+            resolve_database_path_from(None, None, Some(platform.clone()), legacy.clone());
 
         assert_eq!(resolved.path(), legacy);
         assert!(resolved.uses_legacy_current_directory());
@@ -213,7 +241,7 @@ mod tests {
         let legacy = temporary_directory.path().join("legacy.db");
         let platform = temporary_directory.path().join("platform.db");
 
-        let resolved = resolve_database_path_from(None, Some(platform.clone()), legacy);
+        let resolved = resolve_database_path_from(None, None, Some(platform.clone()), legacy);
 
         assert_eq!(resolved.path(), platform);
         assert_eq!(resolved.source, DatabasePathSource::PlatformDefault);
@@ -227,7 +255,7 @@ mod tests {
         std::fs::write(&legacy, []).unwrap();
         std::fs::write(&platform, []).unwrap();
 
-        let resolved = resolve_database_path_from(None, Some(platform.clone()), legacy);
+        let resolved = resolve_database_path_from(None, None, Some(platform.clone()), legacy);
 
         assert_eq!(resolved.path(), platform);
         assert_eq!(resolved.source, DatabasePathSource::PlatformDefault);
