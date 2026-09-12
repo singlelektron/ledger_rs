@@ -391,6 +391,77 @@ async fn transaction_form_records_and_renders_expense() {
 }
 
 #[tokio::test]
+async fn transaction_rows_display_types_consistent_with_forms() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state = WebState::new(temp_dir.path().join("web.db"));
+    let _redirect = create_account_handler(
+        State(state.clone()),
+        Form(CreateAccountForm {
+            name: String::from("Cash"),
+            currency: String::from("CNY"),
+        }),
+    )
+    .await
+    .unwrap();
+
+    let kinds = [
+        ("income", "Income", "+"),
+        ("expense", "Expense", "−"),
+        ("expense_refund", "Expense refund", "+"),
+    ];
+    for (kind, _, _) in kinds {
+        let _redirect = create_transaction_handler(
+            State(state.clone()),
+            Path(1),
+            Form(CreateTransactionForm {
+                kind: kind.to_owned(),
+                amount: String::from("12.50"),
+                occurred_at: String::from("2026-09-01T18:30"),
+                time_zone: String::from("Asia/Shanghai"),
+                time_zone_offset: None,
+                description: String::from("Same description & amount"),
+                category: String::from("food"),
+            }),
+        )
+        .await
+        .unwrap();
+    }
+
+    let page = account_detail(
+        State(state.clone()),
+        Path(1),
+        Query(TransactionQuery::default()),
+    )
+    .await
+    .unwrap();
+    let rows: Vec<_> = page
+        .0
+        .split("<article class=\"transaction-row\">")
+        .skip(1)
+        .map(|part| part.split_once("</article>").unwrap().0)
+        .collect();
+    assert_eq!(rows.len(), kinds.len());
+    for (index, (kind, label, sign)) in kinds.iter().enumerate() {
+        let id = index + 1;
+        let edit_link = format!("href=\"/transactions/{id}/edit\"");
+        let row = rows.iter().find(|row| row.contains(&edit_link)).unwrap();
+        assert!(row.contains(&format!("<span class=\"transaction-kind\">{label}</span>")));
+        assert!(row.contains("Same description &amp; amount"));
+        assert!(row.contains(&format!("{sign}12.50 CNY")));
+        assert!(
+            page.0
+                .contains(&format!("<option value=\"{kind}\">{label}</option>"))
+        );
+        let edit = transaction_edit(State(state.clone()), Path(id as u64))
+            .await
+            .unwrap();
+        assert!(edit.0.contains(&format!(
+            "<option value=\"{kind}\" selected>{label}</option>"
+        )));
+    }
+}
+
+#[tokio::test]
 async fn account_detail_returns_not_found_for_unknown_id() {
     let temp_dir = tempfile::tempdir().unwrap();
     let state = WebState::new(temp_dir.path().join("web.db"));
@@ -534,7 +605,7 @@ async fn transaction_management_filters_updates_and_deletes() {
         .await
         .unwrap();
     assert!(edit.0.contains("value=\"12.50\""));
-    let _redirect = update_transaction_handler(
+    let redirect = update_transaction_handler(
         State(state.clone()),
         Path(1),
         Form(CreateTransactionForm {
@@ -549,6 +620,9 @@ async fn transaction_management_filters_updates_and_deletes() {
     )
     .await
     .unwrap();
+    let response = axum::response::IntoResponse::into_response(redirect);
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[header::LOCATION], "/accounts/1");
     let updated = account_detail(
         State(state.clone()),
         Path(1),
@@ -556,7 +630,16 @@ async fn transaction_management_filters_updates_and_deletes() {
     )
     .await
     .unwrap();
-    assert!(updated.0.contains("Updated refund"));
+    let refund_row = updated
+        .0
+        .split("<article class=\"transaction-row\">")
+        .skip(1)
+        .map(|part| part.split_once("</article>").unwrap().0)
+        .find(|row| row.contains("href=\"/transactions/1/edit\""))
+        .unwrap();
+    assert!(refund_row.contains("Updated refund"));
+    assert!(refund_row.contains("<span class=\"transaction-kind\">Expense refund</span>"));
+    assert!(!refund_row.contains("<span class=\"transaction-kind\">Expense</span>"));
     assert!(updated.0.contains("+20.25 CNY"));
 
     let _redirect = delete_transaction_handler(State(state.clone()), Path(1))
