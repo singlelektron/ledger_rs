@@ -327,6 +327,116 @@ mod tests {
     };
 
     #[test]
+    fn user_format_imports_exact_amounts_and_native_export_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut accounts, mut transactions) =
+            crate::infrastructure::sqlite::open_repositories(directory.path().join("ledger.db"))
+                .unwrap();
+        let account = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let input = format!(
+            "{}\nCash,expense,12.50,CNY,2026-08-20T10:00:00+08:00[Asia/Shanghai],Lunch,food\nCash,income,7.8,CNY,2026-08-20T10:00:00+08:00[Asia/Shanghai],Pay,salary\n",
+            USER_HEADER.join(",")
+        );
+        let created = import_transactions_csv(&accounts, &mut transactions, &input).unwrap();
+        assert_eq!(created[0].amount().minor_units(), 1250);
+        assert_eq!(created[1].amount().minor_units(), 780);
+        let exported = export_transactions_csv(
+            &accounts,
+            &transactions,
+            account.id(),
+            TransactionFilter::default(),
+        )
+        .unwrap();
+        assert!(exported.starts_with(&HEADER.join(",")));
+        assert_eq!(
+            import_transactions_csv(&accounts, &mut transactions, &exported)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn invalid_user_rows_leave_sqlite_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut accounts, mut transactions) =
+            crate::infrastructure::sqlite::open_repositories(directory.path().join("ledger.db"))
+                .unwrap();
+        let account = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        for (name, amount, currency, expected) in [
+            ("Missing", "1", "CNY", "unknown account name"),
+            ("Cash", "1.001", "CNY", "invalid amount"),
+            ("Cash", "-1", "CNY", "invalid amount"),
+            ("Cash", "0", "CNY", "invalid transaction"),
+            ("Cash", "NaN", "CNY", "invalid amount"),
+            ("Cash", "92233720368547758.08", "CNY", "invalid amount"),
+            ("Cash", "1", "USD", "currency does not match account"),
+        ] {
+            let input = format!(
+                "{}\nCash,expense,1,CNY,2026-08-20T10:00:00+08:00[Asia/Shanghai],Good,food\n{name},expense,{amount},{currency},2026-08-20T10:00:00+08:00[Asia/Shanghai],Bad,food\n",
+                USER_HEADER.join(",")
+            );
+            match import_transactions_csv(&accounts, &mut transactions, &input).unwrap_err() {
+                CsvExchangeError::InvalidRow { line, message } => {
+                    assert_eq!(line, 3);
+                    assert!(message.starts_with(expected), "{message}");
+                }
+                error => panic!("unexpected error: {error:?}"),
+            }
+            assert!(
+                transactions
+                    .find_by_account_id(account.id())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_names_are_ambiguous_even_with_different_currencies() {
+        let mut accounts = InMemoryAccountRepository::new();
+        for currency in [Currency::Cny, Currency::Usd] {
+            accounts
+                .create(NewAccount::new("Cash".into(), currency).unwrap())
+                .unwrap();
+        }
+        let mut transactions = InMemoryTransactionRepository::new();
+        let input = format!(
+            "{}\nCash,expense,1,CNY,2026-08-20T10:00:00+08:00[Asia/Shanghai],Lunch,food\n",
+            USER_HEADER.join(",")
+        );
+        assert_eq!(
+            import_transactions_csv(&accounts, &mut transactions, &input),
+            Err(CsvExchangeError::InvalidRow {
+                line: 2,
+                message: "ambiguous account name".into()
+            })
+        );
+    }
+
+    #[test]
+    fn decimal_parser_checks_precision_and_overflow() {
+        assert_eq!(parse_decimal_minor("92233720368547758.07"), Some(i64::MAX));
+        for value in [
+            "",
+            ".1",
+            "1.",
+            "1.234",
+            "1e2",
+            " 1",
+            "+1",
+            "1,000",
+            "92233720368547758.08",
+        ] {
+            assert_eq!(parse_decimal_minor(value), None, "{value}");
+        }
+    }
+
+    #[test]
     fn round_trips_quoted_unicode_csv() {
         let mut accounts = InMemoryAccountRepository::new();
         let account = accounts
