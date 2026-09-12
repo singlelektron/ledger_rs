@@ -17,6 +17,36 @@ const HEADER: [&str; 7] = [
     "category",
 ];
 
+const USER_HEADER: [&str; 7] = [
+    "account",
+    "kind",
+    "amount",
+    "currency",
+    "occurred_at",
+    "description",
+    "category",
+];
+
+// Parse positive decimal currency amounts exactly, without floating-point rounding.
+fn parse_decimal_minor(value: &str) -> Option<i64> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|c| c.is_ascii_digit())
+        || fraction.len() > 2
+        || !fraction.bytes().all(|c| c.is_ascii_digit())
+        || (value.contains('.') && fraction.is_empty())
+    {
+        return None;
+    }
+    let whole = whole.parse::<i64>().ok()?.checked_mul(100)?;
+    let fraction = match fraction.len() {
+        0 => 0,
+        1 => fraction.parse::<i64>().ok()? * 10,
+        _ => fraction.parse::<i64>().ok()?,
+    };
+    whole.checked_add(fraction)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum CsvExchangeError {
     InvalidCsv { line: usize, message: String },
@@ -212,9 +242,15 @@ pub fn import_transactions_csv(
     let Some((_, header)) = rows.next() else {
         return Err(CsvExchangeError::InvalidHeader);
     };
-    if header != HEADER {
+    let user_format = header == USER_HEADER;
+    if header != HEADER && !user_format {
         return Err(CsvExchangeError::InvalidHeader);
     }
+    let named_accounts = if user_format {
+        accounts.find_all()?
+    } else {
+        Vec::new()
+    };
     let mut parsed = Vec::new();
     for (line, row) in rows {
         if row.len() != HEADER.len() {
@@ -227,18 +263,36 @@ pub fn import_transactions_csv(
             line,
             message: message.to_string(),
         };
-        let account_id = AccountId::new(
-            row[0]
-                .parse::<u64>()
-                .map_err(|_| invalid("invalid account_id"))?,
-        );
-        let account = accounts
-            .find_by_id(account_id)?
-            .ok_or_else(|| invalid("account not found"))?;
+        let account = if user_format {
+            let mut matches = named_accounts
+                .iter()
+                .filter(|account| account.name() == row[0]);
+            let account = matches
+                .next()
+                .ok_or_else(|| invalid("unknown account name"))?;
+            if matches.next().is_some() {
+                return Err(invalid("ambiguous account name"));
+            }
+            account.clone()
+        } else {
+            let id = AccountId::new(
+                row[0]
+                    .parse::<u64>()
+                    .map_err(|_| invalid("invalid account_id"))?,
+            );
+            accounts
+                .find_by_id(id)?
+                .ok_or_else(|| invalid("account not found"))?
+        };
+        let account_id = account.id();
         let kind = parse_kind(&row[1]).ok_or_else(|| invalid("invalid kind"))?;
-        let amount_minor = row[2]
-            .parse::<i64>()
-            .map_err(|_| invalid("invalid amount_minor"))?;
+        let amount_minor = if user_format {
+            parse_decimal_minor(&row[2]).ok_or_else(|| invalid("invalid amount: expected a positive decimal with at most two fractional digits"))?
+        } else {
+            row[2]
+                .parse::<i64>()
+                .map_err(|_| invalid("invalid amount_minor"))?
+        };
         let currency = parse_currency(&row[3]).ok_or_else(|| invalid("invalid currency"))?;
         if currency != account.currency() {
             return Err(invalid("currency does not match account"));
