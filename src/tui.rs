@@ -40,7 +40,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
     },
@@ -2853,39 +2853,68 @@ fn render_transactions(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         return;
     };
 
+    // The detail pane occupies 65% of the terminal. Stack metadata on narrow
+    // panes so long category names stay readable at ordinary terminal widths.
+    let compact = area.width < 88;
     let rows = account.transactions().iter().map(|transaction| {
-        Row::new(vec![
-            Cell::from(transaction.occurred_at().to_string()),
-            Cell::from(kind_label(transaction.kind())),
-            Cell::from(format_transaction_amount(transaction)),
-            Cell::from(transaction.description().to_string()),
-        ])
+        let category = Cell::from(category_label(transaction.category()));
+        if compact {
+            Row::new(vec![
+                category,
+                Cell::from(Text::from(vec![
+                    Line::from(transaction.description().to_string()),
+                    Line::from(format!(
+                        "{} {}",
+                        kind_label(transaction.kind()),
+                        format_transaction_amount(transaction)
+                    )),
+                    Line::from(transaction.occurred_at().to_string()),
+                ])),
+            ])
+            .height(3)
+        } else {
+            Row::new(vec![
+                Cell::from(transaction.occurred_at().to_string()),
+                Cell::from(kind_label(transaction.kind())),
+                Cell::from(format_transaction_amount(transaction)),
+                category,
+                Cell::from(transaction.description().to_string()),
+            ])
+        }
     });
-    let header = Row::new(["Occurred at", "Kind", "Amount", "Description"])
-        .style(Style::default().fg(Color::Cyan).bold());
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(24),
-            Constraint::Length(8),
-            Constraint::Length(15),
-            Constraint::Min(12),
-        ],
-    )
-    .header(header)
-    .column_spacing(1)
-    .row_highlight_style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ")
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(focus_border(app.focus() == Focus::Transactions))
-            .title(format!(" Transactions ({}) ", account.transactions().len())),
-    );
+    let (headers, widths) = if compact {
+        (
+            vec!["Category", "Transaction"],
+            vec![Constraint::Length(14), Constraint::Min(12)],
+        )
+    } else {
+        (
+            vec!["Occurred at", "Kind", "Amount", "Category", "Description"],
+            vec![
+                Constraint::Length(24),
+                Constraint::Length(8),
+                Constraint::Length(15),
+                Constraint::Length(14),
+                Constraint::Min(12),
+            ],
+        )
+    };
+    let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
+    let table = Table::new(rows, widths)
+        .header(header)
+        .column_spacing(1)
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ")
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focus_border(app.focus() == Focus::Transactions))
+                .title(format!(" Transactions ({}) ", account.transactions().len())),
+        );
     let mut state = TableState::default().with_selected(app.selected_transaction_index());
     frame.render_stateful_widget(table, area, &mut state);
 }

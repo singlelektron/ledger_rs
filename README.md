@@ -138,6 +138,11 @@ detail pane, then use the up/down arrows or `k`/`j` to move the selection. The
 activity and reports pages keep focus on the account pane because their content
 is read-only.
 
+The ledger displays each transaction’s category using the same names as the
+transaction form and reports. Narrow detail panes stack the description, kind,
+amount, and occurrence time beside the category; wider panes use separate
+columns. Category edits appear after a successful save and dashboard reload.
+
 On the ledger page, press `a` to create an account and `n` to create a
 transaction. On the transfer page, `n` creates a transfer. Press `e` or `d` to
 edit or delete the focused item. The report page uses `c` for category net
