@@ -40,7 +40,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
     },
@@ -2853,39 +2853,68 @@ fn render_transactions(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         return;
     };
 
+    // The detail pane occupies 65% of the terminal. Stack metadata on narrow
+    // panes so long category names stay readable at ordinary terminal widths.
+    let compact = area.width < 88;
     let rows = account.transactions().iter().map(|transaction| {
-        Row::new(vec![
-            Cell::from(transaction.occurred_at().to_string()),
-            Cell::from(kind_label(transaction.kind())),
-            Cell::from(format_transaction_amount(transaction)),
-            Cell::from(transaction.description().to_string()),
-        ])
+        let category = Cell::from(category_label(transaction.category()));
+        if compact {
+            Row::new(vec![
+                category,
+                Cell::from(Text::from(vec![
+                    Line::from(transaction.description().to_string()),
+                    Line::from(format!(
+                        "{} {}",
+                        kind_label(transaction.kind()),
+                        format_transaction_amount(transaction)
+                    )),
+                    Line::from(transaction.occurred_at().to_string()),
+                ])),
+            ])
+            .height(3)
+        } else {
+            Row::new(vec![
+                Cell::from(transaction.occurred_at().to_string()),
+                Cell::from(kind_label(transaction.kind())),
+                Cell::from(format_transaction_amount(transaction)),
+                category,
+                Cell::from(transaction.description().to_string()),
+            ])
+        }
     });
-    let header = Row::new(["Occurred at", "Kind", "Amount", "Description"])
-        .style(Style::default().fg(Color::Cyan).bold());
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(24),
-            Constraint::Length(8),
-            Constraint::Length(15),
-            Constraint::Min(12),
-        ],
-    )
-    .header(header)
-    .column_spacing(1)
-    .row_highlight_style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ")
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(focus_border(app.focus() == Focus::Transactions))
-            .title(format!(" Transactions ({}) ", account.transactions().len())),
-    );
+    let (headers, widths) = if compact {
+        (
+            vec!["Category", "Transaction"],
+            vec![Constraint::Length(14), Constraint::Min(12)],
+        )
+    } else {
+        (
+            vec!["Occurred at", "Kind", "Amount", "Category", "Description"],
+            vec![
+                Constraint::Length(24),
+                Constraint::Length(8),
+                Constraint::Length(15),
+                Constraint::Length(14),
+                Constraint::Min(12),
+            ],
+        )
+    };
+    let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
+    let table = Table::new(rows, widths)
+        .header(header)
+        .column_spacing(1)
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ")
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(focus_border(app.focus() == Focus::Transactions))
+                .title(format!(" Transactions ({}) ", account.transactions().len())),
+        );
     let mut state = TableState::default().with_selected(app.selected_transaction_index());
     frame.render_stateful_widget(table, area, &mut state);
 }
@@ -3590,6 +3619,111 @@ mod tests {
         assert!(screen.contains("Cash"));
         assert!(screen.contains("0.00 CNY"));
         assert!(screen.contains("Transactions (0)"));
+    }
+
+    #[test]
+    fn ledger_categories_remain_readable_across_terminal_widths() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        for (index, category) in CATEGORIES.iter().enumerate() {
+            transactions
+                .save(
+                    Transaction::new(
+                        TransactionId::new(index as u64 + 1),
+                        AccountId::new(1),
+                        TransactionKind::Expense,
+                        Money::from_minor_units(100, Currency::Cny),
+                        "2026-08-30T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                        format!("Purchase {index}"),
+                        *category,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Tab);
+        for width in [80, 100, 120, 135, 136, 160] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            // Navigate beyond the viewport to also cover scrolling multi-line rows.
+            for index in 0..CATEGORIES.len() {
+                app.selected_transaction = index;
+                let transaction = app.selected_transaction().unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let screen = terminal.backend().to_string();
+                for expected in [
+                    "Category",
+                    category_label(transaction.category()),
+                    transaction.description(),
+                    "Expense",
+                    "-1.00 CNY",
+                    "2026-08-30T10:00:00",
+                ] {
+                    assert!(
+                        screen.contains(expected),
+                        "width {width}, missing {expected}:\n{screen}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ledger_displays_edited_category_after_reload() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let mut transfers = InMemoryTransferRepository::new();
+        let budgets = InMemoryBudgetRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".to_string(), Currency::Cny).unwrap())
+            .unwrap();
+        transactions
+            .save(
+                Transaction::new(
+                    TransactionId::new(1),
+                    AccountId::new(1),
+                    TransactionKind::Expense,
+                    Money::from_minor_units(100, Currency::Cny),
+                    "2026-08-30T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                    "Purchase".to_string(),
+                    Category::Food,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(terminal.backend().to_string().contains("Food"));
+
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char('e'));
+        // Editing starts on Description; Category is the next field.
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Right);
+        let action = app.handle_key(KeyCode::Enter);
+        assert!(matches!(action, Action::UpdateTransaction { .. }));
+        let message = execute_action(
+            action,
+            &mut accounts,
+            &mut transactions,
+            &mut transfers,
+            &budgets,
+        )
+        .unwrap();
+        app.action_succeeded();
+        app.reload(&accounts, &transactions, &transfers, message);
+        for width in [80, 160] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let screen = terminal.backend().to_string();
+            assert!(screen.contains("Transportation"));
+            assert!(!screen.contains("Food"));
+        }
     }
 
     #[test]
