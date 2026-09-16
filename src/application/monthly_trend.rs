@@ -52,7 +52,7 @@ impl From<RepositoryError> for MonthlyTrendError {
     }
 }
 
-fn next_month(month: BudgetMonth) -> Result<BudgetMonth, MonthlyTrendError> {
+pub(crate) fn next_month(month: BudgetMonth) -> Result<BudgetMonth, MonthlyTrendError> {
     let (year, month) = if month.month() == 12 {
         (month.year() + 1, 1)
     } else {
@@ -62,7 +62,10 @@ fn next_month(month: BudgetMonth) -> Result<BudgetMonth, MonthlyTrendError> {
         .map_err(|error| MonthlyTrendError::InvalidMonthBoundary(format!("{error:?}")))
 }
 
-fn month_start(month: BudgetMonth, time_zone: &TimeZone) -> Result<Zoned, MonthlyTrendError> {
+pub(crate) fn month_start(
+    month: BudgetMonth,
+    time_zone: &TimeZone,
+) -> Result<Zoned, MonthlyTrendError> {
     let input = format!("{:04}-{:02}-01T00:00:00", month.year(), month.month());
     let local = input
         .parse::<DateTime>()

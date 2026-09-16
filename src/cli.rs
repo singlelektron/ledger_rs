@@ -1,3 +1,6 @@
+use crate::application::portfolio_report::{
+    ReportScope, get_portfolio_summary, get_portfolio_trend,
+};
 use crate::application::reconcile_balance::{ReconcileError, reconcile_balance};
 use crate::domain::account::BalanceAdjustmentKind;
 use crate::{
@@ -412,8 +415,55 @@ pub enum TransactionCommand {
     },
 }
 
+#[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false)]
+pub struct PortfolioScopeArgs {
+    #[arg(long)]
+    all_accounts: bool,
+    /// Comma-separated account IDs; may also be repeated.
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    account_ids: Vec<u64>,
+}
+impl PortfolioScopeArgs {
+    fn scope(&self) -> ReportScope {
+        if self.all_accounts {
+            ReportScope::All
+        } else {
+            ReportScope::Accounts(
+                self.account_ids
+                    .iter()
+                    .copied()
+                    .map(AccountId::new)
+                    .collect(),
+            )
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum ReportCommand {
+    /// Summary and category net outflow, grouped by currency.
+    PortfolioSummary {
+        #[command(flatten)]
+        scope: PortfolioScopeArgs,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        time_zone: Option<String>,
+    },
+    /// Monthly cash flow, grouped by currency (inclusive month range).
+    PortfolioTrend {
+        #[command(flatten)]
+        scope: PortfolioScopeArgs,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        time_zone: String,
+    },
     Category {
         #[arg(long)]
         account_id: u64,
@@ -1085,6 +1135,58 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
         },
 
         Command::Report { command } => match command {
+            ReportCommand::PortfolioSummary {
+                scope,
+                from,
+                to,
+                time_zone,
+            } => {
+                let groups = get_portfolio_summary(
+                    &account_repository,
+                    &transaction_repository,
+                    &scope.scope(),
+                    parse_occurred_at(&from, time_zone.as_deref())?,
+                    parse_occurred_at(&to, time_zone.as_deref())?,
+                )?;
+                let mut lines = Vec::new();
+                for (currency, summary) in groups {
+                    lines.push(currency);
+                    lines.extend(portfolio_summary_lines(&summary));
+                }
+                Ok(if lines.is_empty() {
+                    "No accounts selected".into()
+                } else {
+                    lines.join("\n")
+                })
+            }
+            ReportCommand::PortfolioTrend {
+                scope,
+                from,
+                to,
+                time_zone,
+            } => {
+                let groups = get_portfolio_trend(
+                    &account_repository,
+                    &transaction_repository,
+                    &scope.scope(),
+                    parse_budget_month(&from)?,
+                    parse_budget_month(&to)?,
+                    &time_zone,
+                )?;
+                let mut lines = Vec::new();
+                for (currency, rows) in groups {
+                    lines.push(currency);
+                    for row in rows {
+                        lines.push(format!("{:04}-{:02}", row.month.year(), row.month.month()));
+                        lines.extend(portfolio_summary_lines(&row.summary));
+                    }
+                }
+                Ok(if lines.is_empty() {
+                    "No accounts selected".into()
+                } else {
+                    lines.join("\n")
+                })
+            }
             ReportCommand::Category { account_id } => {
                 let report = get_net_outflow_by_category(
                     &account_repository,
@@ -1524,6 +1626,40 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
             }
         },
     }
+}
+
+fn portfolio_summary_lines(summary: &crate::domain::summary::SummaryReport) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "Income Total: {} ({})",
+            summary.income_total().minor_units(),
+            summary.income_total().currency()
+        ),
+        format!(
+            "Net Expense Total: {} ({})",
+            summary.net_expense_total().minor_units(),
+            summary.net_expense_total().currency()
+        ),
+        format!(
+            "Net Change: {} ({})",
+            summary.net_change().minor_units(),
+            summary.net_change().currency()
+        ),
+    ];
+    let mut categories = summary
+        .net_outflow_by_category()
+        .iter()
+        .map(|(category, amount)| {
+            format!(
+                "Category: {category:?}, Net Outflow: {} ({})",
+                amount.minor_units(),
+                amount.currency()
+            )
+        })
+        .collect::<Vec<_>>();
+    categories.sort();
+    lines.extend(categories);
+    lines
 }
 
 #[cfg(test)]

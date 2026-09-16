@@ -18,3 +18,5 @@ pub mod record_transaction;
 pub mod repository;
 
 pub mod reconcile_balance;
+
+pub mod portfolio_report;
