@@ -728,6 +728,10 @@ cargo run --bin ledger_web -- \
   --listen 127.0.0.1:8080
 ```
 
+Saving a transaction edit returns to that transaction in the account history
+using its stable `#transaction-<id>` anchor, including when the edit changes
+its position in the history.
+
 The Web UI is a local-only product. It accepts only loopback listen addresses;
 attempting to bind to `0.0.0.0` or another non-loopback address fails. Every
 request must also be addressed to a loopback host: the middleware rejects

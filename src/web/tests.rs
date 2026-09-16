@@ -436,7 +436,7 @@ async fn transaction_rows_display_types_consistent_with_forms() {
     .unwrap();
     let rows: Vec<_> = page
         .0
-        .split("<article class=\"transaction-row\">")
+        .split("<article class=\"transaction-row\"")
         .skip(1)
         .map(|part| part.split_once("</article>").unwrap().0)
         .collect();
@@ -445,6 +445,11 @@ async fn transaction_rows_display_types_consistent_with_forms() {
         let id = index + 1;
         let edit_link = format!("href=\"/transactions/{id}/edit\"");
         let row = rows.iter().find(|row| row.contains(&edit_link)).unwrap();
+        assert!(row.starts_with(&format!(" id=\"transaction-{id}\">")));
+        assert_eq!(
+            page.0.matches(&format!("id=\"transaction-{id}\"")).count(),
+            1
+        );
         assert!(row.contains(&format!("<span class=\"transaction-kind\">{label}</span>")));
         assert!(row.contains("Same description &amp; amount"));
         assert!(row.contains(&format!("{sign}12.50 CNY")));
@@ -599,6 +604,8 @@ async fn transaction_management_filters_updates_and_deletes() {
     .await
     .unwrap();
     assert!(filtered.0.contains("Dinner"));
+    assert!(filtered.0.contains("id=\"transaction-1\""));
+    assert!(!filtered.0.contains("id=\"transaction-2\""));
     assert!(!filtered.0.contains("<strong>Salary</strong>"));
 
     let edit = transaction_edit(State(state.clone()), Path(1))
@@ -622,7 +629,10 @@ async fn transaction_management_filters_updates_and_deletes() {
     .unwrap();
     let response = axum::response::IntoResponse::into_response(redirect);
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(response.headers()[header::LOCATION], "/accounts/1");
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        "/accounts/1#transaction-1"
+    );
     let updated = account_detail(
         State(state.clone()),
         Path(1),
@@ -632,11 +642,12 @@ async fn transaction_management_filters_updates_and_deletes() {
     .unwrap();
     let refund_row = updated
         .0
-        .split("<article class=\"transaction-row\">")
+        .split("<article class=\"transaction-row\"")
         .skip(1)
         .map(|part| part.split_once("</article>").unwrap().0)
         .find(|row| row.contains("href=\"/transactions/1/edit\""))
         .unwrap();
+    assert!(refund_row.starts_with(" id=\"transaction-1\">"));
     assert!(refund_row.contains("Updated refund"));
     assert!(refund_row.contains("<span class=\"transaction-kind\">Expense refund</span>"));
     assert!(!refund_row.contains("<span class=\"transaction-kind\">Expense</span>"));
