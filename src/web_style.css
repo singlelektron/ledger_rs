@@ -396,6 +396,8 @@ button:hover,
 
 .transaction-row {
   display: flex;
+  /* Keep fragment targets below the 62px sticky navigation and its border. */
+  scroll-margin-top: 80px;
   min-height: 66px;
   padding: 13px 16px;
   border-bottom: 1px solid var(--line);
