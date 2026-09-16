@@ -485,7 +485,8 @@ pub(crate) async fn account_detail(
                     TransactionKind::Income | TransactionKind::ExpenseRefund => ("+", "income"),
                 };
                 format!(
-                    r#"<article class="transaction-row"><div class="transaction-details"><strong>{}</strong><small><span class="transaction-kind">{}</span> · {} · {}</small></div><span class="transaction-end"><b class="{}">{}{}</b><a href="/transactions/{}/edit">Edit</a></span></article>"#,
+                    r#"<article class="transaction-row" id="transaction-{}"><div class="transaction-details"><strong>{}</strong><small><span class="transaction-kind">{}</span> · {} · {}</small></div><span class="transaction-end"><b class="{}">{}{}</b><a href="/transactions/{}/edit">Edit</a></span></article>"#,
+                    transaction.id().value(),
                     escape_html(transaction.description()),
                     transaction_kind_label(transaction.kind()),
                     category_label(transaction.category()),
@@ -826,8 +827,9 @@ pub(crate) async fn update_transaction_handler(
     .map_err(map_transaction_error)?;
 
     Ok(Redirect::to(&format!(
-        "/accounts/{}",
-        current.account_id().value()
+        "/accounts/{}#transaction-{}",
+        current.account_id().value(),
+        transaction_id.value()
     )))
 }
 
