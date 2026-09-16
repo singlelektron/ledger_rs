@@ -1,3 +1,6 @@
+use crate::application::portfolio_report::{
+    ReportScope, get_portfolio_summary, get_portfolio_trend,
+};
 use crate::{
     application::{
         account_activity::{AccountActivity, AccountActivityError, list_account_activity},
@@ -732,6 +735,51 @@ pub fn execute_report(
     transaction_repository: &impl TransactionRepository,
 ) -> Result<ReportResult, ReportError> {
     match request {
+        ReportRequest::PortfolioSummary { from, to } => {
+            let start = from
+                .parse()
+                .map_err(|_| ReportError::InvalidOccurredAt(from.clone()))?;
+            let end = to
+                .parse()
+                .map_err(|_| ReportError::InvalidOccurredAt(to.clone()))?;
+            let groups = get_portfolio_summary(
+                account_repository,
+                transaction_repository,
+                &ReportScope::All,
+                start,
+                end,
+            )
+            .map_err(ReportError::Summary)?
+            .into_iter()
+            .collect();
+            Ok(ReportResult::PortfolioSummary {
+                from,
+                to,
+                groups,
+                selected: 0,
+            })
+        }
+        ReportRequest::PortfolioTrend {
+            from,
+            to,
+            time_zone,
+        } => {
+            let groups = get_portfolio_trend(
+                account_repository,
+                transaction_repository,
+                &ReportScope::All,
+                parse_budget_month(&from)?,
+                parse_budget_month(&to)?,
+                &time_zone,
+            )
+            .map_err(ReportError::Trend)?
+            .into_iter()
+            .collect();
+            Ok(ReportResult::PortfolioTrend {
+                groups,
+                selected: 0,
+            })
+        }
         ReportRequest::Category { account_id } => {
             let values =
                 get_net_outflow_by_category(account_repository, transaction_repository, account_id)
@@ -808,6 +856,15 @@ struct Status {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReportRequest {
+    PortfolioSummary {
+        from: String,
+        to: String,
+    },
+    PortfolioTrend {
+        from: String,
+        to: String,
+        time_zone: String,
+    },
     Category {
         account_id: AccountId,
     },
@@ -826,6 +883,16 @@ pub enum ReportRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReportResult {
+    PortfolioSummary {
+        from: String,
+        to: String,
+        groups: Vec<(String, SummaryReport)>,
+        selected: usize,
+    },
+    PortfolioTrend {
+        groups: Vec<(String, Vec<MonthlyTrend>)>,
+        selected: usize,
+    },
     Category(Vec<(Category, Money)>),
     Summary {
         from: String,
@@ -875,7 +942,7 @@ enum BudgetStatusField {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SummaryReportForm {
-    account_id: AccountId,
+    account_id: Option<AccountId>,
     from: String,
     to: String,
     field: ReportField,
@@ -884,7 +951,7 @@ struct SummaryReportForm {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TrendReportForm {
-    account_id: AccountId,
+    account_id: Option<AccountId>,
     from: String,
     to: String,
     time_zone: String,
@@ -1425,6 +1492,35 @@ impl App {
                 self.selected_transaction = 0;
                 Action::Continue
             }
+            KeyCode::Char('S') if self.page == Page::Reports => {
+                let form = default_summary_form(None);
+                self.mode = Mode::SummaryReportForm(form);
+                Action::Continue
+            }
+            KeyCode::Char('T') if self.page == Page::Reports => {
+                let form = default_trend_form(None);
+                self.mode = Mode::TrendReportForm(form);
+                Action::Continue
+            }
+            KeyCode::Char('[') | KeyCode::Char(']') if self.page == Page::Reports => {
+                let selection = match &mut self.report {
+                    Some(ReportResult::PortfolioSummary {
+                        groups, selected, ..
+                    }) => Some((selected, groups.len())),
+                    Some(ReportResult::PortfolioTrend { groups, selected }) => {
+                        Some((selected, groups.len()))
+                    }
+                    _ => None,
+                };
+                if let Some((selected, len)) = selection.filter(|(_, len)| *len > 0) {
+                    *selected = if key == KeyCode::Char(']') {
+                        (*selected + 1) % len
+                    } else {
+                        (*selected + len - 1) % len
+                    };
+                }
+                Action::Continue
+            }
             KeyCode::Char('c') if self.page == Page::Reports => self
                 .selected_account()
                 .map(|account| {
@@ -1438,7 +1534,7 @@ impl App {
                     .selected_account()
                     .map(|account| account.account().id())
                 {
-                    self.mode = Mode::SummaryReportForm(default_summary_form(account_id));
+                    self.mode = Mode::SummaryReportForm(default_summary_form(Some(account_id)));
                 }
                 Action::Continue
             }
@@ -1447,7 +1543,7 @@ impl App {
                     .selected_account()
                     .map(|account| account.account().id())
                 {
-                    self.mode = Mode::TrendReportForm(default_trend_form(account_id));
+                    self.mode = Mode::TrendReportForm(default_trend_form(Some(account_id)));
                 }
                 Action::Continue
             }
@@ -1737,7 +1833,7 @@ fn handle_account_form_key(mut form: AccountForm, key: KeyCode) -> (Mode, Action
     (Mode::AccountForm(form), Action::Continue)
 }
 
-fn default_summary_form(account_id: AccountId) -> SummaryReportForm {
+fn default_summary_form(account_id: Option<AccountId>) -> SummaryReportForm {
     let to = jiff::Zoned::now();
     let from = to.checked_sub(30.days()).unwrap_or_else(|_| to.clone());
     SummaryReportForm {
@@ -1909,7 +2005,7 @@ fn active_budget_status_text(form: &mut BudgetStatusForm) -> &mut String {
     }
 }
 
-fn default_trend_form(account_id: AccountId) -> TrendReportForm {
+fn default_trend_form(account_id: Option<AccountId>) -> TrendReportForm {
     let now = jiff::Zoned::now();
     let month = format!("{:04}-{:02}", now.year(), now.month());
     let time_zone = now.time_zone().iana_name().unwrap_or("UTC").to_string();
@@ -1955,10 +2051,17 @@ fn handle_summary_report_form_key(mut form: SummaryReportForm, key: KeyCode) -> 
                     Action::Continue,
                 );
             }
-            let action = Action::RunReport(ReportRequest::Summary {
-                account_id: form.account_id,
-                from: form.from.clone(),
-                to: form.to.clone(),
+            let action = Action::RunReport(if let Some(account_id) = form.account_id {
+                ReportRequest::Summary {
+                    account_id,
+                    from: form.from.clone(),
+                    to: form.to.clone(),
+                }
+            } else {
+                ReportRequest::PortfolioSummary {
+                    from: form.from.clone(),
+                    to: form.to.clone(),
+                }
             });
             return (Mode::SummaryReportForm(form), action);
         }
@@ -2017,11 +2120,19 @@ fn handle_trend_report_form_key(mut form: TrendReportForm, key: KeyCode) -> (Mod
                     Action::Continue,
                 );
             }
-            let action = Action::RunReport(ReportRequest::Trend {
-                account_id: form.account_id,
-                from: form.from.clone(),
-                to: form.to.clone(),
-                time_zone: form.time_zone.clone(),
+            let action = Action::RunReport(if let Some(account_id) = form.account_id {
+                ReportRequest::Trend {
+                    account_id,
+                    from: form.from.clone(),
+                    to: form.to.clone(),
+                    time_zone: form.time_zone.clone(),
+                }
+            } else {
+                ReportRequest::PortfolioTrend {
+                    from: form.from.clone(),
+                    to: form.to.clone(),
+                    time_zone: form.time_zone.clone(),
+                }
             });
             return (Mode::TrendReportForm(form), action);
         }
@@ -2416,7 +2527,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let page_hints = match app.page() {
         Page::Ledger => "↑/k ↓/j move  a account  n transaction  e edit  d delete",
         Page::Activity => "↑/k ↓/j account",
-        Page::Reports => "↑/k ↓/j account  c category  s summary  t trend",
+        Page::Reports => "c category  s summary  t trend  S/T portfolio  [/] currency",
         Page::Budgets => "Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete",
         Page::Transfers => "Tab focus  ↑/k ↓/j move  n new  e edit  d delete",
     };
@@ -2638,7 +2749,11 @@ fn render_summary_report_form(frame: &mut Frame, form: &SummaryReportForm) {
     let area = centered_rect(frame.area(), 82, 7 + u16::from(form.error.is_some()));
     frame.render_widget(Clear, area);
     let mut lines = vec![
-        Line::from(format!("Account: {}", form.account_id.value())),
+        Line::from(if let Some(id) = form.account_id {
+            format!("Account: {}", id.value())
+        } else {
+            "All accounts (grouped by currency)".into()
+        }),
         transaction_form_line("From", form.from.clone(), form.field == ReportField::From),
         transaction_form_line("To", form.to.clone(), form.field == ReportField::To),
         Line::from("Use complete zoned timestamps; Tab changes field."),
@@ -2659,7 +2774,11 @@ fn render_trend_report_form(frame: &mut Frame, form: &TrendReportForm) {
     let area = centered_rect(frame.area(), 70, 8 + u16::from(form.error.is_some()));
     frame.render_widget(Clear, area);
     let mut lines = vec![
-        Line::from(format!("Account: {}", form.account_id.value())),
+        Line::from(if let Some(id) = form.account_id {
+            format!("Account: {}", id.value())
+        } else {
+            "All accounts (grouped by currency)".into()
+        }),
         transaction_form_line(
             "From month",
             form.from.clone(),
@@ -3055,6 +3174,8 @@ fn render_reports(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from("c  Category net outflow (all time)"),
                 Line::from("s  Cash-flow summary for a zoned time range"),
                 Line::from("t  Monthly cash-flow trend"),
+                Line::from("S/T  All-account summary/trend; [/] switches currency"),
+                Line::from("Transfers and balance adjustments are excluded."),
             ])
             .block(Block::default().borders(Borders::ALL).title(" Reports ")),
             area,
@@ -3063,6 +3184,41 @@ fn render_reports(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     match report {
+        ReportResult::PortfolioSummary {
+            from,
+            to,
+            groups,
+            selected,
+        } => {
+            if let Some((currency, summary)) = groups.get(*selected) {
+                let areas = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(0)])
+                    .split(area);
+                frame.render_widget(
+                    Paragraph::new(format!("All accounts · {currency} · [/] currency")),
+                    areas[0],
+                );
+                render_summary_report(frame, from, to, summary, areas[1]);
+            } else {
+                frame.render_widget(Paragraph::new("No accounts available"), area);
+            }
+        }
+        ReportResult::PortfolioTrend { groups, selected } => {
+            if let Some((currency, rows)) = groups.get(*selected) {
+                let areas = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(0)])
+                    .split(area);
+                frame.render_widget(
+                    Paragraph::new(format!("All accounts · {currency} · [/] currency")),
+                    areas[0],
+                );
+                render_trend_report(frame, rows, areas[1]);
+            } else {
+                frame.render_widget(Paragraph::new("No accounts available"), area);
+            }
+        }
         ReportResult::Category(values) => render_category_report(frame, values, area),
         ReportResult::Summary { from, to, report } => {
             render_summary_report(frame, from, to, report, area)
@@ -4514,6 +4670,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(deleted, BudgetResult::List(Vec::new()));
+    }
+
+    #[test]
+    fn portfolio_forms_work_without_selection_and_currency_switches() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.handle_key(KeyCode::Char('3'));
+        for (key, summary) in [('S', true), ('T', false)] {
+            app.handle_key(KeyCode::Char(key));
+            let Action::RunReport(request) = app.handle_key(KeyCode::Enter) else {
+                panic!("expected report action");
+            };
+            assert_eq!(
+                matches!(request, ReportRequest::PortfolioSummary { .. }),
+                summary
+            );
+            let report = execute_report(request, &accounts, &transactions).unwrap();
+            app.action_succeeded();
+            app.set_report(report);
+            app.handle_key(KeyCode::Char(']'));
+        }
+        for (id, currency) in [(1, Currency::Cny), (2, Currency::Usd)] {
+            accounts
+                .save(Account::new(AccountId::new(id), format!("Account {id}"), currency).unwrap())
+                .unwrap();
+        }
+        let report = execute_report(
+            ReportRequest::PortfolioTrend {
+                from: "2026-08".into(),
+                to: "2026-09".into(),
+                time_zone: "UTC".into(),
+            },
+            &accounts,
+            &transactions,
+        )
+        .unwrap();
+        app.set_report(report);
+        app.handle_key(KeyCode::Char(']'));
+        let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("All accounts · USD"));
+        app.handle_key(KeyCode::Char('['));
+        assert!(matches!(
+            app.report,
+            Some(ReportResult::PortfolioTrend { selected: 0, .. })
+        ));
     }
 
     #[test]

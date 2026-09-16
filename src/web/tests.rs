@@ -881,7 +881,7 @@ async fn reports_render_monthly_cash_flow_and_budget_status() {
     let response = reports(
         State(state),
         Query(ReportQuery {
-            account_id: Some(1),
+            account_id: Some(1.to_string()),
             from: Some(String::from("2026-09")),
             to: Some(String::from("2026-09")),
             time_zone: Some(String::from("Asia/Shanghai")),
@@ -932,7 +932,7 @@ async fn empty_report_time_zone_falls_back_to_the_default() {
     let response = reports(
         State(state),
         Query(ReportQuery {
-            account_id: Some(1),
+            account_id: Some(1.to_string()),
             from: Some(String::from("2026-09")),
             to: Some(String::from("2026-09")),
             time_zone: Some(String::new()),
@@ -962,7 +962,7 @@ async fn reports_reject_a_reversed_range_with_a_clear_message() {
     let error = reports(
         State(state),
         Query(ReportQuery {
-            account_id: Some(1),
+            account_id: Some(1.to_string()),
             from: Some(String::from("2026-12")),
             to: Some(String::from("2026-01")),
             time_zone: Some(String::from("Asia/Shanghai")),
@@ -1301,4 +1301,57 @@ async fn large_upload_bodies_reach_the_handlers_instead_of_413() {
         .await
         .unwrap();
     assert_eq!(import.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn portfolio_reports_render_currency_groups_and_preserve_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = WebState::new(dir.path().join("web.db"));
+    for (name, currency) in [("Bank", "CNY"), ("Cash", "CNY"), ("Wallet", "USD")] {
+        let _ = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: name.into(),
+                currency: currency.into(),
+            }),
+        )
+        .await
+        .unwrap();
+    }
+    for (id, kind, amount) in [(1, "income", "100.00"), (2, "expense", "20.00")] {
+        let _ = create_transaction_handler(
+            State(state.clone()),
+            Path(id),
+            Form(CreateTransactionForm {
+                kind: kind.into(),
+                amount: amount.into(),
+                occurred_at: "2026-09-01T12:00".into(),
+                time_zone: "Asia/Shanghai".into(),
+                time_zone_offset: None,
+                description: "Activity".into(),
+                category: "food".into(),
+            }),
+        )
+        .await
+        .unwrap();
+    }
+    let html = reports(
+        State(state),
+        Query(ReportQuery {
+            account_id: Some("all".into()),
+            from: Some("2026-09".into()),
+            to: Some("2026-10".into()),
+            time_zone: Some("Asia/Shanghai".into()),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(html.contains("value=\"all\" selected>All accounts"));
+    assert!(html.contains("<h2>CNY</h2>"));
+    assert!(html.contains("<h2>USD</h2>"));
+    assert!(html.contains("<strong>80.00 CNY</strong>"));
+    assert!(html.contains("<td>2026-10</td><td>0.00 CNY</td>"));
+    assert!(html.contains("−80.00 CNY"));
+    assert!(html.contains("Transfers and balance adjustments are excluded"));
 }

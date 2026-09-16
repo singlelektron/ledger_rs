@@ -1,3 +1,6 @@
+use crate::application::portfolio_report::{
+    ReportScope, get_portfolio_summary, get_portfolio_trend,
+};
 use crate::{
     application::{
         account_balance::get_account_balance_with_transfers,
@@ -128,7 +131,18 @@ pub(crate) async fn reports(
         .map_err(|error| WebError::internal("open database", error))?;
     let all_accounts =
         list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
-    let selected_account = query.account_id.map(AccountId::new);
+    let portfolio = query.account_id.as_deref() == Some("all");
+    let selected_account = query
+        .account_id
+        .as_deref()
+        .filter(|_| !portfolio)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map(AccountId::new)
+                .map_err(|_| WebError::bad_request("Invalid account ID"))
+        })
+        .transpose()?;
     let time_zone = query
         .time_zone
         .as_deref()
@@ -250,6 +264,63 @@ pub(crate) async fn reports(
                 budget_rows,
             )
         }
+        (None, Some(from), Some(to)) if portfolio && !from.is_empty() && !to.is_empty() => {
+            let from = parse_budget_month(from)?;
+            let to = parse_budget_month(to)?;
+            let trends = get_portfolio_trend(
+                &accounts,
+                &transactions,
+                &ReportScope::All,
+                from,
+                to,
+                time_zone,
+            )
+            .map_err(map_trend_error)?;
+            let start = parse_local_zoned(
+                &format!("{}-01T00:00", format_budget_month(from)),
+                time_zone,
+            )?;
+            let end = parse_local_zoned(
+                &format!(
+                    "{}-01T00:00",
+                    format_budget_month(next_budget_month_for_report(to)?)
+                ),
+                time_zone,
+            )?;
+            let summaries =
+                get_portfolio_summary(&accounts, &transactions, &ReportScope::All, start, end)
+                    .map_err(|error| WebError::bad_request(error.to_string()))?;
+            let mut html = String::from(
+                "<p>All accounts · Transfers and balance adjustments are excluded.</p>",
+            );
+            if summaries.is_empty() {
+                html.push_str("<p>No accounts available.</p>");
+            }
+            for (currency, summary) in summaries {
+                html.push_str(&format!(r#"<section class="report-results"><h2>{currency}</h2><div class="summary-grid"><div><small>Income</small><strong>{}</strong></div><div><small>Net expense</small><strong>{}</strong></div><div><small>Net change</small><strong>{}</strong></div></div><h3>Monthly trend</h3><div class="table-shell"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>"#, format_money(summary.income_total()), format_money(summary.net_expense_total()), format_money(summary.net_change())));
+                for row in &trends[&currency] {
+                    html.push_str(&format!(
+                        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                        format_budget_month(row.month),
+                        format_money(row.summary.income_total()),
+                        format_money(row.summary.net_expense_total()),
+                        format_money(row.summary.net_change())
+                    ));
+                }
+                html.push_str(r#"</tbody></table></div><h3>Category net outflow</h3><div class="metric-list">"#);
+                let mut categories = summary.net_outflow_by_category().iter().collect::<Vec<_>>();
+                categories.sort_by_key(|(category, _)| category_label(**category));
+                for (category, amount) in categories {
+                    html.push_str(&format!(
+                        r#"<article class="metric-row"><strong>{}</strong><b>{}</b></article>"#,
+                        category_label(*category),
+                        format_money(amount)
+                    ));
+                }
+                html.push_str("</div></section>");
+            }
+            html
+        }
         _ => String::from(
             r#"<section class="empty-state"><h2>Choose a reporting range</h2><p>Monthly rows include zero-activity months and use the selected IANA time zone.</p></section>"#,
         ),
@@ -267,7 +338,11 @@ pub(crate) async fn reports(
         </form>
         {results}
         "#,
-        account_options = account_options(&all_accounts, None, selected_account),
+        account_options = format_args!(
+            "<option value=\"all\"{}>All accounts</option>{}",
+            if portfolio { " selected" } else { "" },
+            account_options(&all_accounts, None, selected_account)
+        ),
         from = escape_html(query.from.as_deref().unwrap_or_default()),
         to = escape_html(query.to.as_deref().unwrap_or_default()),
         time_zone = escape_html(time_zone),

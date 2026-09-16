@@ -65,7 +65,7 @@ pub(crate) struct SetBudgetForm {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct ReportQuery {
-    pub(crate) account_id: Option<u64>,
+    pub(crate) account_id: Option<String>,
     pub(crate) from: Option<String>,
     pub(crate) to: Option<String>,
     pub(crate) time_zone: Option<String>,
