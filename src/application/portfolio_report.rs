@@ -298,6 +298,43 @@ mod tests {
         ));
     }
     #[test]
+    fn range_is_start_inclusive_end_exclusive_and_keeps_currency_validation() {
+        let (a, mut t) = setup();
+        t.create(
+            NewTransaction::new(
+                AccountId::new(1),
+                TransactionKind::Income,
+                Money::from_minor_units(999, Currency::Cny),
+                end(),
+                "Outside range".into(),
+                Category::Salary,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let report = get_portfolio_summary(&a, &t, &ReportScope::All, start(), end()).unwrap();
+        assert_eq!(report["CNY"].income_total().minor_units(), 1000);
+        t.create(
+            NewTransaction::new(
+                AccountId::new(1),
+                TransactionKind::Income,
+                Money::from_minor_units(1, Currency::Usd),
+                start(),
+                "Wrong currency".into(),
+                Category::Salary,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            get_portfolio_summary(&a, &t, &ReportScope::All, start(), end()),
+            Err(GetRangedSummaryError::Summary(
+                SummaryError::CurrencyMismatch { .. }
+            ))
+        ));
+    }
+
+    #[test]
     fn rejects_cross_account_overflow() {
         let (a, mut t) = setup();
         t.create(

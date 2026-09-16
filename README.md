@@ -1195,3 +1195,46 @@ preserve adjustment amounts, currency, timestamps, descriptions, and kinds.
 Backup validation and database reads reject duplicate opening adjustments or an
 opening recorded after another adjustment. Adjustment order is recording order;
 backdated reconciliations remain supported.
+
+### Portfolio reports by currency
+
+Portfolio reports reuse the shared application report logic across CLI, TUI, and
+Web. Each currency has separate income, net expense, net change, and category
+net outflow totals; no exchange-rate conversion is performed. Category net
+outflow follows the existing report convention: expenses minus refunds and
+income in that category. Empty accounts contribute zero totals for their currency,
+and monthly trends include months without activity. With no selected accounts,
+there are no currency groups.
+
+Transfers are excluded from these transaction cash-flow reports, including
+cross-currency transfers and transfers with only one endpoint in the selected
+scope. Opening balances and reconciliation adjustments are also excluded. Net
+change therefore describes transaction cash flow, not a change in account balance.
+
+CLI examples (amounts are printed in minor units):
+
+```bash
+cargo run -- report portfolio-summary --all-accounts \
+  --from 2026-08-01T00:00 --to 2026-09-01T00:00 --time-zone Asia/Shanghai
+
+cargo run -- report portfolio-summary --account-ids 1,2 \
+  --from 2026-08-01T00:00 --to 2026-09-01T00:00 --time-zone Asia/Shanghai
+
+cargo run -- report portfolio-trend --all-accounts \
+  --from 2026-07 --to 2026-09 --time-zone Asia/Shanghai
+```
+
+Choose exactly one of `--all-accounts` or `--account-ids`. Duplicate IDs count
+once; unknown IDs fail the report. Summary ranges include `from` and exclude
+`to`; trend month ranges include both months. The existing `report category`,
+`report summary`, and `report trend` commands remain unchanged.
+
+In Web Reports, select **All accounts** to see summary, category, and monthly
+trend sections for each currency. Budgets remain available in single-account
+reports. In the TUI Reports page (`3`), press uppercase `S` for an all-account
+summary or uppercase `T` for an all-account trend, then use `[` and `]` to switch
+currency groups. These shortcuts also work without a selected account.
+
+Application callers can use `get_portfolio_summary` and `get_portfolio_trend`
+with `ReportScope::All` or `ReportScope::Accounts(Vec<AccountId>)` from
+`application::portfolio_report`.
