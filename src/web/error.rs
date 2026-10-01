@@ -49,9 +49,10 @@ impl IntoResponse for WebError {
             Html(page(
                 "Request error",
                 &format!(
-                    r#"<section class="empty-state"><p class="eyebrow">Request error</p><h1 class="compact">Something went wrong.</h1><p>{}</p><a class="button secondary" href="/">Back to overview</a></section>"#,
+                    r#"<section class="empty-state error-state" role="alert"><p class="eyebrow">Request error</p><h1 class="compact">Something went wrong.</h1><p>{}</p><a class="button secondary" href="/">Back to overview</a></section>"#,
                     escape_html(&self.message)
                 ),
+                None,
             )),
         )
             .into_response()
