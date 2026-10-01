@@ -1444,6 +1444,12 @@ async fn portfolio_reports_render_currency_groups_and_preserve_selection() {
     assert!(html.contains("value=\"all\" selected>All accounts"));
     assert!(html.contains("<h2>CNY</h2>"));
     assert!(html.contains("<h2>USD</h2>"));
+    assert_eq!(html.matches(r#"role="region""#).count(), 2);
+    for currency in ["CNY", "USD"] {
+        let region =
+            format!(r#"tabindex="0" role="region" aria-label="Monthly cash flow · {currency}""#);
+        assert_eq!(html.matches(&region).count(), 1);
+    }
     assert!(html.contains("<strong>80.00 CNY</strong>"));
     assert!(html.contains("<td>2026-10</td><td>0.00 CNY</td>"));
     assert!(html.contains("−80.00 CNY"));

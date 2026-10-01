@@ -297,7 +297,7 @@ pub(crate) async fn reports(
                 html.push_str("<p>No accounts available.</p>");
             }
             for (currency, summary) in summaries {
-                html.push_str(&format!(r#"<section class="report-results"><h2>{currency}</h2><div class="summary-grid"><div><small>Income</small><strong>{}</strong></div><div><small>Net expense</small><strong>{}</strong></div><div><small>Net change</small><strong>{}</strong></div></div><h3>Monthly trend</h3><div class="table-shell" tabindex="0" role="region" aria-label="Monthly cash flow"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>"#, format_money(summary.income_total()), format_money(summary.net_expense_total()), format_money(summary.net_change())));
+                html.push_str(&format!(r#"<section class="report-results"><h2>{currency}</h2><div class="summary-grid"><div><small>Income</small><strong>{}</strong></div><div><small>Net expense</small><strong>{}</strong></div><div><small>Net change</small><strong>{}</strong></div></div><h3>Monthly trend</h3><div class="table-shell" tabindex="0" role="region" aria-label="Monthly cash flow · {currency}"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>"#, format_money(summary.income_total()), format_money(summary.net_expense_total()), format_money(summary.net_change())));
                 for row in &trends[&currency] {
                     html.push_str(&format!(
                         "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
