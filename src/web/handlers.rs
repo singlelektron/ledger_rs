@@ -50,7 +50,7 @@ use super::{
         UpdateTransferForm,
     },
     render::{
-        account_options, category_label, category_options, category_options_selected,
+        NavSection, account_options, category_label, category_options, category_options_selected,
         currency_code, currency_options, edit_time_zone, escape_html, format_budget_month,
         format_major_input, format_money, next_budget_month_for_report, page, parse_budget_month,
         parse_category, parse_currency, parse_local_zoned, parse_local_zoned_with_offset,
@@ -120,7 +120,7 @@ pub(crate) async fn home(State(state): State<WebState>) -> Result<Html<String>, 
         currency_options = currency_options(),
     );
 
-    Ok(Html(page("Overview", &content)))
+    Ok(Html(page("Overview", &content, Some(NavSection::Overview))))
 }
 
 pub(crate) async fn reports(
@@ -252,7 +252,7 @@ pub(crate) async fn reports(
                     .join("")
             };
             format!(
-                r#"<section class="report-results"><div class="section-heading"><div><p class="eyebrow">Range summary</p><h2>{} · {} to {}</h2></div></div><div class="summary-grid"><div><small>Income</small><strong>{}</strong></div><div><small>Net expense</small><strong>{}</strong></div><div><small>Net change</small><strong>{}</strong></div></div><div class="subsection-heading"><div><p class="eyebrow">Monthly trend</p><h2>Cash flow by month</h2></div></div><div class="table-shell"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>{}</tbody></table></div><div class="report-columns"><section><div class="subsection-heading"><div><p class="eyebrow">Category flow</p><h2>Net outflow</h2></div></div><div class="metric-list">{}</div></section><section><div class="subsection-heading"><div><p class="eyebrow">Budget execution</p><h2>Ending month status</h2></div></div><div class="metric-list">{}</div></section></div></section>"#,
+                r#"<section class="report-results"><div class="section-heading"><div><p class="eyebrow">Range summary</p><h2>{} · {} to {}</h2></div></div><div class="summary-grid"><div><small>Income</small><strong>{}</strong></div><div><small>Net expense</small><strong>{}</strong></div><div><small>Net change</small><strong>{}</strong></div></div><div class="subsection-heading"><div><p class="eyebrow">Monthly trend</p><h2>Cash flow by month</h2></div></div><div class="table-shell" tabindex="0" role="region" aria-label="Monthly cash flow"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>{}</tbody></table></div><div class="report-columns"><section><div class="subsection-heading"><div><p class="eyebrow">Category flow</p><h2>Net outflow</h2></div></div><div class="metric-list">{}</div></section><section><div class="subsection-heading"><div><p class="eyebrow">Budget execution</p><h2>Ending month status</h2></div></div><div class="metric-list">{}</div></section></div></section>"#,
                 escape_html(account.name()),
                 format_budget_month(from),
                 format_budget_month(to),
@@ -297,7 +297,7 @@ pub(crate) async fn reports(
                 html.push_str("<p>No accounts available.</p>");
             }
             for (currency, summary) in summaries {
-                html.push_str(&format!(r#"<section class="report-results"><h2>{currency}</h2><div class="summary-grid"><div><small>Income</small><strong>{}</strong></div><div><small>Net expense</small><strong>{}</strong></div><div><small>Net change</small><strong>{}</strong></div></div><h3>Monthly trend</h3><div class="table-shell"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>"#, format_money(summary.income_total()), format_money(summary.net_expense_total()), format_money(summary.net_change())));
+                html.push_str(&format!(r#"<section class="report-results"><h2>{currency}</h2><div class="summary-grid"><div><small>Income</small><strong>{}</strong></div><div><small>Net expense</small><strong>{}</strong></div><div><small>Net change</small><strong>{}</strong></div></div><h3>Monthly trend</h3><div class="table-shell" tabindex="0" role="region" aria-label="Monthly cash flow · {currency}"><table><thead><tr><th>Month</th><th>Income</th><th>Net expense</th><th>Net change</th></tr></thead><tbody>"#, format_money(summary.income_total()), format_money(summary.net_expense_total()), format_money(summary.net_change())));
                 for row in &trends[&currency] {
                     html.push_str(&format!(
                         "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
@@ -349,7 +349,7 @@ pub(crate) async fn reports(
         results = results,
     );
 
-    Ok(Html(page("Reports", &content)))
+    Ok(Html(page("Reports", &content, Some(NavSection::Reports))))
 }
 
 /// The application layer owns the `from <= to` rule; the web layer only turns
@@ -397,7 +397,7 @@ pub(crate) async fn data_tools(State(state): State<WebState>) -> Result<Html<Str
         </div>
         "#,
     );
-    Ok(Html(page("Data tools", &content)))
+    Ok(Html(page("Data tools", &content, Some(NavSection::Data))))
 }
 
 pub(crate) async fn download_backup(State(state): State<WebState>) -> Result<Response, WebError> {
@@ -618,11 +618,11 @@ pub(crate) async fn account_detail(
 
     let transfer_form = if all_accounts.len() < 2 {
         String::from(
-            r#"<div class="form-card muted-card"><p class="eyebrow">New transfer</p><h2>Add another account first</h2><p>Transfers need distinct source and destination accounts.</p></div>"#,
+            r#"<div class="form-card muted-card" id="new-transfer" tabindex="-1"><p class="eyebrow">New transfer</p><h2>Add another account first</h2><p>Transfers need distinct source and destination accounts.</p></div>"#,
         )
     } else {
         format!(
-            r#"<div class="form-card"><p class="eyebrow">New transfer</p><h2>Move money to another account</h2>
+            r#"<div class="form-card" id="new-transfer" tabindex="-1"><p class="eyebrow">New transfer</p><h2>Move money to another account</h2>
             <form method="post" action="/accounts/{account_id}/transfers">
               <label>Destination<select name="destination_account_id">{destination_options}</select></label>
               <label>Amount sent ({source_currency})<input name="source_amount" required inputmode="decimal" placeholder="0.00"></label>
@@ -648,7 +648,7 @@ pub(crate) async fn account_detail(
             .iter()
             .map(|budget| {
                 format!(
-                    r#"<article class="transaction-row"><div><strong>{}</strong><small>{:04}-{:02}</small></div><span class="transaction-end"><b>{}</b><form class="row-form" method="post" action="/budgets/{}/delete"><button type="submit">Delete</button></form></span></article>"#,
+                    r#"<article class="transaction-row"><div><strong>{}</strong><small>{:04}-{:02}</small></div><span class="transaction-end"><b>{}</b><form class="row-form" method="post" action="/budgets/{}/delete"><button type="submit">Delete budget</button></form></span></article>"#,
                     category_label(budget.category()),
                     budget.month().year(),
                     budget.month().month(),
@@ -661,7 +661,7 @@ pub(crate) async fn account_detail(
     };
 
     let budget_form = format!(
-        r#"<div class="form-card"><p class="eyebrow">Monthly budget</p><h2>Set a category limit</h2>
+        r#"<div class="form-card" id="new-budget" tabindex="-1"><p class="eyebrow">Monthly budget</p><h2>Set a category limit</h2>
         <form method="post" action="/accounts/{account_id}/budgets">
           <label>Category<select name="category">{category_options}</select></label>
           <div class="field-pair"><label>Year<input name="year" type="number" required min="1" max="9999" value="2026"></label><label>Month<input name="month" type="number" required min="1" max="12" value="9"></label></div>
@@ -674,12 +674,17 @@ pub(crate) async fn account_detail(
     );
 
     let content = format!(
-        r#"
+        r##"
         <a class="back" href="/">← All accounts</a>
         <section class="account-hero">
           <div><p class="eyebrow">{currency}</p><h1 class="compact">{name}</h1></div>
           <div class="balance"><small>Current balance</small><strong>{balance}</strong></div>
         </section>
+        <div class="account-shortcuts" role="navigation" aria-label="Account actions">
+          <a href="#new-transaction">Record transaction <span aria-hidden="true">↗</span></a>
+          <a href="#new-transfer">Create transfer <span aria-hidden="true">↗</span></a>
+          <a href="#new-budget">Set budget <span aria-hidden="true">↗</span></a>
+        </div>
         <details class="manage-panel">
           <summary>Account settings</summary>
           <div class="manage-grid">
@@ -697,7 +702,7 @@ pub(crate) async fn account_detail(
           <section>
             <div class="section-heading"><div><p class="eyebrow">History</p><h2>Transactions</h2></div><span class="count">{transaction_count}</span></div>
             <form class="filter-bar" method="get" action="/accounts/{account_id}">
-              <input name="q" value="{search_query}" placeholder="Search description">
+              <input name="q" value="{search_query}" aria-label="Search description" placeholder="Search description">
               <select name="kind" aria-label="Transaction type filter">{kind_filter_options}</select>
               <select name="category" aria-label="Category filter">{category_filter_options}</select>
               <button class="button secondary" type="submit">Filter</button>
@@ -710,7 +715,7 @@ pub(crate) async fn account_detail(
             <div class="transaction-list">{budget_rows}</div>
           </section>
           <aside class="action-stack">
-            <div class="form-card">
+            <div class="form-card" id="new-transaction" tabindex="-1">
               <p class="eyebrow">New transaction</p><h2>Record money in or out</h2>
               <form method="post" action="/accounts/{account_id}/transactions">
                 <label>Type<select name="kind">{new_transaction_kind_options}</select></label>
@@ -726,7 +731,7 @@ pub(crate) async fn account_detail(
             {budget_form}
           </aside>
         </div>
-        "#,
+        "##,
         account_id = account.id().value(),
         name = escape_html(account.name()),
         currency = currency_code(account.currency()),
@@ -746,7 +751,11 @@ pub(crate) async fn account_detail(
         default_time_zone = DEFAULT_TIME_ZONE,
     );
 
-    Ok(Html(page(account.name(), &content)))
+    Ok(Html(page(
+        account.name(),
+        &content,
+        Some(NavSection::Accounts),
+    )))
 }
 
 pub(crate) async fn rename_account_handler(
@@ -830,7 +839,7 @@ pub(crate) async fn transaction_edit(
         r#"
         <a class="back" href="/accounts/{account_id}">← Back to {account_name}</a>
         <section class="editor-shell">
-          <div><p class="eyebrow">Transaction #{transaction_id}</p><h1 class="compact">Edit transaction</h1><p class="lede">Changes are validated by the same application rules as the CLI.</p></div>
+          <div><p class="eyebrow">Transaction #{transaction_id}</p><h1 class="compact">Edit transaction</h1><p class="lede">Update the details below. Saving returns you to this transaction in the account history.</p></div>
           <div class="form-card">
             <form method="post" action="/transactions/{transaction_id}/edit">
               <label>Type<select name="kind">{kind_options}</select></label>
@@ -861,7 +870,11 @@ pub(crate) async fn transaction_edit(
         time_zone_offset = transaction.occurred_at().offset(),
     );
 
-    Ok(Html(page("Edit transaction", &content)))
+    Ok(Html(page(
+        "Edit transaction",
+        &content,
+        Some(NavSection::Accounts),
+    )))
 }
 
 pub(crate) async fn update_transaction_handler(
@@ -1010,7 +1023,11 @@ pub(crate) async fn transfer_edit(
         time_zone_offset = transfer.occurred_at().offset(),
     );
 
-    Ok(Html(page("Edit transfer", &content)))
+    Ok(Html(page(
+        "Edit transfer",
+        &content,
+        Some(NavSection::Accounts),
+    )))
 }
 
 pub(crate) async fn update_transfer_handler(

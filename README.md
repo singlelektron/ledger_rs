@@ -749,6 +749,15 @@ cargo run --bin ledger_web -- \
   --listen 127.0.0.1:8080
 ```
 
+The interface uses the Configs dark-rose palette, square panels, system fonts,
+and tabular amounts. Overview, Reports, and Data stay available on narrow screens;
+the current area is marked in the navigation. Use the first keyboard Tab stop,
+**Skip to content**, to bypass the header. Account pages offer **Record transaction**,
+**Create transfer**, and **Set budget** shortcuts to their forms. Wide monthly
+report tables scroll inside their own focusable regions on small screens.
+
+![Web overview in the dark-rose theme](docs/ui/web-overview.jpg)
+
 Saving a transaction edit returns to that transaction in the account history
 using its stable `#transaction-<id>` anchor, including when the edit changes
 its position in the history.

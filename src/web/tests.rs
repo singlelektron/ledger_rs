@@ -15,7 +15,7 @@ use super::{
     },
     middleware::host_is_loopback,
     render::{
-        format_money, parse_currency, parse_fixed_offset, parse_local_zoned,
+        NavSection, format_money, page, parse_currency, parse_fixed_offset, parse_local_zoned,
         parse_local_zoned_with_offset, parse_major_amount, parse_time_zone,
     },
 };
@@ -38,9 +38,93 @@ use axum::{
     body::Body,
     extract::{Path, Query, Request, State},
     http::{Method, StatusCode, header},
+    response::IntoResponse,
 };
 use std::{io, path::PathBuf};
 use tower::ServiceExt;
+
+fn assert_current_navigation(html: &str, expected: &str) {
+    let links = html
+        .split_once("<div class=\"nav-links\">")
+        .unwrap()
+        .1
+        .split_once("</div>")
+        .unwrap()
+        .0;
+    assert_eq!(links.matches("aria-current=").count(), 1);
+    assert!(links.contains(expected), "unexpected navigation: {links}");
+}
+
+#[test]
+fn page_exposes_keyboard_landmark_and_explicit_navigation() {
+    for (section, expected) in [
+        (NavSection::Overview, r#"href="/" aria-current="page""#),
+        (NavSection::Accounts, r#"href="/" aria-current="location""#),
+        (
+            NavSection::Reports,
+            r#"href="/reports" aria-current="page""#,
+        ),
+        (NavSection::Data, r#"href="/data" aria-current="page""#),
+    ] {
+        // Navigation is independent of user-controlled account/page titles.
+        let html = page("Reports <&>", "<h1>Content</h1>", Some(section));
+        assert_current_navigation(&html, expected);
+        assert!(html.contains(r##"<a class="skip-link" href="#main-content">"##));
+        assert_eq!(html.matches(r#"id="main-content""#).count(), 1);
+        assert!(html.contains(r#"<main id="main-content" tabindex="-1">"#));
+        assert!(html.contains("Reports &lt;&amp;&gt; · ledger_rs"));
+    }
+}
+
+#[tokio::test]
+async fn account_actions_have_focusable_targets_with_one_or_multiple_accounts() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = WebState::new(directory.path().join("web.db"));
+    for name in ["Reports", "Data tools"] {
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: name.to_owned(),
+                currency: "CNY".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let html = account_detail(
+            State(state.clone()),
+            Path(1),
+            Query(TransactionQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_current_navigation(&html, r#"href="/" aria-current="location""#);
+        for target in ["new-transaction", "new-transfer", "new-budget"] {
+            assert!(html.contains(&format!("href=\"#{target}\"")));
+            assert_eq!(html.matches(&format!("id=\"{target}\"")).count(), 1);
+            assert!(html.contains(&format!("id=\"{target}\" tabindex=\"-1\"")));
+        }
+        assert!(html.contains(r#"name="q" value="" aria-label="Search description""#));
+        assert_eq!(
+            html.contains("Add another account first"),
+            name == "Reports"
+        );
+    }
+}
+
+#[tokio::test]
+async fn error_page_preserves_status_and_escapes_the_message() {
+    let response = error::WebError::bad_request("Invalid <amount> & currency").into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("Invalid &lt;amount&gt; &amp; currency"));
+    assert!(html.contains(r#"class="empty-state error-state" role="alert""#));
+    assert!(!html.contains(" aria-current="));
+    assert!(html.contains(r#"<main id="main-content" tabindex="-1">"#));
+}
 
 #[tokio::test]
 async fn home_page_lists_created_account_and_balance() {
@@ -63,6 +147,7 @@ async fn home_page_lists_created_account_and_balance() {
     assert!(response.0.contains("Everyday &lt;Cash&gt;"));
     assert!(response.0.contains("0.00 CNY"));
     assert!(response.0.contains("<!doctype html>"));
+    assert_current_navigation(&response.0, r#"href="/" aria-current="page""#);
 }
 
 #[test]
@@ -200,6 +285,7 @@ async fn editing_imported_fixed_offset_transaction_preserves_the_instant() {
     let edit = transaction_edit(State(state.clone()), Path(1))
         .await
         .unwrap();
+    assert_current_navigation(&edit.0, r#"href="/" aria-current="location""#);
     assert!(
         edit.0
             .contains("step=\"any\" value=\"2026-09-01T12:00:30\"")
@@ -742,6 +828,7 @@ async fn transfer_management_creates_updates_lists_and_deletes() {
 
     let edit = transfer_edit(State(state.clone()), Path(1)).await.unwrap();
     assert!(edit.0.contains("Edit transfer"));
+    assert_current_navigation(&edit.0, r#"href="/" aria-current="location""#);
     assert!(edit.0.contains(
             r#"<select name="source_account_id"><option value="1" selected>CNY Wallet · CNY</option></select>"#
         ));
@@ -896,6 +983,12 @@ async fn reports_render_monthly_cash_flow_and_budget_status() {
     assert!(response.0.contains("Limit 50.00 CNY"));
     assert!(response.0.contains("On track · 30.00 CNY"));
     assert!(response.0.contains("Range summary"));
+    assert_current_navigation(&response.0, r#"href="/reports" aria-current="page""#);
+    assert!(
+        response
+            .0
+            .contains(r#"tabindex="0" role="region" aria-label="Monthly cash flow""#)
+    );
     assert!(response.0.contains("Net outflow"));
     assert!(response.0.contains("Salary"));
 }
@@ -991,6 +1084,7 @@ async fn data_tools_export_link_and_atomic_csv_import_work() {
 
     let page = data_tools(State(state.clone())).await.unwrap();
     assert!(page.0.contains("/data/export/1"));
+    assert_current_navigation(&page.0, r#"href="/data" aria-current="page""#);
     let _redirect = import_csv_handler(
             State(state.clone()),
             Form(CsvImportForm {
@@ -1350,6 +1444,12 @@ async fn portfolio_reports_render_currency_groups_and_preserve_selection() {
     assert!(html.contains("value=\"all\" selected>All accounts"));
     assert!(html.contains("<h2>CNY</h2>"));
     assert!(html.contains("<h2>USD</h2>"));
+    assert_eq!(html.matches(r#"role="region""#).count(), 2);
+    for currency in ["CNY", "USD"] {
+        let region =
+            format!(r#"tabindex="0" role="region" aria-label="Monthly cash flow · {currency}""#);
+        assert_eq!(html.matches(&region).count(), 1);
+    }
     assert!(html.contains("<strong>80.00 CNY</strong>"));
     assert!(html.contains("<td>2026-10</td><td>0.00 CNY</td>"));
     assert!(html.contains("−80.00 CNY"));

@@ -362,11 +362,26 @@ pub(crate) fn escape_html(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-pub(crate) fn page(title: &str, content: &str) -> String {
+#[derive(Clone, Copy)]
+pub(crate) enum NavSection {
+    Overview,
+    Accounts,
+    Reports,
+    Data,
+}
+
+pub(crate) fn page(title: &str, content: &str, section: Option<NavSection>) -> String {
     let title = escape_html(title);
     let style = include_str!("../web_style.css");
+    let (overview, reports, data) = match section {
+        Some(NavSection::Overview) => (r#" aria-current="page""#, "", ""),
+        Some(NavSection::Accounts) => (r#" aria-current="location""#, "", ""),
+        Some(NavSection::Reports) => ("", r#" aria-current="page""#, ""),
+        Some(NavSection::Data) => ("", "", r#" aria-current="page""#),
+        None => ("", "", ""),
+    };
     format!(
-        r#"<!doctype html>
+        r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -375,9 +390,10 @@ pub(crate) fn page(title: &str, content: &str) -> String {
   <style>{style}</style>
 </head>
 <body>
-  <header><nav><a class="brand" href="/"><span class="brand-mark">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><div class="nav-links"><a href="/">Overview</a><a href="/reports">Reports</a><a href="/data">Data</a></div><span class="status"><i></i> LOCAL NODE</span></nav></header>
-  <main>{content}</main>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header><nav aria-label="Primary"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><div class="nav-links"><a href="/"{overview}>Overview</a><a href="/reports"{reports}>Reports</a><a href="/data"{data}>Data</a></div><span class="status">LOCAL LEDGER</span></nav></header>
+  <main id="main-content" tabindex="-1">{content}</main>
 </body>
-</html>"#
+</html>"##
     )
 }
