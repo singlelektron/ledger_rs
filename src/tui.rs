@@ -46,6 +46,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+        Wrap,
     },
 };
 
@@ -2463,44 +2464,86 @@ fn previous_currency(currency: Currency) -> Currency {
     }
 }
 
-pub fn render(frame: &mut Frame, app: &App) {
+// Shared with Configs/docs/style.md. Rose identifies the active control;
+// diagnostic colors retain their meaning instead of becoming another accent.
+const BACKGROUND: Color = Color::Rgb(0x19, 0x15, 0x1c);
+const SURFACE: Color = Color::Rgb(0x24, 0x1d, 0x29);
+const FOREGROUND: Color = Color::Rgb(0xed, 0xe5, 0xec);
+const MUTED: Color = Color::Rgb(0xb3, 0xa2, 0xb1);
+const ACCENT: Color = Color::Rgb(0xf2, 0xa5, 0xc7);
+const BORDER: Color = Color::Rgb(0x57, 0x42, 0x54);
+const SELECTION: Color = Color::Rgb(0x3b, 0x2c, 0x3b);
+const INFO: Color = Color::Rgb(0xa7, 0xb9, 0xed);
+const SUCCESS: Color = Color::Rgb(0xa6, 0xc7, 0xa0);
+const ERROR: Color = Color::Rgb(0xf0, 0x80, 0x91);
+const WARNING: Color = Color::Rgb(0xe7, 0xc3, 0x8c);
+
+fn panel<'a>(title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
+    Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().fg(FOREGROUND).bg(BACKGROUND))
+        .border_style(focus_border(focused))
+        .title_style(
+            Style::default()
+                .fg(if focused { ACCENT } else { MUTED })
+                .bold(),
+        )
+        .title(title)
+}
+
+fn selection_style() -> Style {
+    Style::default().bg(SELECTION).add_modifier(Modifier::BOLD)
+}
+
+fn header_style() -> Style {
+    Style::default().fg(MUTED).bg(SURFACE).bold()
+}
+
+fn workspace_areas(area: Rect) -> (Rect, Rect, Rect, Rect) {
     let [header_area, content_area, footer_area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
-        .areas(frame.area());
+        .areas(area);
+    let sidebar_width = if area.width >= 100 { 30 } else { 24 };
     let [accounts_area, detail_area] = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .constraints([
+            Constraint::Length(sidebar_width.min(area.width / 2)),
+            Constraint::Min(0),
+        ])
         .areas(content_area);
+    (header_area, accounts_area, detail_area, footer_area)
+}
 
+pub fn render(frame: &mut Frame, app: &App) {
+    frame.render_widget(
+        Block::default().style(Style::default().fg(FOREGROUND).bg(BACKGROUND)),
+        frame.area(),
+    );
+    let (header_area, accounts_area, detail_area, footer_area) = workspace_areas(frame.area());
     let selected_name = app
         .selected_account()
         .map(|overview| overview.account().name())
         .unwrap_or("No account selected");
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" ledger_rs "),
-            Span::styled(
-                selected_name.to_string(),
-                Style::default().fg(Color::Cyan).bold(),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                match app.page() {
-                    Page::Ledger => "Ledger",
-                    Page::Activity => "Activity",
-                    Page::Reports => "Reports",
-                    Page::Budgets => "Budgets",
-                    Page::Transfers => "Transfers",
-                },
-                Style::default().fg(Color::Magenta).bold(),
-            ),
-        ]))
-        .block(Block::default().borders(Borders::ALL).title(" Dashboard ")),
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(" ledger_rs ", Style::default().fg(ACCENT).bold()),
+                Span::styled(" / ", Style::default().fg(BORDER)),
+                Span::styled(selected_name.to_string(), Style::default().fg(MUTED)),
+            ]),
+            navigation_line(app.page()),
+        ])
+        .style(Style::default().bg(SURFACE))
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(BORDER)),
+        ),
         header_area,
     );
 
@@ -2523,28 +2566,53 @@ pub fn render(frame: &mut Frame, app: &App) {
 const PAGE_NAVIGATION_HINTS: &str = "1 ledger  2 activity  3 reports  4 budgets  5 transfers";
 const GLOBAL_HINTS: &str = "r refresh  q quit";
 
+fn navigation_line(page: Page) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (index, label) in PAGE_NAVIGATION_HINTS.split("  ").enumerate() {
+        let active = index
+            == match page {
+                Page::Ledger => 0,
+                Page::Activity => 1,
+                Page::Reports => 2,
+                Page::Budgets => 3,
+                Page::Transfers => 4,
+            };
+        spans.push(Span::styled(
+            label,
+            if active {
+                Style::default().fg(ACCENT).bg(SELECTION).bold()
+            } else {
+                Style::default().fg(MUTED)
+            },
+        ));
+        spans.push(Span::raw("  "));
+    }
+    Line::from(spans)
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let page_hints = match app.page() {
-        Page::Ledger => "↑/k ↓/j move  a account  n transaction  e edit  d delete",
+        Page::Ledger if app.focus() == Focus::Accounts => {
+            "Tab focus  ↑/k ↓/j move  a account  n transaction  e rename  d delete"
+        }
+        Page::Ledger => "Tab focus  ↑/k ↓/j move  n transaction  e edit  d delete",
         Page::Activity => "↑/k ↓/j account",
         Page::Reports => "c category  s summary  t trend  S/T portfolio  [/] currency",
         Page::Budgets => "Tab focus  ↑/k ↓/j move  l list  b set  u status  d delete",
         Page::Transfers => "Tab focus  ↑/k ↓/j move  n new  e edit  d delete",
     };
-    let shortcuts = format!("{PAGE_NAVIGATION_HINTS}  {page_hints}  {GLOBAL_HINTS}");
-    let mut lines = vec![Line::from(shortcuts)];
+    let mut lines = vec![
+        Line::from(format!(" {page_hints}")),
+        Line::styled(format!(" {GLOBAL_HINTS}"), Style::default().fg(INFO)),
+    ];
     if let Some(status) = &app.status {
         lines.push(Line::styled(
             status.message.clone(),
-            Style::default().fg(if status.is_error {
-                Color::Red
-            } else {
-                Color::Green
-            }),
+            Style::default().fg(if status.is_error { ERROR } else { SUCCESS }),
         ));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(lines).style(Style::default().fg(MUTED).bg(SURFACE)),
         area,
     );
 }
@@ -2559,77 +2627,28 @@ fn render_mode(frame: &mut Frame, app: &App) {
         Mode::TrendReportForm(form) => render_trend_report_form(frame, form),
         Mode::BudgetForm(form) => render_budget_form(frame, form),
         Mode::BudgetStatusForm(form) => render_budget_status_form(frame, form),
-        Mode::ConfirmDeleteAccount(_) => {
-            let area = centered_rect(frame.area(), 54, 5);
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from("Delete the selected account?"),
-                    Line::from("Allowed only when it has no transactions, transfers, or budgets."),
-                    Line::from("Press y to confirm or n/Esc to cancel."),
-                ])
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Confirm delete "),
-                ),
-                area,
-            );
-        }
-        Mode::ConfirmDeleteTransaction(_) => {
-            let area = centered_rect(frame.area(), 52, 4);
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from("Delete the selected transaction?"),
-                    Line::from("Press y to confirm or n/Esc to cancel."),
-                ])
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Confirm delete "),
-                ),
-                area,
-            );
-        }
-        Mode::ConfirmDeleteTransfer(_) => {
-            let area = centered_rect(frame.area(), 52, 4);
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from("Delete the selected transfer?"),
-                    Line::from("Press y to confirm or n/Esc to cancel."),
-                ])
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Confirm delete "),
-                ),
-                area,
-            );
-        }
-        Mode::ConfirmDeleteBudget(_) => {
-            let area = centered_rect(frame.area(), 48, 4);
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from("Delete the selected budget?"),
-                    Line::from("Press y to confirm or n/Esc to cancel."),
-                ])
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Confirm delete "),
-                ),
-                area,
-            );
-        }
+        Mode::ConfirmDeleteAccount(_) => render_confirmation(frame, "account", true),
+        Mode::ConfirmDeleteTransaction(_) => render_confirmation(frame, "transaction", false),
+        Mode::ConfirmDeleteTransfer(_) => render_confirmation(frame, "transfer", false),
+        Mode::ConfirmDeleteBudget(_) => render_confirmation(frame, "budget", false),
     }
 }
 
+fn render_confirmation(frame: &mut Frame, item: &str, account: bool) {
+    let mut lines = vec![Line::styled(
+        format!("Delete the selected {item}?"),
+        Style::default().fg(WARNING).bold(),
+    )];
+    if account {
+        lines.push(Line::from(
+            "Allowed only when it has no transactions, transfers, or budgets.",
+        ));
+    }
+    lines.push(Line::from("Press y to confirm or n/Esc to cancel."));
+    render_dialog(frame, " Confirm delete ", 68, lines);
+}
+
 fn render_budget_form(frame: &mut Frame, form: &BudgetForm) {
-    let area = centered_rect(frame.area(), 62, 8 + u16::from(form.error.is_some()));
-    frame.render_widget(Clear, area);
     let mut lines = vec![
         Line::from(format!("Account: {}", form.account_id.value())),
         transaction_form_line(
@@ -2651,19 +2670,10 @@ fn render_budget_form(frame: &mut Frame, form: &BudgetForm) {
         Line::from("Delete clears text; Enter saves; Esc cancels."),
     ];
     push_form_error(&mut lines, form.error.as_deref());
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Set monthly budget "),
-        ),
-        area,
-    );
+    render_dialog(frame, " Set monthly budget ", 62, lines);
 }
 
 fn render_budget_status_form(frame: &mut Frame, form: &BudgetStatusForm) {
-    let area = centered_rect(frame.area(), 68, 7 + u16::from(form.error.is_some()));
-    frame.render_widget(Clear, area);
     let mut lines = vec![
         Line::from(format!("Account: {}", form.account_id.value())),
         transaction_form_line(
@@ -2680,19 +2690,10 @@ fn render_budget_status_form(frame: &mut Frame, form: &BudgetStatusForm) {
         Line::from("Delete clears text; Enter runs; Esc cancels."),
     ];
     push_form_error(&mut lines, form.error.as_deref());
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Budget status "),
-        ),
-        area,
-    );
+    render_dialog(frame, " Budget status ", 68, lines);
 }
 
 fn render_transfer_form(frame: &mut Frame, form: &TransferForm, accounts: &[AccountOverview]) {
-    let area = centered_rect(frame.area(), 82, 11 + u16::from(form.error.is_some()));
-    frame.render_widget(Clear, area);
     let account_ids = accounts
         .iter()
         .map(|overview| overview.account().id().value().to_string())
@@ -2734,20 +2735,18 @@ fn render_transfer_form(frame: &mut Frame, form: &TransferForm, accounts: &[Acco
         Line::from("Tab/Shift-Tab changes field; Delete clears; Enter saves; Esc cancels."),
     ];
     push_form_error(&mut lines, form.error.as_deref());
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
-            match form.kind {
-                TransferFormKind::Create => " Create transfer ",
-                TransferFormKind::Edit(_) => " Edit transfer ",
-            },
-        )),
-        area,
+    render_dialog(
+        frame,
+        match form.kind {
+            TransferFormKind::Create => " Create transfer ",
+            TransferFormKind::Edit(_) => " Edit transfer ",
+        },
+        82,
+        lines,
     );
 }
 
 fn render_summary_report_form(frame: &mut Frame, form: &SummaryReportForm) {
-    let area = centered_rect(frame.area(), 82, 7 + u16::from(form.error.is_some()));
-    frame.render_widget(Clear, area);
     let mut lines = vec![
         Line::from(if let Some(id) = form.account_id {
             format!("Account: {}", id.value())
@@ -2760,19 +2759,10 @@ fn render_summary_report_form(frame: &mut Frame, form: &SummaryReportForm) {
         Line::from("Delete clears text; Enter runs; Esc cancels."),
     ];
     push_form_error(&mut lines, form.error.as_deref());
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Ranged summary "),
-        ),
-        area,
-    );
+    render_dialog(frame, " Ranged summary ", 82, lines);
 }
 
 fn render_trend_report_form(frame: &mut Frame, form: &TrendReportForm) {
-    let area = centered_rect(frame.area(), 70, 8 + u16::from(form.error.is_some()));
-    frame.render_widget(Clear, area);
     let mut lines = vec![
         Line::from(if let Some(id) = form.account_id {
             format!("Account: {}", id.value())
@@ -2794,19 +2784,10 @@ fn render_trend_report_form(frame: &mut Frame, form: &TrendReportForm) {
         Line::from("Delete clears text; Enter runs; Esc cancels."),
     ];
     push_form_error(&mut lines, form.error.as_deref());
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Monthly trend "),
-        ),
-        area,
-    );
+    render_dialog(frame, " Monthly trend ", 70, lines);
 }
 
 fn render_transaction_form(frame: &mut Frame, form: &TransactionForm) {
-    let area = centered_rect(frame.area(), 78, 11 + u16::from(form.error.is_some()));
-    frame.render_widget(Clear, area);
     let mut lines = vec![
         Line::from(format!(
             "Account: {} ({})",
@@ -2842,14 +2823,14 @@ fn render_transaction_form(frame: &mut Frame, form: &TransactionForm) {
         Line::from("Delete clears text; Enter saves; Esc cancels."),
     ];
     push_form_error(&mut lines, form.error.as_deref());
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
-            match form.form_kind {
-                TransactionFormKind::Create => " Create transaction ",
-                TransactionFormKind::Edit(_) => " Edit transaction ",
-            },
-        )),
-        area,
+    render_dialog(
+        frame,
+        match form.form_kind {
+            TransactionFormKind::Create => " Create transaction ",
+            TransactionFormKind::Edit(_) => " Edit transaction ",
+        },
+        78,
+        lines,
     );
 }
 
@@ -2862,12 +2843,6 @@ fn transaction_form_line(label: &str, value: String, selected: bool) -> Line<'st
 
 fn render_account_form(frame: &mut Frame, form: &AccountForm) {
     let is_create = form.kind == AccountFormKind::Create;
-    let area = centered_rect(
-        frame.area(),
-        58,
-        if is_create { 8 } else { 7 } + u16::from(form.error.is_some()),
-    );
-    frame.render_widget(Clear, area);
     let mut lines = vec![Line::from(vec![
         Span::raw("Name: "),
         Span::styled(
@@ -2887,13 +2862,15 @@ fn render_account_form(frame: &mut Frame, form: &AccountForm) {
     }
     lines.push(Line::from("Enter saves; Esc cancels."));
     push_form_error(&mut lines, form.error.as_deref());
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(if is_create {
+    render_dialog(
+        frame,
+        if is_create {
             " Create account "
         } else {
             " Rename account "
-        })),
-        area,
+        },
+        58,
+        lines,
     );
 }
 
@@ -2901,8 +2878,108 @@ fn push_form_error(lines: &mut Vec<Line<'static>>, error: Option<&str>) {
     if let Some(error) = error {
         lines.push(Line::from(Span::styled(
             error.to_string(),
-            Style::default().fg(Color::Red),
+            Style::default().fg(ERROR),
         )));
+    }
+}
+
+fn render_dialog(frame: &mut Frame, title: &str, width: u16, mut lines: Vec<Line<'static>>) {
+    let width = width.min(frame.area().width);
+    let inner_width = width.saturating_sub(4).max(1);
+    // Text entry appends at the end. Keep that end visible without changing the
+    // actual value, including when a description contains wide Unicode text.
+    for line in &mut lines {
+        if line.spans.len() == 2 {
+            let budget = usize::from(inner_width).saturating_sub(line.spans[0].width());
+            let span = &mut line.spans[1];
+            if span.width() > budget {
+                let active = span.style.add_modifier.contains(Modifier::UNDERLINED);
+                span.content = fit_text(&span.content, budget, active).into();
+            }
+        }
+    }
+    let lines = wrap_dialog_lines(lines, usize::from(inner_width));
+    let height = lines.len().saturating_add(2).min(u16::MAX as usize) as u16;
+    let paragraph = Paragraph::new(lines);
+    let area = centered_rect(frame.area(), width, height);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        paragraph
+            .style(Style::default().fg(FOREGROUND).bg(SURFACE))
+            .block(
+                panel(title, true)
+                    .style(Style::default().fg(FOREGROUND).bg(SURFACE))
+                    .padding(ratatui::widgets::Padding::horizontal(1)),
+            ),
+        area,
+    );
+}
+
+fn wrap_dialog_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let mut wrapped = Vec::new();
+    for line in lines {
+        let mut current = Line::default().style(line.style);
+        let mut used = 0;
+        for span in line.spans {
+            for word in span.content.split_inclusive(char::is_whitespace) {
+                let word_width = Span::raw(word.trim_end()).width();
+                if used > 0 && word_width <= width && used + word_width > width {
+                    wrapped.push(current);
+                    current = Line::default().style(line.style);
+                    used = 0;
+                }
+                let mut part = String::new();
+                for character in word.chars() {
+                    let character_width = Span::raw(character.to_string()).width();
+                    if used + character_width > width {
+                        if character.is_whitespace() {
+                            continue;
+                        }
+                        current
+                            .spans
+                            .push(Span::styled(std::mem::take(&mut part), span.style));
+                        wrapped.push(current);
+                        current = Line::default().style(line.style);
+                        used = 0;
+                    }
+                    part.push(character);
+                    used += character_width;
+                }
+                current.spans.push(Span::styled(part, span.style));
+            }
+        }
+        wrapped.push(current);
+    }
+    wrapped
+}
+
+fn fit_text(value: &str, width: usize, tail: bool) -> String {
+    if Span::raw(value).width() <= width {
+        return value.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let characters: Vec<char> = if tail {
+        value.chars().rev().collect()
+    } else {
+        value.chars().collect()
+    };
+    let mut used = 1;
+    let mut kept = Vec::new();
+    for character in characters {
+        let character_width = Span::raw(character.to_string()).width();
+        if used + character_width > width {
+            break;
+        }
+        used += character_width;
+        kept.push(character);
+    }
+    if tail {
+        kept.reverse();
+        format!("…{}", kept.into_iter().collect::<String>())
+    } else {
+        format!("{}…", kept.into_iter().collect::<String>())
     }
 }
 
@@ -2920,7 +2997,7 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 fn field_style(selected: bool) -> Style {
     if selected {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(ACCENT)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
         Style::default()
@@ -2929,32 +3006,25 @@ fn field_style(selected: bool) -> Style {
 
 fn render_accounts(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let items = if app.accounts().is_empty() {
-        vec![ListItem::new("No accounts. Press a to create one.")]
+        vec![ListItem::new(Text::from(vec![
+            Line::from("No accounts"),
+            Line::from("Press a to create one."),
+        ]))]
     } else {
         app.accounts()
             .iter()
             .map(|overview| {
-                ListItem::new(format!(
-                    "{}  {}",
-                    overview.account().name(),
-                    format_money(overview.balance())
-                ))
+                ListItem::new(Text::from(vec![
+                    Line::from(overview.account().name().to_string()),
+                    Line::styled(format_money(overview.balance()), Style::default().fg(MUTED)),
+                ]))
             })
             .collect()
     };
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(focus_border(app.focus() == Focus::Accounts))
-                .title(" Accounts "),
-        )
+        .block(panel(" Accounts ", app.focus() == Focus::Accounts))
         .highlight_symbol("▶ ")
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(selection_style());
     let mut state = ListState::default().with_selected(app.selected_index());
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -2962,18 +3032,13 @@ fn render_accounts(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 fn render_transactions(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let Some(account) = app.selected_account() else {
         frame.render_widget(
-            Paragraph::new("No transactions to display").block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Transactions "),
-            ),
+            Paragraph::new("No transactions to display").block(panel(" Transactions ", false)),
             area,
         );
         return;
     };
 
-    // The detail pane occupies 65% of the terminal. Stack metadata on narrow
-    // panes so long category names stay readable at ordinary terminal widths.
+    // Stack metadata on narrow panes so long category names stay readable.
     let compact = area.width < 88;
     let rows = account.transactions().iter().map(|transaction| {
         let category = Cell::from(category_label(transaction.category()));
@@ -3018,22 +3083,16 @@ fn render_transactions(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
             ],
         )
     };
-    let header = Row::new(headers).style(Style::default().fg(Color::Cyan).bold());
+    let header = Row::new(headers).style(header_style());
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
+        .row_highlight_style(selection_style())
         .highlight_symbol("▶ ")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(focus_border(app.focus() == Focus::Transactions))
-                .title(format!(" Transactions ({}) ", account.transactions().len())),
-        );
+        .block(panel(
+            format!(" Transactions ({}) ", account.transactions().len()),
+            app.focus() == Focus::Transactions,
+        ));
     let mut state = TableState::default().with_selected(app.selected_transaction_index());
     frame.render_stateful_widget(table, area, &mut state);
 }
@@ -3041,54 +3100,78 @@ fn render_transactions(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
 fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
     let Some(account) = app.selected_account() else {
         frame.render_widget(
-            Paragraph::new("No activity to display")
-                .block(Block::default().borders(Borders::ALL).title(" Activity ")),
+            Paragraph::new("No activity to display").block(panel(" Activity ", false)),
             area,
         );
         return;
     };
 
     let account_id = account.account().id();
-    let rows = account.activity().iter().map(|activity| match activity {
-        AccountActivity::Transaction(transaction) => Row::new(vec![
-            Cell::from(transaction.occurred_at().to_string()),
-            Cell::from(kind_label(transaction.kind())),
-            Cell::from(format_transaction_amount(transaction)),
-            Cell::from(transaction.description().to_string()),
-        ]),
-        AccountActivity::Transfer(transfer) => {
-            let (kind, sign, amount) = if transfer.source_account_id() == account_id {
-                ("Transfer out", "-", transfer.source_amount())
-            } else {
-                ("Transfer in", "+", transfer.destination_amount())
-            };
+    let compact = area.width < 88;
+    let rows = account.activity().iter().map(|activity| {
+        let (occurred, kind, amount, description) = match activity {
+            AccountActivity::Transaction(transaction) => (
+                transaction.occurred_at().to_string(),
+                kind_label(transaction.kind()),
+                format_transaction_amount(transaction),
+                transaction.description().to_string(),
+            ),
+            AccountActivity::Transfer(transfer) => {
+                let (kind, sign, amount) = if transfer.source_account_id() == account_id {
+                    ("Transfer out", "-", transfer.source_amount())
+                } else {
+                    ("Transfer in", "+", transfer.destination_amount())
+                };
+                (
+                    transfer.occurred_at().to_string(),
+                    kind,
+                    format!("{sign}{}", format_money(amount)),
+                    transfer.description().to_string(),
+                )
+            }
+        };
+        if compact {
             Row::new(vec![
-                Cell::from(transfer.occurred_at().to_string()),
                 Cell::from(kind),
-                Cell::from(format!("{sign}{}", format_money(amount))),
-                Cell::from(transfer.description().to_string()),
+                Cell::from(Text::from(vec![
+                    Line::from(description),
+                    Line::from(amount),
+                    Line::from(occurred),
+                ])),
+            ])
+            .height(3)
+        } else {
+            Row::new(vec![
+                Cell::from(occurred),
+                Cell::from(kind),
+                Cell::from(amount),
+                Cell::from(description),
             ])
         }
     });
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(24),
-            Constraint::Length(13),
-            Constraint::Length(15),
-            Constraint::Min(12),
-        ],
-    )
-    .header(
-        Row::new(["Occurred at", "Activity", "Amount", "Description"])
-            .style(Style::default().fg(Color::Cyan).bold()),
-    )
-    .column_spacing(1)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" Activity ({}) ", account.activity().len())),
-    );
+    let (headers, widths) = if compact {
+        (
+            vec!["Activity", "Details"],
+            vec![Constraint::Length(13), Constraint::Min(12)],
+        )
+    } else {
+        (
+            vec!["Occurred at", "Activity", "Amount", "Description"],
+            vec![
+                Constraint::Length(24),
+                Constraint::Length(13),
+                Constraint::Length(15),
+                Constraint::Min(12),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers).style(header_style()))
+        .column_spacing(1)
+        .block(panel(
+            format!(" Activity ({}) ", account.activity().len()),
+            false,
+        ));
     frame.render_widget(table, area);
 }
 
@@ -3096,7 +3179,7 @@ fn render_transfers(frame: &mut Frame, app: &App, area: Rect) {
     let Some(account) = app.selected_account() else {
         frame.render_widget(
             Paragraph::new("Create an account before recording transfers.")
-                .block(Block::default().borders(Borders::ALL).title(" Transfers ")),
+                .block(panel(" Transfers ", false)),
             area,
         );
         return;
@@ -3110,6 +3193,7 @@ fn render_transfers(frame: &mut Frame, app: &App, area: Rect) {
             AccountActivity::Transaction(_) => None,
         })
         .collect::<Vec<_>>();
+    let compact = area.width < 88;
     let rows = transfers.iter().map(|transfer| {
         let (direction, counterparty, amount) = if transfer.source_account_id() == account_id {
             (
@@ -3124,42 +3208,60 @@ fn render_transfers(frame: &mut Frame, app: &App, area: Rect) {
                 format!("+{}", format_money(transfer.destination_amount())),
             )
         };
-        Row::new([
-            Cell::from(transfer.occurred_at().to_string()),
-            Cell::from(direction),
-            Cell::from(counterparty.value().to_string()),
-            Cell::from(amount),
-            Cell::from(transfer.description().to_string()),
-        ])
+        if compact {
+            Row::new(vec![
+                Cell::from(Text::from(vec![
+                    Line::from(direction),
+                    Line::from(format!("Account {}", counterparty.value())),
+                ])),
+                Cell::from(Text::from(vec![
+                    Line::from(transfer.description().to_string()),
+                    Line::from(amount),
+                    Line::from(transfer.occurred_at().to_string()),
+                ])),
+            ])
+            .height(3)
+        } else {
+            Row::new(vec![
+                Cell::from(transfer.occurred_at().to_string()),
+                Cell::from(direction),
+                Cell::from(counterparty.value().to_string()),
+                Cell::from(amount),
+                Cell::from(transfer.description().to_string()),
+            ])
+        }
     });
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(24),
-            Constraint::Length(4),
-            Constraint::Length(12),
-            Constraint::Length(16),
-            Constraint::Min(12),
-        ],
-    )
-    .header(
-        Row::new([
-            "Occurred at",
-            "Flow",
-            "Other account",
-            "Amount",
-            "Description",
-        ])
-        .style(Style::default().fg(Color::Cyan).bold()),
-    )
-    .column_spacing(1)
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(focus_border(app.focus == Focus::Transactions))
-            .title(format!(" Transfers ({}) ", transfers.len())),
-    );
+    let (headers, widths) = if compact {
+        (
+            vec!["Flow / account", "Transfer"],
+            vec![Constraint::Length(14), Constraint::Min(12)],
+        )
+    } else {
+        (
+            vec![
+                "Occurred at",
+                "Flow",
+                "Other account",
+                "Amount",
+                "Description",
+            ],
+            vec![
+                Constraint::Length(24),
+                Constraint::Length(4),
+                Constraint::Length(12),
+                Constraint::Length(16),
+                Constraint::Min(12),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers).style(header_style()))
+        .column_spacing(1)
+        .row_highlight_style(selection_style())
+        .block(panel(
+            format!(" Transfers ({}) ", transfers.len()),
+            app.focus == Focus::Transactions,
+        ));
     let mut state = TableState::default()
         .with_selected((!transfers.is_empty()).then_some(app.selected_transaction));
     frame.render_stateful_widget(table, area, &mut state);
@@ -3177,7 +3279,7 @@ fn render_reports(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from("S/T  All-account summary/trend; [/] switches currency"),
                 Line::from("Transfers and balance adjustments are excluded."),
             ])
-            .block(Block::default().borders(Borders::ALL).title(" Reports ")),
+            .block(panel(" Reports ", false)),
             area,
         );
         return;
@@ -3237,12 +3339,13 @@ fn render_budgets(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from("b  Set or update a monthly category budget"),
                 Line::from("u  Show usage and remaining limits for a month"),
             ])
-            .block(Block::default().borders(Borders::ALL).title(" Budgets ")),
+            .block(panel(" Budgets ", false)),
             area,
         );
         return;
     };
 
+    let compact = area.width < 88;
     let (rows, widths, header_cells, title): (Vec<Row>, Vec<Constraint>, Vec<&str>, String) =
         match result {
             BudgetResult::List(budgets) => (
@@ -3258,8 +3361,8 @@ fn render_budgets(frame: &mut Frame, app: &App, area: Rect) {
                     .collect(),
                 vec![
                     Constraint::Length(9),
-                    Constraint::Percentage(45),
-                    Constraint::Percentage(46),
+                    Constraint::Length(14),
+                    Constraint::Min(12),
                 ],
                 vec!["Month", "Category", "Limit"],
                 format!(" Budgets ({}) ", budgets.len()),
@@ -3271,28 +3374,55 @@ fn render_budgets(frame: &mut Frame, app: &App, area: Rect) {
             } => (
                 rows.iter()
                     .map(|status| {
-                        Row::new([
-                            Cell::from(category_label(status.budget.category())),
-                            Cell::from(format_money(status.budget.limit())),
-                            Cell::from(format_money(&status.used)),
-                            Cell::from(format_money(&status.remaining)),
-                            Cell::from(if status.overrun { "Over" } else { "Within" }),
-                        ])
-                        .style(if status.overrun {
-                            Style::default().fg(Color::Red)
+                        let state = if status.overrun { "Over" } else { "Within" };
+                        let state_style =
+                            Style::default().fg(if status.overrun { ERROR } else { SUCCESS });
+                        if compact {
+                            Row::new(vec![
+                                Cell::from(Text::from(vec![
+                                    Line::from(category_label(status.budget.category())),
+                                    Line::styled(state, state_style),
+                                ])),
+                                Cell::from(Text::from(vec![
+                                    Line::from(format!(
+                                        "Limit     {}",
+                                        format_money(status.budget.limit())
+                                    )),
+                                    Line::from(format!("Used      {}", format_money(&status.used))),
+                                    Line::from(format!(
+                                        "Remaining {}",
+                                        format_money(&status.remaining)
+                                    )),
+                                ])),
+                            ])
+                            .height(3)
                         } else {
-                            Style::default()
-                        })
+                            Row::new(vec![
+                                Cell::from(category_label(status.budget.category())),
+                                Cell::from(format_money(status.budget.limit())),
+                                Cell::from(format_money(&status.used)),
+                                Cell::from(format_money(&status.remaining)),
+                                Cell::from(state).style(state_style),
+                            ])
+                        }
                     })
                     .collect(),
-                vec![
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(20),
-                    Constraint::Percentage(20),
-                    Constraint::Percentage(20),
-                    Constraint::Percentage(15),
-                ],
-                vec!["Category", "Limit", "Used", "Remaining", "State"],
+                if compact {
+                    vec![Constraint::Length(14), Constraint::Min(12)]
+                } else {
+                    vec![
+                        Constraint::Percentage(25),
+                        Constraint::Percentage(20),
+                        Constraint::Percentage(20),
+                        Constraint::Percentage(20),
+                        Constraint::Percentage(15),
+                    ]
+                },
+                if compact {
+                    vec!["Category / state", "Budget usage"]
+                } else {
+                    vec!["Category", "Limit", "Used", "Remaining", "State"]
+                },
                 format!(
                     " Budget status {} ({}) ",
                     format_budget_month(*month),
@@ -3300,17 +3430,12 @@ fn render_budgets(frame: &mut Frame, app: &App, area: Rect) {
                 ),
             ),
         };
-    let header = Row::new(header_cells).style(Style::default().fg(Color::Cyan).bold());
+    let header = Row::new(header_cells).style(header_style());
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(focus_border(app.focus == Focus::Transactions))
-                .title(title),
-        );
+        .row_highlight_style(selection_style())
+        .block(panel(title, app.focus == Focus::Transactions));
     let mut state = TableState::default()
         .with_selected((app.budget_row_count() > 0).then_some(app.selected_transaction));
     frame.render_stateful_widget(table, area, &mut state);
@@ -3327,12 +3452,8 @@ fn render_category_report(frame: &mut Frame, values: &[(Category, Money)], area:
         rows,
         [Constraint::Percentage(55), Constraint::Percentage(45)],
     )
-    .header(Row::new(["Category", "Net outflow"]).style(Style::default().fg(Color::Cyan).bold()))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Category report "),
-    );
+    .header(Row::new(["Category", "Net outflow"]).style(header_style()))
+    .block(panel(" Category report ", false));
     frame.render_widget(table, area);
 }
 
@@ -3372,42 +3493,64 @@ fn render_summary_report(
         ))
     }));
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Ranged summary "),
-        ),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(panel(" Ranged summary ", false)),
         area,
     );
 }
 
 fn render_trend_report(frame: &mut Frame, rows: &[MonthlyTrend], area: Rect) {
+    let compact = area.width < 88;
     let rows = rows.iter().map(|row| {
-        Row::new([
-            Cell::from(format_budget_month(row.month)),
-            Cell::from(format_money(row.summary.income_total())),
-            Cell::from(format_money(row.summary.net_expense_total())),
-            Cell::from(format_money(row.summary.net_change())),
-        ])
+        if compact {
+            Row::new(vec![
+                Cell::from(format_budget_month(row.month)),
+                Cell::from(Text::from(vec![
+                    Line::from(format!(
+                        "Income      {}",
+                        format_money(row.summary.income_total())
+                    )),
+                    Line::from(format!(
+                        "Net expense {}",
+                        format_money(row.summary.net_expense_total())
+                    )),
+                    Line::from(format!(
+                        "Net change  {}",
+                        format_money(row.summary.net_change())
+                    )),
+                ])),
+            ])
+            .height(3)
+        } else {
+            Row::new(vec![
+                Cell::from(format_budget_month(row.month)),
+                Cell::from(format_money(row.summary.income_total())),
+                Cell::from(format_money(row.summary.net_expense_total())),
+                Cell::from(format_money(row.summary.net_change())),
+            ])
+        }
     });
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(9),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-        ],
-    )
-    .header(
-        Row::new(["Month", "Income", "Net expense", "Net change"])
-            .style(Style::default().fg(Color::Cyan).bold()),
-    )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Monthly trend "),
-    );
+    let (headers, widths) = if compact {
+        (
+            vec!["Month", "Cash flow"],
+            vec![Constraint::Length(9), Constraint::Min(12)],
+        )
+    } else {
+        (
+            vec!["Month", "Income", "Net expense", "Net change"],
+            vec![
+                Constraint::Length(9),
+                Constraint::Percentage(30),
+                Constraint::Percentage(30),
+                Constraint::Percentage(30),
+            ],
+        )
+    };
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers).style(header_style()))
+        .column_spacing(1)
+        .block(panel(" Monthly trend ", false));
     frame.render_widget(table, area);
 }
 
@@ -3417,9 +3560,9 @@ fn format_budget_month(month: BudgetMonth) -> String {
 
 fn focus_border(focused: bool) -> Style {
     if focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(ACCENT)
     } else {
-        Style::default()
+        Style::default().fg(BORDER)
     }
 }
 
@@ -3503,6 +3646,79 @@ mod tests {
         },
     };
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn workspace_navigation_and_global_actions_remain_visible_at_normal_widths() {
+        let mut accounts = InMemoryAccountRepository::new();
+        accounts
+            .save(
+                Account::new(
+                    AccountId::new(1),
+                    "日常生活与长期储蓄账户".to_string(),
+                    Currency::Cny,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        for width in [80, 100, 120, 160] {
+            for key in ['1', '2', '3', '4', '5'] {
+                app.handle_key(KeyCode::Char(key));
+                let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let screen = terminal.backend().to_string();
+                for expected in [PAGE_NAVIGATION_HINTS, GLOBAL_HINTS, "0.00 CNY"] {
+                    assert!(
+                        screen.contains(expected),
+                        "width {width}, page {key}, missing {expected}: {screen}"
+                    );
+                }
+                assert_eq!(terminal.backend().buffer()[(0, 3)].fg, ACCENT);
+            }
+        }
+    }
+
+    #[test]
+    fn dialog_wraps_errors_and_keeps_active_unicode_input_end_visible() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let value = format!("{}输入末尾", "非常长的描述".repeat(20));
+        let error = "The operation could not be completed because this account is unavailable. Keep the entered values and select another account before trying again.";
+        terminal
+            .draw(|frame| {
+                render_dialog(
+                    frame,
+                    " Edit transaction ",
+                    70,
+                    vec![
+                        transaction_form_line("Description", value.clone(), true),
+                        Line::styled(error, Style::default().fg(ERROR)),
+                    ],
+                )
+            })
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("输入末尾"));
+        assert!(screen.contains("trying again."));
+        assert!(screen.contains("Description:"));
+        assert!(Span::raw(fit_text(&value, 40, true)).width() <= 40);
+    }
+
+    #[test]
+    fn tiny_terminal_and_dialog_layouts_do_not_panic() {
+        let accounts = InMemoryAccountRepository::new();
+        let transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        for (width, height) in [(1, 1), (20, 6), (40, 10), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.handle_key(KeyCode::Char('a'));
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.handle_key(KeyCode::Esc);
+        }
+    }
 
     #[test]
     fn loads_accounts_balances_and_newest_first_transactions() {
