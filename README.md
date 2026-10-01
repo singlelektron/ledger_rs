@@ -131,12 +131,33 @@ file protections as the CLI. To open another database, use the shared override:
 cargo run --bin ledger_tui -- --database path/to/ledger.db
 ```
 
+The dark-rose workspace uses square borders, a numbered page bar, and separate
+context, global-shortcut, and status lines. It is designed for terminals of at
+least 80 columns by 24 rows. The account pane is 24 columns wide below 100
+columns and 30 columns wide on larger terminals; compact tables keep transaction
+categories and other key details visible. Use a true-color terminal for the
+intended palette; no special icon font is required.
+
+Click page tabs, accounts, or selectable detail rows to navigate. The mouse
+wheel moves the selection in the list under the pointer. In forms, click a
+field to focus it, then use the existing keyboard controls to edit its value;
+Save/Run and Cancel use the same validation and cancellation paths as Enter and
+Escape. An open dialog blocks clicks on the workspace behind it. Press `?`
+while browsing for help, and `?` or Escape to close it. Existing keyboard
+shortcuts remain available.
+
+Preview using synthetic sample data (captured from a real 80×24 terminal
+session and rendered from its ANSI output):
+
+![Dark-rose TUI workspace](docs/ui/tui-ledger-80.png)
+
 Use number keys to switch pages: `1` for the ledger, `2` for unified activity,
 `3` for reports, `4` for budgets, and `5` for transfers. On the ledger, budgets,
 and transfers pages, use Tab or the left/right arrows to focus the account or
 detail pane, then use the up/down arrows or `k`/`j` to move the selection. The
 activity and reports pages keep focus on the account pane because their content
-is read-only.
+is read-only. Use Page Up/Page Down or the mouse wheel over their detail pane
+to scroll longer activity lists and reports without changing the account.
 
 The ledger displays each transaction’s category using the same names as the
 transaction form and reports. Narrow detail panes stack the description, kind,

@@ -1,8 +1,17 @@
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::{
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers,
+    },
+    execute,
+};
 use ledger_rs::{
     app_paths::{prepare_database_parent, resolve_database_path, secure_database_file},
     infrastructure::sqlite::open_complete_repositories,
-    tui::{Action, App, execute_action, execute_budget, execute_report, render},
+    tui::{
+        Action, App, InteractionState, execute_action, execute_budget, execute_report,
+        render_interactive,
+    },
 };
 use std::{io, path::PathBuf};
 
@@ -43,60 +52,108 @@ fn main() -> io::Result<()> {
     let mut app = App::load(&accounts, &transactions, &transfers)
         .map_err(|error| io::Error::other(format!("failed to load dashboard: {error}")))?;
 
+    install_mouse_cleanup_hook();
     ratatui::run(|terminal| {
+        let _mouse_capture = MouseCapture::enable()?;
+        let mut interaction = InteractionState::default();
         loop {
-            terminal.draw(|frame| render(frame, &app))?;
+            let mut rendered_size = (0, 0);
+            terminal.draw(|frame| {
+                rendered_size = (frame.area().width, frame.area().height);
+                render_interactive(frame, &app, &mut interaction);
+            })?;
 
             let event = event::read()?;
 
-            if let Event::Key(key) = event
-                && key.kind == KeyEventKind::Press
-            {
-                if is_ctrl_c(&key) {
-                    return Ok(());
+            let action = match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if is_ctrl_c(&key) {
+                        return Ok(());
+                    }
+                    app.handle_key(key.code)
                 }
-                match app.handle_key(key.code) {
-                    Action::Quit => return Ok(()),
-                    Action::Continue => {}
-                    Action::Reload => {
-                        app.reload(&accounts, &transactions, &transfers, None);
+                Event::Mouse(mouse) => {
+                    // A mouse event can be queued before the resize event. Never use
+                    // hit targets from a differently sized terminal frame.
+                    if crossterm::terminal::size()? != rendered_size {
+                        interaction.invalidate();
+                        continue;
                     }
-                    Action::RunReport(request) => {
-                        match execute_report(request, &accounts, &transactions) {
-                            Ok(report) => {
-                                app.set_report(report);
-                                app.action_succeeded();
-                            }
-                            Err(error) => app.action_failed(format!("Report failed: {error}")),
-                        }
-                    }
-                    Action::RunBudget(request) => {
-                        match execute_budget(request, &accounts, &transactions, &mut budgets) {
-                            Ok(result) => {
-                                app.set_budget(result);
-                                app.action_succeeded();
-                            }
-                            Err(error) => app.action_failed(format!("Budget failed: {error}")),
-                        }
-                    }
-                    action => match execute_action(
-                        action,
-                        &mut accounts,
-                        &mut transactions,
-                        &mut transfers,
-                        &budgets,
-                    ) {
-                        Ok(Some(message)) => {
+                    app.handle_mouse(mouse, &interaction)
+                }
+                Event::Resize(_, _) => {
+                    interaction.invalidate();
+                    continue;
+                }
+                _ => continue,
+            };
+            match action {
+                Action::Quit => return Ok(()),
+                Action::Continue => {}
+                Action::Reload => {
+                    app.reload(&accounts, &transactions, &transfers, None);
+                }
+                Action::RunReport(request) => {
+                    match execute_report(request, &accounts, &transactions) {
+                        Ok(report) => {
+                            app.set_report(report);
                             app.action_succeeded();
-                            app.reload(&accounts, &transactions, &transfers, Some(message));
                         }
-                        Ok(None) => app.action_succeeded(),
-                        Err(error) => app.action_failed(format!("Operation failed: {error}")),
-                    },
+                        Err(error) => app.action_failed(format!("Report failed: {error}")),
+                    }
                 }
+                Action::RunBudget(request) => {
+                    match execute_budget(request, &accounts, &transactions, &mut budgets) {
+                        Ok(result) => {
+                            app.set_budget(result);
+                            app.action_succeeded();
+                        }
+                        Err(error) => app.action_failed(format!("Budget failed: {error}")),
+                    }
+                }
+                action => match execute_action(
+                    action,
+                    &mut accounts,
+                    &mut transactions,
+                    &mut transfers,
+                    &budgets,
+                ) {
+                    Ok(Some(message)) => {
+                        app.action_succeeded();
+                        app.reload(&accounts, &transactions, &transfers, Some(message));
+                    }
+                    Ok(None) => app.action_succeeded(),
+                    Err(error) => app.action_failed(format!("Operation failed: {error}")),
+                },
             }
         }
     })
+}
+
+// Ratatui restores raw mode and the alternate screen, but not mouse capture.
+// Install before ratatui::run so its panic hook still chains to the original.
+fn install_mouse_cleanup_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        previous(info);
+    }));
+}
+
+struct MouseCapture;
+
+impl MouseCapture {
+    fn enable() -> io::Result<Self> {
+        let guard = Self;
+        execute!(io::stdout(), EnableMouseCapture)?;
+        Ok(guard)
+    }
+}
+
+impl Drop for MouseCapture {
+    fn drop(&mut self) {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+    }
 }
 
 fn is_ctrl_c(key: &KeyEvent) -> bool {
