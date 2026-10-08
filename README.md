@@ -103,7 +103,7 @@ SQLite persistence layer are implemented and tested:
 - A local-only, server-rendered Web workspace with account, transaction,
   transfer, and budget management; filtering; trend, range, category, and
   budget reports; CSV exchange; and JSON backup/empty-ledger restore
-- 292 passing unit and workflow tests, including a shared in-memory/SQLite
+- Unit, integration, and workflow tests, including a shared in-memory/SQLite
   repository contract, a complete CLI backup/restore scenario, Web form
   workflows, and an append-only audit trail
 
@@ -634,18 +634,21 @@ version are rejected explicitly.
 
 ## Running a Prebuilt Binary
 
-Version 0.2.0 is prepared as three independent GitHub Releases. Each release
+Version 0.3.0 is prepared as three independent GitHub Releases. Each release
 provides one archive per supported target (Linux x86-64, Windows x86-64, macOS
 Intel, and macOS Apple Silicon) plus a `SHA256SUMS` file:
 
 | Tag | Archive prefix | Included executables | Latest |
 | --- | --- | --- | --- |
-| `tui-v0.2.0` | `ledger_rs-tui-v0.2.0-` | `ledger_rs`, `ledger_tui` | No |
-| `web-v0.2.0` | `ledger_rs-web-v0.2.0-` | `ledger_rs`, `ledger_web` | No |
-| `tui-web-v0.2.0` | `ledger_rs-tui-web-v0.2.0-` | `ledger_rs`, `ledger_tui`, `ledger_web` | Yes |
+| `tui-v0.3.0` | `ledger_rs-tui-v0.3.0-` | `ledger_rs`, `ledger_tui` | No |
+| `web-v0.3.0` | `ledger_rs-web-v0.3.0-` | `ledger_rs`, `ledger_web` | No |
+| `tui-web-v0.3.0` | `ledger_rs-tui-web-v0.3.0-` | `ledger_rs`, `ledger_tui`, `ledger_web` | Yes |
 
-All archives contain `README.md`. They run without a Rust installation or a
-separate SQLite library because SQLite is bundled into the executables. Verify
+See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for changes and upgrade
+instructions, including schema and backup compatibility.
+
+All archives contain `README.md` and `docs/`. They run without a Rust installation
+or a separate SQLite library because SQLite is bundled into the executables. Verify
 the archive against the release's `SHA256SUMS` before extracting it.
 
 Show the CLI commands after extracting any variant:
