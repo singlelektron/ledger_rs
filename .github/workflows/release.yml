@@ -61,6 +61,7 @@ jobs:
           package_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
           test -n "$package_version"
           test "$version" = "$package_version"
+          test -f "docs/releases/v$version.md"
 
           echo "display_name=$display_name" >> "$GITHUB_OUTPUT"
           echo "features=$features" >> "$GITHUB_OUTPUT"
@@ -112,7 +113,7 @@ jobs:
 
       - name: Test release profile
         shell: bash
-        run: cargo test --locked --no-default-features --features "$FEATURES" --lib --bins
+        run: cargo test --locked --no-default-features --features "$FEATURES"
 
       - name: Build release binaries
         shell: bash
@@ -158,6 +159,7 @@ jobs:
               ;;
           esac
           cp README.md "$ASSET_NAME/"
+          cp -R docs "$ASSET_NAME/"
           tar -czf "$ASSET_NAME.tar.gz" "$ASSET_NAME"
 
       - name: Package Windows release
@@ -179,6 +181,7 @@ jobs:
             }
           }
           Copy-Item README.md "$env:ASSET_NAME/"
+          Copy-Item -Recurse docs "$env:ASSET_NAME/"
           Compress-Archive -Path $env:ASSET_NAME -DestinationPath "$env:ASSET_NAME.zip"
 
       - name: Upload packaged release
@@ -231,12 +234,10 @@ jobs:
             latest_argument="--latest"
           fi
 
-          notes="Prebuilt $DISPLAY_NAME distribution for ledger_rs v$VERSION. Every archive includes the ledger_rs CLI and README.md. Verify the downloaded archive against SHA256SUMS before running it."
-
           gh release create "$GITHUB_REF_NAME" \
             dist/ledger_rs-"$VARIANT"-v"$VERSION"-* \
             dist/SHA256SUMS \
             --verify-tag \
             --title "ledger_rs $DISPLAY_NAME v$VERSION" \
-            --notes "$notes" \
+            --notes-file "docs/releases/v$VERSION.md" \
             "$latest_argument"
