@@ -34,13 +34,17 @@ existing ledger, read the release's upgrade instructions and make a backup
 See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for compatibility and
 rollback instructions.
 
-Run from the extracted directory (on Windows, append `.exe`):
+The `sh` examples use a POSIX-compatible shell such as Bash on Linux or macOS.
+Run from the extracted directory:
 
 ```sh
 ./ledger_rs --help
 ./ledger_tui
 ./ledger_web
 ```
+
+In Windows PowerShell, use `.\ledger_rs.exe --help`, `.\ledger_tui.exe`, or
+`.\ledger_web.exe`. See the [PowerShell quick start](#windows-powershell) below.
 
 Start the interface included in your download. For Web, open
 `http://127.0.0.1:3000`; stop the server with Ctrl+C. It accepts only loopback
@@ -53,7 +57,8 @@ Every executable supports `--help` and `--version` without starting the interfac
 ## First CLI transaction
 
 Use a new `demo.db` for these examples. An existing file is reused; substitute
-the account ID printed by `account create` if it is not `1`.
+the account ID printed by `account create` if it is not `1`. Choose the shell
+example that matches your terminal; do not run both against the same demo ledger.
 
 ```sh
 ./ledger_rs --database demo.db account create --name Cash --currency cny
@@ -64,7 +69,22 @@ the account ID printed by `account create` if it is not `1`.
 ./ledger_rs --database demo.db account balance --id 1
 ```
 
-The transaction records an expense of 12.50 CNY. With no other activity or
+### Windows PowerShell
+
+From the extracted Windows release directory, run each command on one line:
+
+```powershell
+.\ledger_rs.exe --database demo.db account create --name Cash --currency cny
+.\ledger_rs.exe --database demo.db transaction add --account-id 1 --kind expense --amount-minor 1250 --currency cny --occurred-at '2026-10-01T12:00:00+08:00[Asia/Shanghai]' --description Lunch --category food
+.\ledger_rs.exe --database demo.db account balance --id 1
+```
+
+For other `sh` examples, remove each trailing backslash (`\`) and join the
+continued lines with spaces. PowerShell does not use `\` for line continuation.
+Use `.\ledger_rs.exe` in place of `./ledger_rs` and substitute Windows file paths,
+quoting paths that contain spaces.
+
+Either shell example records an expense of 12.50 CNY. With no other activity or
 opening balance, the balance is `-1250 (Cny)` in CLI output. CLI and TUI amount
 inputs use minor units; Web amount fields use decimal values such as `12.50`.
 See the [usage guide](docs/usage.md) for editing, transfers, budgets, reports,
@@ -101,6 +121,13 @@ The default build includes CLI, TUI, and Web. Start an interactive interface wit
 `cargo run --bin ledger_tui` or `cargo run --bin ledger_web`. The
 [development guide](docs/development.md) covers optional interface builds,
 verification, contribution, and release procedures.
+
+## For the project owner
+
+Start with an AI-generated PR's **Owner Review**, then follow
+[how to evaluate and accept a PR](docs/development.md#review-a-pr-as-the-project-owner).
+The guide explains practical acceptance, verification evidence, and the separate
+decisions to accept a change, authorize a merge, and authorize a release.
 
 ## Documentation and contributions
 

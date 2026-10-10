@@ -1,8 +1,46 @@
 # Development and contribution
 
-This guide is for contributors maintaining code, documentation, or releases.
+This guide is for the project owner and contributors maintaining code,
+documentation, or releases.
 Start with the [README](../README.md); consult [architecture](architecture.md)
 and [database behavior](database.md) when the task touches those boundaries.
+
+## Review a PR as the project owner
+
+You do not need to read every implementation detail to evaluate a change.
+
+1. Read **Owner Review** first: the purpose, observable changes, acceptance steps,
+   verification summary, risks, and reversal instructions. Confirm the result
+   matches what you requested. Ask for clarification if an expected outcome or
+   an important limitation is missing.
+2. Try the acceptance steps on synthetic data or a disposable copy, never your
+   only ledger. Compare what you see with the stated outcomes, including relevant
+   error cases. For a documentation change, follow its links and examples. Record
+   any mismatch before accepting; a plausible explanation is not a successful test.
+3. Distinguish the evidence. An agent's statement that something works is a claim;
+   command results and CI logs show what checks actually ran on a specific commit.
+   They cover only the cases those checks exercise. Evidence independently
+   reproduced by you or another reviewer adds confidence; ask what was checked,
+   on which revision, and what remains untested. Another AI review can find issues
+   but may share the author's assumptions. Neither it nor passing CI guarantees
+   correctness. **Technical Details** holds commands, logs, and detailed results
+   when you or a technical reviewer need them.
+4. Match review depth to risk. For a small documentation or presentation change,
+   functional acceptance plus relevant checks is usually sufficient when there
+   are no unresolved concerns. Financial calculations, migrations, security, and
+   destructive operations need stronger evidence: known expected totals, edge
+   cases, backup/recovery checks, or security tests as applicable. Seek independent
+   review from someone able to assess that risk before approving; do not rely on
+   the authoring agent alone. Unexplained failures or gaps justify requesting
+   changes rather than accepting.
+
+**Acceptance** means the described result meets your needs and its remaining
+limitations are understood. It does not authorize an agent to merge.
+**Merge authorization** is an explicit instruction to integrate the PR after
+applicable checks and review. **Release authorization** is a separate explicit
+instruction to publish a version; accepting or merging a PR does not grant it.
+If the implementation changes after review, recheck the affected acceptance
+steps and evidence before authorizing the next action.
 
 ## Build and verify
 
@@ -63,12 +101,12 @@ ledger to exercise examples or migrations.
    `Closes #N` only when all its requirements are met.
 
 Use the [PR template](https://github.com/singlelektron/ledger_rs/blob/master/.github/pull_request_template.md)
-to explain the purpose, observable result, practical verification, actual check
-results, risks, and reversal plan. Small changes need brief answers; complex
-changes need enough evidence for the owner to judge without reading every line.
-For financial calculations, migrations, security, or destructive operations,
-recommend independent technical review and stronger recovery/edge-case checks.
-Passing CI and agent self-review are evidence, not guarantees of correctness.
+to put purpose, observable results, acceptance steps, a brief verification summary,
+risks, and reversal instructions in Owner Review. Keep failures and untested areas
+visible there; put lengthy commands, matrices, logs, and implementation evidence
+in optional Technical Details. Small changes need brief answers, not elaborate
+reports. See [owner review guidance](#review-a-pr-as-the-project-owner) for how
+the evidence supports acceptance and when stronger review is needed.
 
 Merge only after applicable checks, review, and owner approval. AI agents must
 not merge without an explicit instruction. Clean up completed task branches only

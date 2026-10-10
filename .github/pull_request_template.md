@@ -1,16 +1,17 @@
 ## Owner Review
 
-**Purpose:**
-<!-- What changed, why it was needed, and the Issue (Closes #N only if fully resolved). -->
+<!-- Keep this section short and readable without inspecting code. Small changes need only brief answers. -->
 
-**User-visible changes:**
-<!-- Describe the expected behavior. State explicitly if this only changes documentation or internals. -->
+**Purpose and observable changes:**
+<!-- Why this is needed and what the owner should see. State if only docs/internals change.
+Link the Issue; use Closes #N only if fully resolved. -->
 
-**How to verify:**
-<!-- Short practical steps with observable expected results; use synthetic data where needed. -->
+**Acceptance steps:**
+<!-- A short sequence the owner can try, with the expected outcome for each step. Use synthetic data. -->
 
-**Verification results:**
-<!-- List commands/checks actually run and their results. Include failed, skipped, or untested areas. -->
+**Verification summary:**
+<!-- Briefly say what passed, failed, or was not tested. Distinguish author-run checks,
+CI results, and independently reproduced evidence. Put lengthy commands/results below. -->
 
 **Risks and limitations:**
 <!-- Data loss, security, compatibility, remaining uncertainty, or none with a concrete reason. -->
@@ -20,7 +21,8 @@
 
 ## Technical Details
 
-<!-- Add only what helps engineering review: boundaries, tradeoffs, or lasting documentation changes.
+<!-- Optional: include exact commands/results, CI or log links, verification matrices,
+implementation reasoning, and tradeoffs when useful. Do not discard evidence to shorten Owner Review.
 For financial correctness, migrations, security, or destructive operations, recommend stronger
 verification and independent technical review. Passing CI and self-review do not guarantee correctness.
-Keep small PRs brief and remove this section when it adds no value. -->
+Omit this section when the short summary contains all useful evidence; small PRs need no elaborate report. -->

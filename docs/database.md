@@ -36,9 +36,11 @@ migration destination. Move it only while all ledger processes are stopped,
 after making a backup. Once the platform database exists, it takes precedence;
 explicit and environment overrides always win. No data is moved automatically.
 
-Examples below use the downloaded CLI (`ledger_rs.exe` on Windows). Replace the
-placeholder paths with your actual ledger and choose unused output filenames;
-backup/export commands overwrite an existing output file.
+Examples below use the downloaded CLI in a POSIX-compatible shell such as Bash.
+For Windows PowerShell, follow the [command adaptation notes](../README.md#windows-powershell)
+rather than copying backslash continuations. Replace placeholder paths with your
+actual ledger and choose unused output filenames; backup/export commands
+overwrite an existing output file.
 
 ## CSV transaction exchange
 

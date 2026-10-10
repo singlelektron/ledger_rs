@@ -7,9 +7,11 @@ recovery, and audit history.
 
 Examples use extracted executables and an explicit `demo.db`. Start with a new
 file to try them without changing your ledger; an existing file is reused.
-Replace example account IDs with those printed when you create accounts. On
-Windows, append `.exe`. From source, replace `./ledger_rs` with
-`cargo run --bin ledger_rs --`.
+Replace example account IDs with those printed when you create accounts. The `sh`
+examples target a POSIX-compatible shell such as Bash. For Windows PowerShell,
+see the [quick start and command adaptation](../README.md#windows-powershell);
+trailing backslashes do not continue commands in PowerShell. From source in a
+POSIX shell, replace `./ledger_rs` with `cargo run --bin ledger_rs --`.
 
 For all options, use a command's help, for example:
 
