@@ -1,1273 +1,149 @@
 # ledger_rs
 
-This is a learning-oriented project for me to learn how to write a Rust project.
-
-The following documentation was generated with AI assistance.
-
-`ledger_rs` is a personal accounting system written in Rust. It is also a
-long-term learning project for practicing professional Rust software
-engineering.
-
-The project will eventually provide CLI, TUI, and Web interfaces. These
-interfaces will handle input and presentation while sharing the same core
-business logic for accounts, transactions, balances, budgets, and reports.
-
-## Current Status
-
-The first domain models, application use cases, in-memory repositories, and
-SQLite persistence layer are implemented and tested:
-
-- Currency-aware `Money` values stored as integer minor units
-- Checked addition and subtraction with explicit errors
-- Accounts with names and currencies
-- Income, expense, and expense-refund transactions
-- Fixed transaction categories for classifying both expenses and income
-- Time-zone-aware transaction occurrence times using IANA time zones
-- Validation for account names, transaction descriptions, and transaction
-  amounts
-- Account balance calculation with explicit account, currency, and arithmetic
-  overflow errors
-- Domain-level category net-outflow calculation with explicit account,
-  currency, and arithmetic overflow errors
-- A domain-level summary report containing income total, net expense total,
-  balance change, and net outflow grouped by category
-- In-memory account and transaction repositories with duplicate-ID validation,
-  account listing, and account-based transaction queries
-- An application-level account-creation use case that applies domain name
-  validation and reports duplicate account IDs from the repository
-- An application-level account-listing use case that preserves repository
-  errors and returns accounts in ascending ID order
-- An application-level account balance query that loads an account and its
-  transactions through repository traits before applying the domain balance
-  rules
-- An application-level category net-outflow query that loads an account and
-  its transactions through repository traits before applying the domain report
-  rules
-- An application-level ranged-summary query that validates zoned time
-  boundaries, loads account transactions through repository traits, applies
-  left-closed and right-open filtering, and preserves repository and domain
-  errors
-- An application-level transaction-recording use case that rejects unknown
-  accounts and currency mismatches before saving through the transaction
-  repository
-- Repository-allocated account and transaction IDs, so interfaces do not need
-  to invent persistent identifiers
-- Account detail, rename, and restricted deletion use cases exposed through the
-  CLI; accounts with transactions cannot be deleted
-- Transaction detail, partial update, reassignment, and deletion use cases with
-  account and currency validation
-- Transaction description and amount-range search plus stable cursor pagination
-  ordered by occurrence time and transaction ID
-- Atomic same-currency and cross-currency transfers with user-locked source and
-  destination amounts, CRUD commands, balance integration, and unified account
-  activity queries
-- Monthly category budgets with repository-assigned IDs, positive limits in the
-  account currency, unique account/category/month scopes, and CLI management
-- Time-zone-aware monthly budget execution reports with signed usage,
-  remaining amount, and explicit overrun status
-- Monthly cash-flow and category trends across inclusive month ranges, including
-  explicit zero rows for months without transactions
-- Atomic CSV transaction import and filtered export using a fixed, ID-free
-  exchange format with quoting, Unicode, and original zoned timestamps
-- Version 2 JSON backup and empty-database restore for accounts, transactions,
-  transfers, and budgets, preserving IDs, relationships, and IANA time zones
-- An application-level transaction-history query that rejects unknown
-  accounts, preserves repository errors, and returns transactions in stable
-  newest-first order, with optional filtering by transaction category, kind,
-  and occurrence-time range
-- SQLite support through `rusqlite`, including repeatable schema initialization
-  for account and transaction tables with foreign-key enforcement enabled
-- Versioned, transactional SQLite schema migrations that adopt existing
-  pre-migration databases without deleting their data
-- An append-only SQLite audit log that records before/after JSON snapshots for
-  account, transaction, transfer, and budget writes in the same transaction
-- A SQLite account repository that saves, queries, and lists accounts while
-  reporting duplicate IDs, unsupported ID ranges, and invalid stored data
-- A SQLite transaction repository that shares its connection with the account
-  repository, enforces account foreign keys, and queries transactions by
-  account
-- SQLite transaction mapping that preserves amounts, transaction kinds,
-  categories, timestamps, and original IANA time-zone names
-- File-backed SQLite repositories that preserve stored accounts after the
-  repositories are closed and reopened
-- A `clap`-based CLI entry point covering account, transaction, transfer,
-  budget, report, and CSV data workflows, with case-insensitive enum parsing,
-  configurable database paths, and nonzero exit status on application errors
-- An interactive TUI that opens the same SQLite database, shows balances
-  including transfers, manages accounts, transactions, transfers, and budgets,
-  and presents unified activity plus category, ranged-summary, and monthly-trend
-  reports through the shared application use cases
-- Transaction time input using either a complete zoned timestamp or a local
-  date-time with a separately supplied IANA time-zone name, with invalid and
-  daylight-saving-time-ambiguous local times rejected
-- A local-only, server-rendered Web workspace with account, transaction,
-  transfer, and budget management; filtering; trend, range, category, and
-  budget reports; CSV exchange; and JSON backup/empty-ledger restore
-- Unit, integration, and workflow tests, including a shared in-memory/SQLite
-  repository contract, a complete CLI backup/restore scenario, Web form
-  workflows, and an append-only audit trail
-
-The shared application core, interactive TUI milestone, and local Web workspace
-are complete. In-memory and file-backed SQLite
-repositories implement the same account, transaction, transfer, budget, and
-pagination behavior. The CLI exercises all shared workflows, including CRUD,
-balances, activity, reports, CSV exchange, and full JSON recovery. The TUI and
-Web UI call the same application use cases for interactive account,
-transaction, transfer, budget, activity, and report workflows without
-duplicating their business rules.
-
-## TUI
-
-Start the dashboard with the platform-specific default database:
-
-```bash
-cargo run --bin ledger_tui
-```
-
-The TUI uses the same platform data directory, legacy-file compatibility, and
-file protections as the CLI. To open another database, use the shared override:
-
-```bash
-cargo run --bin ledger_tui -- --database path/to/ledger.db
-```
-
-The dark-rose workspace uses square borders, a numbered page bar, and separate
-context, global-shortcut, and status lines. It is designed for terminals of at
-least 80 columns by 24 rows. The account pane is 24 columns wide below 100
-columns and 30 columns wide on larger terminals; compact tables keep transaction
-categories and other key details visible. Use a true-color terminal for the
-intended palette; no special icon font is required.
-
-Click page tabs, accounts, or selectable detail rows to navigate. The mouse
-wheel moves the selection in the list under the pointer. In forms, click a
-field to focus it, then use the existing keyboard controls to edit its value;
-Save/Run and Cancel use the same validation and cancellation paths as Enter and
-Escape. An open dialog blocks clicks on the workspace behind it. Press `?`
-while browsing for help, and `?` or Escape to close it. Existing keyboard
-shortcuts remain available.
-
-Preview using synthetic sample data (captured from a real 80×24 terminal
-session and rendered from its ANSI output):
-
-![Dark-rose TUI workspace](docs/ui/tui-ledger-80.png)
-
-Use number keys to switch pages: `1` for the ledger, `2` for unified activity,
-`3` for reports, `4` for budgets, and `5` for transfers. On the ledger, budgets,
-and transfers pages, use Tab or the left/right arrows to focus the account or
-detail pane, then use the up/down arrows or `k`/`j` to move the selection. The
-activity and reports pages keep focus on the account pane because their content
-is read-only. Use Page Up/Page Down or the mouse wheel over their detail pane
-to scroll longer activity lists and reports without changing the account.
-
-The ledger displays each transaction’s category using the same names as the
-transaction form and reports. Narrow detail panes stack the description, kind,
-amount, and occurrence time beside the category; wider panes use separate
-columns. Category edits appear after a successful save and dashboard reload.
-
-On the ledger page, press `a` to create an account and `n` to create a
-transaction. On the transfer page, `n` creates a transfer. Press `e` or `d` to
-edit or delete the focused item. The report page uses `c` for category net
-outflow, `s` for a ranged summary, and `t` for a monthly trend. The budget page
-uses `l` to list limits, `b` to set or update a monthly category limit, and `u`
-to calculate monthly usage. Forms use Tab to move between fields, arrows to
-change enum values, Delete to clear text, Enter to submit, and Escape to cancel.
-Enter validates the form first; invalid input keeps the form open with an
-inline error message so the typed values are preserved.
-Press `r` to reload data, `q` or Ctrl+C to quit. Reloading keeps the current
-page, focus, and selection instead of resetting to the ledger page.
-
-CSV exchange and full-database JSON backup/restore remain CLI batch operations.
-They require explicit file paths, and restore intentionally operates only on an
-empty target database, so keeping them outside the interactive terminal state
-machine preserves a clearer and safer recovery boundary.
-
-## Goals
-
-- Record income, expenses, refunds, and transfers accurately
-- Manage accounts, categories, currencies, and budgets
-- Preserve when transactions occurred, including their original time zones
-- Calculate balances and generate reports
-- Provide CLI, TUI, and Web interfaces
-- Remain maintainable through clear layering, tests, and documentation
-- Use development as a way to learn Rust type design, ownership, error
-  handling, traits, and asynchronous programming
-
-## Current Domain Model
-
-### Currency and Money
-
-The currently supported currencies are:
-
-- CNY
-- USD
-- EUR
-- HKD
-- MYR
-
-`Money` stores an integer number of minor currency units together with its
-currency:
-
-```rust
-use ledger_rs::domain::money::{Currency, Money};
-
-let amount = Money::from_minor_units(1_250, Currency::Cny);
-
-assert_eq!(amount.minor_units(), 1_250);
-assert_eq!(amount.currency(), Currency::Cny);
-```
-
-For currencies with two decimal places, `1_250` minor units represents
-`12.50`. The domain model stores exact integer values and never uses `f32` or
-`f64` for financial arithmetic.
-
-Money values can only be added or subtracted when their currencies match:
-
-```rust
-use ledger_rs::domain::money::{Currency, Money};
-
-let left = Money::from_minor_units(1_000, Currency::Cny);
-let right = Money::from_minor_units(250, Currency::Cny);
-let total = left.add(&right).unwrap();
-
-assert_eq!(total, Money::from_minor_units(1_250, Currency::Cny));
-```
-
-Arithmetic returns a `MoneyError` when currencies differ or the underlying
-`i64` operation would overflow. Currency conversion and exchange rates are not
-implemented.
-
-### Accounts
-
-Each account has:
-
-- An `AccountId`
-- A non-empty name
-- One currency
-
-```rust
-use ledger_rs::domain::{
-    account::{Account, AccountId},
-    money::Currency,
-};
-
-let account = Account::new(
-    AccountId::new(1),
-    String::from("CNY Cash"),
-    Currency::Cny,
-)
-.unwrap();
-
-assert_eq!(account.name(), "CNY Cash");
-assert_eq!(account.currency(), Currency::Cny);
-```
-
-An account does not store a balance directly. Balances will be calculated from
-transactions so that the project does not maintain two competing sources of
-truth.
-
-### Transactions
-
-The current transaction types are:
-
-```rust
-pub enum TransactionKind {
-    Income,
-    Expense,
-    ExpenseRefund,
-}
-```
-
-Transaction amounts must be greater than zero. Their economic direction is
-determined by `TransactionKind`, not by storing a negative input amount.
-
-Every transaction also has one fixed `Category`. Categories describe the
-purpose or source of a transaction for future statistics, while
-`TransactionKind` determines how the transaction changes the account balance.
-The current categories cover common expenses and income, including food,
-transportation, housing, salary, sales, family, and investments. Categories
-are represented by an enum, so adding another category currently requires a
-code change.
-
-Every transaction also stores an `occurred_at: Zoned` value. It represents the
-precise instant when the transaction occurred together with its original IANA
-time zone:
-
-```rust
-use jiff::Zoned;
-use ledger_rs::domain::{
-    account::AccountId,
-    money::{Currency, Money},
-    transaction::{Category, Transaction, TransactionId, TransactionKind},
-};
-
-let occurred_at: Zoned =
-    "2026-08-10T18:30:00+08:00[Asia/Shanghai]"
-        .parse()
-        .unwrap();
-
-let transaction = Transaction::new(
-    TransactionId::new(1),
-    AccountId::new(1),
-    TransactionKind::Expense,
-    Money::from_minor_units(10_000, Currency::Cny),
-    occurred_at,
-    String::from("Dinner"),
-    Category::Food,
-)
-.unwrap();
-
-assert_eq!(
-    transaction.occurred_at().time_zone().iana_name(),
-    Some("Asia/Shanghai"),
-);
-```
-
-The domain constructor receives an already valid `Zoned` value. The CLI
-interface parses local date-time strings, resolves separately supplied IANA
-time-zone names, and rejects daylight-saving-time gaps and folds instead of
-silently choosing a timestamp.
-
-Transaction lists are not sorted by the domain entity. The application-level
-transaction-history query orders them by `occurred_at` from newest to oldest
-and uses descending transaction ID as a deterministic tie-breaker. Optional
-category, transaction-kind, description, amount, and occurrence-time filters
-are applied in the application layer. Time ranges are left-closed and
-right-open, so `from` is included while `to` is excluded. Stable cursor
-pagination uses the same `(occurred_at, id)` ordering.
-
-`ExpenseRefund` represents money that reverses part of an earlier expense. For
-example, when one person pays a restaurant bill and friends later reimburse
-their shares, those reimbursements reduce the original dining expense instead
-of being counted as income.
-
-Account balance and category net-outflow calculations follow these rules. The
-expense and income total columns describe the intended behavior of future
-reporting features.
-
-| Transaction kind | Account balance | Category net outflow | Expense total | Income total |
-| --- | ---: | ---: | ---: | ---: |
-| `Income` | `+amount` | `-amount` | No change | `+amount` |
-| `Expense` | `-amount` | `+amount` | `+amount` | No change |
-| `ExpenseRefund` | `+amount` | `-amount` | `-amount` | No change |
-
-Account balance calculation, category persistence, domain-level category
-net-outflow calculation, and the application-level category query are
-implemented. A positive category result represents net spending, while a
-negative result represents net money received through income or refunds. CLI
-presentation for category net outflow is implemented.
-
-The domain summary report also calculates total income, net expenses after
-expense refunds, and net balance change for any supplied transaction set. Net
-balance change is calculated as `income total - net expense total`. Its
-application use case accepts `Zoned` boundaries, selects transactions using
-`from <= occurred_at < to`, and then calculates both the cash-flow totals and
-category breakdown from the same selected transactions. This supports monthly,
-yearly, and custom reporting periods without separate calculation rules. CLI
-presentation for ranged summaries is implemented with stable category ordering.
-
-## Completed Shared-Core Scope
-
-The shared application core now:
-
-1. Represent currency-aware money safely with integers
-2. Manage accounts, transactions, transfers, and monthly category budgets
-3. Preserve time-zone-aware occurrence times and generate budget and trend
-   reports for explicit IANA time zones
-4. Search and page stable transaction history
-5. Store data in memory or a migration-managed SQLite database
-6. Exchange transactions through atomic CSV import and filtered export
-7. Back up and atomically restore the complete aggregate graph through
-   versioned JSON
-8. Expose every workflow through the CLI and the primary account, transaction,
-   transfer, budget, report, and data workflows through the Web UI
-
-The current scope does not include:
-
-- External exchange-rate lookup or automatic currency conversion
-- Automatic time-zone detection or daylight-saving-time input resolution
-- Remote access, multi-user authentication, and data synchronization; the Web
-  workspace is intentionally local-only
-
-## Design Principles
-
-The project follows a layered design with this general dependency direction:
-
-```text
-CLI / TUI / Web
-        |
-        v
-  Application
-        |
-        v
-     Domain
-        ^
-        |
- Infrastructure
-```
-
-- `domain`: core business types and rules such as money, accounts, and
-  transactions
-- `application`: use cases such as recording a transaction, querying a balance,
-  listing accounts, or listing an account's transaction history
-- `infrastructure`: technical implementations such as in-memory, file, or
-  database repositories
-- CLI, TUI, and Web: input parsing, application calls, and result presentation
-
-Core business logic must not depend on a terminal, an HTTP framework, or a
-specific database.
-
-The project currently uses a single crate with multiple modules. This avoids
-unnecessary cross-crate configuration during the early learning stage. Once
-the interfaces and persistence layer become substantial, the project can be
-split into crates such as `core`, `cli`, and `database`.
-
-## Project Structure
-
-```text
-src/
-├── application/
-│   ├── account_balance.rs
-│   ├── backup.rs
-│   ├── budget_report.rs
-│   ├── category_report.rs
-│   ├── create_account.rs
-│   ├── csv_exchange.rs
-│   ├── list_accounts.rs
-│   ├── list_transactions.rs
-│   ├── manage_account.rs
-│   ├── manage_budget.rs
-│   ├── manage_transaction.rs
-│   ├── manage_transfer.rs
-│   ├── mod.rs
-│   ├── monthly_trend.rs
-│   ├── ranged_summary.rs
-│   ├── record_transaction.rs
-│   └── repository.rs
-├── domain/
-│   ├── account.rs
-│   ├── balance.rs
-│   ├── budget.rs
-│   ├── category_report.rs
-│   ├── mod.rs
-│   ├── money.rs
-│   ├── summary.rs
-│   ├── transaction.rs
-│   └── transfer.rs
-├── infrastructure/
-│   ├── in_memory.rs
-│   ├── mod.rs
-│   ├── repository_contract_tests.rs
-│   └── sqlite.rs
-├── cli.rs
-├── lib.rs
-└── main.rs
-```
-
-`lib.rs` exposes the reusable domain, application, infrastructure, and CLI
-modules. `cli.rs` defines command-line arguments and dispatches them to
-application use cases. `main.rs` remains limited to parsing arguments, printing
-results, and returning the process exit status.
-
-## Roadmap
-
-### Milestone 1: Money and Currency - Completed
-
-- Represent money as integer minor units
-- Keep currency as part of every `Money` value
-- Reject arithmetic between different currencies
-- Detect integer overflow during addition and subtraction
-
-### Milestone 2: Accounts and Transactions - Completed
-
-- Use distinct ID types for accounts and transactions
-- Give each account one currency
-- Support income, expense, and expense-refund transactions
-- Assign one fixed expense or income category to every transaction
-- Preserve each transaction's precise occurrence time and original IANA time
-  zone
-- Validate account names, descriptions, and transaction amounts
-
-### Milestone 3: Application Service and In-Memory Repository - Completed
-
-- Define repository traits
-- Implement repositories using `Vec` or `HashMap`
-- Reject transactions whose currency does not match the account currency
-- Calculate balances according to transaction kind
-- Calculate signed net outflow by category, including expenses, refunds, and
-  income
-- Create accounts, record validated transactions, query account balances, and
-  query category net outflow through application use cases
-- Verify these workflows with unit tests against in-memory repositories
-
-### Milestone 4: Persistence - Completed
-
-- Use SQLite as the first database
-- Initialize the account and transaction schema with foreign-key enforcement
-- Implement account storage and lookup through the existing repository trait
-- Implement transaction storage and account-based queries through the existing
-  repository trait
-- Preserve transaction timestamps and original IANA time zones across SQLite
-  storage round trips
-- Preserve fixed transaction categories across SQLite storage round trips
-- Keep core business rules unchanged when switching storage implementations
-- Open file-backed repositories and preserve data after closing and reopening
-  the SQLite connection
-
-SQLite schema migrations use `PRAGMA user_version`. Existing databases created
-before migrations were introduced are adopted as version 1 without deleting
-their account or transaction rows. Databases from a newer unsupported schema
-version are rejected explicitly.
-
-### Milestone 5: CLI - Completed
-
-- Create accounts from the command line - Completed
-- Record transactions from the command line - Completed
-- Query account balances from the command line - Completed
-- Query category net outflow from the command line - Completed
-- Parse fully specified timestamps with IANA time-zone names - Completed
-- Parse local transaction times with separately supplied IANA time-zone names -
-  Completed
-- Reject invalid or ambiguous local times instead of silently guessing -
-  Completed
-- Keep the CLI limited to parsing, basic input checks, and presentation -
-  Completed
-- Keep business rules in the domain and application layers - Completed
-
-### Milestone 6: Transaction History - Completed
-
-- Validate that the requested account exists - Completed
-- Load transactions through the repository trait - Completed
-- Sort transactions newest first with transaction ID as a stable tie-breaker -
-  Completed
-- Preserve account and transaction repository errors - Completed
-- Return an empty list for an account with no transactions - Completed
-- Display an account's transaction history through the CLI - Completed
-
-### Milestone 7: Account Discovery - Completed
-
-- Extend the account repository trait with an all-accounts query - Completed
-- Implement account listing for in-memory and SQLite repositories - Completed
-- Convert stored rows back into validated account domain values - Completed
-- Sort accounts by ID in the application layer - Completed
-- Preserve repository errors through the account-listing use case - Completed
-- Display all accounts through the CLI - Completed
-
-### Milestone 8: Transaction Filtering - Completed
-
-- Represent optional transaction-history filters in the application layer -
-  Completed
-- Filter an account's transactions by category - Completed
-- Filter an account's transactions by transaction kind - Completed
-- Filter an account's transactions by an optional occurrence-time range -
-  Completed
-- Use inclusive `from` and exclusive `to` time boundaries - Completed
-- Reject time ranges whose `from` boundary is not earlier than `to` - Completed
-- Combine category, transaction-kind, and time-range filters using AND
-  semantics - Completed
-- Preserve newest-first ordering after filtering - Completed
-- Parse optional `--from`, `--to`, and `--time-zone` values in the CLI -
-  Completed
-- Require `--time-zone` to be accompanied by at least one time boundary -
-  Completed
-- Parse optional, case-insensitive `--category` and `--kind` values in the CLI -
-  Completed
-- Display filtered transaction history through the CLI - Completed
-- Test matching, combined, nonmatching, invalid, and omitted filters - Completed
-
-### Milestone 9: Ranged Summary - Completed
-
-- Calculate income total, net expense total, and net balance change in the
-  domain layer - Completed
-- Reuse category net-outflow calculation in the combined summary - Completed
-- Keep summary calculation independent of calendar period and interface -
-  Completed
-- Load accounts and transactions through repository traits - Completed
-- Select transactions using inclusive `from` and exclusive `to` boundaries -
-  Completed
-- Reject equal or reversed time ranges - Completed
-- Preserve account, repository, and domain summary errors - Completed
-- Test range boundaries and repository error paths - Completed
-- Parse a reporting range and display the summary through the CLI - Completed
-- Display category rows in stable order - Completed
-
-### Milestone 10: Complete Pre-TUI Business Workflows - Completed
-
-- Repository IDs, account and transaction CRUD - Completed
-- Search and stable cursor pagination - Completed
-- Transfers and unified account activity - Completed
-- Monthly category budgets, execution status, and trend reports - Completed
-- Atomic CSV transaction import and filtered export - Completed
-- Versioned JSON backup and restore - Completed
-
-### Interface Milestones
-
-#### Local Web Workspace - Completed
-
-- List accounts and transfer-aware balances through application use cases
-- Manage accounts, transactions, cross-account transfers, and monthly budgets
-- Filter stable newest-first transaction history
-- Show Income, Expense, or Expense refund on each transaction row, alongside
-  category and time, with wrapping metadata on narrow screens
-- Display monthly trends, ranged summaries, category flow, and budget status
-- Exchange CSV transactions and download/restore versioned JSON backups
-- Enforce loopback-only listening for the single-user local product boundary
-- Keep HTTP parsing and HTML rendering outside the shared business core
-
-#### TUI
-
-- Render account activity, balances, budgets, and reports from the shared
-  application layer
-- Keep terminal state and keyboard handling outside domain and repository code
-
-### Milestone 11: Interactive TUI Workflows - Completed
-
-- Render accounts, balances, transaction history, and unified transfer activity
-  from the shared application layer
-- Create, edit, and delete accounts, transactions, transfers, and budgets
-  through application use cases
-- Present category reports, ranged summaries, monthly trends, and budget status
-- Keep terminal state and keyboard handling outside domain and repository code
-
-#### Later
-
-- External exchange-rate services
-
-## Running a Prebuilt Binary
-
-Version 0.3.0 is prepared as three independent GitHub Releases. Each release
-provides one archive per supported target (Linux x86-64, Windows x86-64, macOS
-Intel, and macOS Apple Silicon) plus a `SHA256SUMS` file:
-
-| Tag | Archive prefix | Included executables | Latest |
-| --- | --- | --- | --- |
-| `tui-v0.3.0` | `ledger_rs-tui-v0.3.0-` | `ledger_rs`, `ledger_tui` | No |
-| `web-v0.3.0` | `ledger_rs-web-v0.3.0-` | `ledger_rs`, `ledger_web` | No |
-| `tui-web-v0.3.0` | `ledger_rs-tui-web-v0.3.0-` | `ledger_rs`, `ledger_tui`, `ledger_web` | Yes |
-
-See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for changes and upgrade
-instructions, including schema and backup compatibility.
-
-All archives contain `README.md` and `docs/`. They run without a Rust installation
-or a separate SQLite library because SQLite is bundled into the executables. Verify
-the archive against the release's `SHA256SUMS` before extracting it.
-
-Show the CLI commands after extracting any variant:
-
-```bash
+`ledger_rs` is a local personal accounting application written in Rust, and a
+learning project for maintainable Rust software. Its command-line (CLI), terminal
+(TUI), and browser (Web) interfaces share accounting rules and a SQLite ledger.
+
+## What it does
+
+- Manage accounts, income, expenses, expense refunds, and transfers.
+- Track opening balances and dated balance reconciliations through the CLI.
+- Set monthly category budgets and view account or portfolio reports, grouped
+  by currency.
+- Search transaction history, exchange CSV transactions, and back up or restore
+  the ledger with versioned JSON through the CLI and Web.
+- Preserve recorded time zones and an append-only database audit trail.
+
+Supported currencies are CNY, USD, EUR, HKD, and MYR. Amounts use exact integer
+minor units internally. There is no automatic currency conversion or exchange-rate
+lookup. The Web interface is local-only; remote access, authentication, and
+multi-device synchronization are not currently implemented.
+
+## Install and run
+
+Download an archive for your platform from
+[GitHub Releases](https://github.com/singlelektron/ledger_rs/releases).
+Choose **TUI** for CLI and terminal use, **Web** for CLI and browser use, or
+**TUI and Web** for all three. Archives are available for Linux x86-64, Windows
+x86-64, macOS Intel, and macOS Apple Silicon. They include SQLite and do not
+require Rust to run.
+
+Verify the download against its release's `SHA256SUMS`, then extract it. For an
+existing ledger, read the release's upgrade instructions and make a backup
+**before launching a new version**: opening the database can migrate its schema.
+See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for compatibility and
+rollback instructions.
+
+The `sh` examples use a POSIX-compatible shell such as Bash on Linux or macOS.
+Run from the extracted directory:
+
+```sh
 ./ledger_rs --help
-```
-
-The TUI and combined variants start the terminal interface with:
-
-```bash
 ./ledger_tui
-```
-
-The Web and combined variants start the local server with:
-
-```bash
 ./ledger_web
 ```
 
-Then open `http://127.0.0.1:3000`. On Windows, append `.exe` to executable
-names. Every executable accepts `--help` and `--version` without starting its
-interactive interface or server.
+In Windows PowerShell, use `.\ledger_rs.exe --help`, `.\ledger_tui.exe`, or
+`.\ledger_web.exe`. See the [PowerShell quick start](#windows-powershell) below.
 
-Unless `--database PATH` or `LEDGER_RS_DATABASE` is supplied, CLI, TUI, and Web store their SQLite
-database in the current user's platform data directory:
+Start the interface included in your download. For Web, open
+`http://127.0.0.1:3000`; stop the server with Ctrl+C. It accepts only loopback
+listen addresses and is intended for use on your own computer. For TUI, use a
+terminal at least 80 columns by 24 rows, press `?` for help, and `q` to quit.
+Every executable supports `--help` and `--version` without starting the interface.
 
-| Platform | Default database path |
+![Terminal ledger using sample data](docs/ui/tui-ledger-80.png)
+
+## First CLI transaction
+
+Use a new `demo.db` for these examples. An existing file is reused; substitute
+the account ID printed by `account create` if it is not `1`. Choose the shell
+example that matches your terminal; do not run both against the same demo ledger.
+
+```sh
+./ledger_rs --database demo.db account create --name Cash --currency cny
+./ledger_rs --database demo.db transaction add \
+  --account-id 1 --kind expense --amount-minor 1250 --currency cny \
+  --occurred-at '2026-10-01T12:00:00+08:00[Asia/Shanghai]' \
+  --description Lunch --category food
+./ledger_rs --database demo.db account balance --id 1
+```
+
+### Windows PowerShell
+
+From the extracted Windows release directory, run each command on one line:
+
+```powershell
+.\ledger_rs.exe --database demo.db account create --name Cash --currency cny
+.\ledger_rs.exe --database demo.db transaction add --account-id 1 --kind expense --amount-minor 1250 --currency cny --occurred-at '2026-10-01T12:00:00+08:00[Asia/Shanghai]' --description Lunch --category food
+.\ledger_rs.exe --database demo.db account balance --id 1
+```
+
+For other `sh` examples, remove each trailing backslash (`\`) and join the
+continued lines with spaces. PowerShell does not use `\` for line continuation.
+Use `.\ledger_rs.exe` in place of `./ledger_rs` and substitute Windows file paths,
+quoting paths that contain spaces.
+
+Either shell example records an expense of 12.50 CNY. With no other activity or
+opening balance, the balance is `-1250 (Cny)` in CLI output. CLI and TUI amount
+inputs use minor units; Web amount fields use decimal values such as `12.50`.
+See the [usage guide](docs/usage.md) for editing, transfers, budgets, reports,
+reconciliation, and interactive controls.
+
+## Your data
+
+All three interfaces select the same database in this order: `--database PATH`,
+a nonempty `LEDGER_RS_DATABASE`, then the platform data directory. Relative paths
+resolve from the launch directory. Use an absolute path when starting from
+different launchers.
+
+The [database guide](docs/database.md#database-location) lists exact platform
+paths, the legacy `./ledger.db` fallback, and file permissions. Keep your ledger
+and backups outside the extracted release directory so replacing executables
+does not replace your data.
+
+Use [JSON backup and recovery](docs/database.md#backup-and-recovery) for a full
+ledger backup. CSV exchanges transactions only, and importing the same file twice
+creates duplicates. Restore requires an empty target ledger; try recovery in a
+separate database before relying on a backup.
+
+## Build from source
+
+Install a current stable Rust toolchain with Rust 2024 support, then run in the
+repository:
+
+```sh
+cargo build --locked --bins
+cargo run --bin ledger_rs -- --help
+```
+
+The default build includes CLI, TUI, and Web. Start an interactive interface with
+`cargo run --bin ledger_tui` or `cargo run --bin ledger_web`. The
+[development guide](docs/development.md) covers optional interface builds,
+verification, contribution, and release procedures.
+
+## For the project owner
+
+Start with an AI-generated PR's **Owner Review**, then follow
+[how to evaluate and accept a PR](docs/development.md#review-a-pr-as-the-project-owner).
+The guide explains practical acceptance, verification evidence, and the separate
+decisions to accept a change, authorize a merge, and authorize a release.
+
+## Documentation and contributions
+
+| Document | Use it for |
 | --- | --- |
-| Linux | `$XDG_DATA_HOME/ledger_rs/ledger.db`, or `$HOME/.local/share/ledger_rs/ledger.db` when `XDG_DATA_HOME` is unset or relative |
-| macOS | `$HOME/Library/Application Support/ledger_rs/ledger.db` |
-| Windows | `%LOCALAPPDATA%\ledger_rs\ledger.db`, falling back to `%APPDATA%\ledger_rs\ledger.db` |
-
-The parent directory and database are created on first use. In the unusual case
-that none of the platform home/data environment variables is available, the
-fallback is `ledger.db` in the current directory. `--database` always overrides
-the default, which is useful for portable or isolated data sets:
-
-```bash
-./ledger_rs --database ./data/ledger.db account list
-```
-
-Versions before this storage change used `./ledger.db` by default. During an
-upgrade, if that legacy file exists and the platform database does not, the
-application continues using the legacy file and prints its recommended migration
-destination. To migrate, exit every `ledger_rs` process, create the destination
-directory if necessary, and move `ledger.db` to the displayed path. Once the
-platform database exists, it becomes the default. An explicit `--database` path
-always takes precedence over both locations.
-
-On Unix systems, the application-owned default directory is restricted to mode
-`0700` and its database to `0600`. Explicit database locations retain the
-permissions selected by the user and operating system.
-
-The database is user data and must not be placed inside a release artifact;
-replacing the executable therefore does not replace or delete the ledger.
-All three executables use this precedence: explicit `--database PATH`, then
-nonempty `LEDGER_RS_DATABASE`, then the platform default with the legacy fallback
-above. Empty environment values are ignored. Relative paths resolve against the
-launch directory; use an absolute path for a stable location across launchers.
-To persist the setting for shell launches, add this to your shell profile:
-
-```bash
-export LEDGER_RS_DATABASE="$HOME/Documents/ledger/ledger.db"
-```
-
-GUI/service launchers must inherit the variable or set it in their own environment.
-Configured paths retain user-selected permissions, just like explicit paths.
-
-## Local Development
-
-Install a stable Rust toolchain that supports Rust 2024 edition.
-
-The default Cargo feature set enables both interactive interfaces, preserving
-the usual `cargo build`, `cargo test`, and `cargo run --bin ...` workflow. To
-compile only one interface and its dependencies, disable default features and
-select the corresponding build profile:
-
-```bash
-cargo build --no-default-features --features tui --bins
-cargo build --no-default-features --features web --bins
-cargo build --no-default-features --features tui,web --bins
-```
-
-Every profile includes the `ledger_rs` CLI. The `tui` profile additionally
-builds `ledger_tui`, the `web` profile builds `ledger_web`, and the combined
-profile builds all three executables. A core-only CLI build remains available
-with `cargo build --no-default-features --bin ledger_rs`.
-
-Start the local Web UI with the shared default database:
-
-```bash
-cargo run --bin ledger_web
-```
-
-Then open `http://127.0.0.1:3000`. To select another database or local port:
-
-```bash
-cargo run --bin ledger_web -- \
-  --database data/ledger.db \
-  --listen 127.0.0.1:8080
-```
-
-The interface uses the Configs dark-rose palette, square panels, system fonts,
-and tabular amounts. Overview, Reports, and Data stay available on narrow screens;
-the current area is marked in the navigation. Use the first keyboard Tab stop,
-**Skip to content**, to bypass the header. Account pages offer **Record transaction**,
-**Create transfer**, and **Set budget** shortcuts to their forms. Wide monthly
-report tables scroll inside their own focusable regions on small screens.
-
-![Web overview in the dark-rose theme](docs/ui/web-overview.jpg)
-
-Saving a transaction edit returns to that transaction in the account history
-using its stable `#transaction-<id>` anchor, including when the edit changes
-its position in the history.
-
-The Web UI is a local-only product. It accepts only loopback listen addresses;
-attempting to bind to `0.0.0.0` or another non-loopback address fails. Every
-request must also be addressed to a loopback host: the middleware rejects
-`Host` headers outside `127.0.0.0/8`, `localhost`, or `[::1]`, which blocks
-DNS-rebinding attacks where a domain that resolves to `127.0.0.1` would
-otherwise impersonate the local UI. State-changing requests additionally
-require a matching same-origin `Origin` when one is sent and accept only
-`same-origin` or `none` `Sec-Fetch-Site` metadata.
-
-Show the available commands:
-
-```bash
-cargo run -- --help
-```
-
-Create an account in the platform-specific default database:
-
-```bash
-cargo run -- account create \
-  --name Cash \
-  --currency cny
-```
-
-Use a different SQLite database file:
-
-```bash
-cargo run -- \
-  --database data/ledger.db \
-  account create \
-  --name Cash \
-  --currency cny
-```
-
-Currency input is case-insensitive. Supported values are `cny`, `usd`, `eur`,
-`hkd`, and `myr`. The repository allocates and returns each account ID.
-
-List all stored accounts:
-
-```bash
-cargo run -- account list
-```
-
-Accounts are displayed in ascending ID order. An empty database returns an
-explicit message instead of empty output.
-
-Show, rename, or delete an empty account:
-
-```bash
-cargo run -- account show --id 1
-cargo run -- account update --id 1 --name Wallet
-cargo run -- account delete --id 1
-```
-
-An account's currency is immutable. Deletion is rejected while the account has
-transactions or transfers, preserving its accounting history.
-
-Create and inspect a transfer between two accounts:
-
-```bash
-cargo run -- transfer add \
-  --source-account-id 1 \
-  --destination-account-id 2 \
-  --source-amount-minor 700 \
-  --source-currency cny \
-  --destination-amount-minor 100 \
-  --destination-currency usd \
-  --occurred-at '2026-08-20T10:00:00+08:00[Asia/Shanghai]' \
-  --description Exchange
-cargo run -- transfer list --account-id 1
-cargo run -- transfer show --id 1
-```
-
-The two amounts are positive and locked when the transfer is recorded. For a
-same-currency transfer they must be equal. Transfers affect both account
-balances but are excluded from income, expense, category, and cash-flow totals.
-
-Set, list, inspect, or delete a monthly category budget:
-
-```bash
-cargo run -- budget set \
-  --account-id 1 \
-  --category food \
-  --year 2026 \
-  --month 8 \
-  --limit-minor 100000
-cargo run -- budget list --account-id 1
-cargo run -- budget show --id 1
-cargo run -- budget delete --id 1
-```
-
-Setting the same account, category, and month again updates the existing budget
-without changing its ID. The limit uses the account currency, so no separate
-currency argument is accepted. Accounts with budgets cannot be deleted.
-
-Report budget execution in an explicit IANA time zone:
-
-```bash
-cargo run -- budget status \
-  --account-id 1 \
-  --year 2026 \
-  --month 8 \
-  --time-zone Asia/Shanghai
-```
-
-Usage is `Expense - ExpenseRefund`; income and transfers are ignored. Refunds
-may make usage negative and remaining funds greater than the original limit.
-
-Display monthly cash-flow and category trends:
-
-```bash
-cargo run -- report trend \
-  --account-id 1 \
-  --from 2026-01 \
-  --to 2026-12 \
-  --time-zone Asia/Shanghai
-```
-
-The month range is inclusive. Each month is selected in the supplied IANA time
-zone, empty months are retained with zero totals, and category rows use stable
-ordering. Transfers remain excluded from these cash-flow trends.
-
-Record a transaction for an existing account:
-
-```bash
-cargo run -- transaction add \
-  --account-id 1 \
-  --kind expense \
-  --amount-minor 1250 \
-  --currency cny \
-  --occurred-at '2026-08-14T12:00:00+08:00[Asia/Shanghai]' \
-  --description Lunch \
-  --category food
-```
-
-Amounts are entered as integer minor units, so `1250` represents `12.50` for a
-currency with two decimal places. Transaction kinds, currencies, and
-categories are case-insensitive. The occurrence time may be supplied as a
-complete zoned timestamp containing both its UTC offset and IANA time-zone
-name.
-
-Alternatively, supply a local date-time and its IANA time-zone name as separate
-arguments:
-
-```bash
-cargo run -- transaction add \
-  --account-id 1 \
-  --kind expense \
-  --amount-minor 500 \
-  --currency cny \
-  --occurred-at '2026-08-14T12:00:00' \
-  --time-zone Asia/Shanghai \
-  --description Groceries \
-  --category food
-```
-
-When `--time-zone` is present, `--occurred-at` must be a local date-time without
-a UTC offset or embedded time-zone name. Unknown IANA time zones, nonexistent
-local times during a daylight-saving-time gap, and ambiguous local times during
-a daylight-saving-time fold are rejected instead of being adjusted or guessed.
-
-List an account's stored transactions:
-
-```bash
-cargo run -- transaction list --account-id 1
-```
-
-Show, partially update, or delete a transaction:
-
-```bash
-cargo run -- transaction show --id 1
-cargo run -- transaction update --id 1 --amount-minor 1500 --description Dinner
-cargo run -- transaction delete --id 1
-```
-
-An update keeps omitted fields unchanged. Moving a transaction to another
-account requires its amount currency to match the destination account.
-
-Transactions are displayed from newest to oldest. If multiple transactions
-have the same occurrence time, the higher transaction ID is displayed first so
-the output remains deterministic. An existing account with no transactions
-returns an explicit message instead of an empty output.
-
-Filter the transaction history by category:
-
-```bash
-cargo run -- transaction list --account-id 1 --category food
-```
-
-Filter it by transaction kind:
-
-```bash
-cargo run -- transaction list --account-id 1 --kind expense
-```
-
-The filters can be combined. A transaction must satisfy both filters when both
-are supplied:
-
-```bash
-cargo run -- transaction list \
-  --account-id 1 \
-  --category food \
-  --kind expense
-```
-
-Category and transaction-kind input is case-insensitive. When a filter is
-omitted, it does not restrict the results. When no transaction matches the
-selected filters, the command returns the same explicit empty-list message.
-
-Search descriptions case-insensitively, constrain positive amount bounds, and
-page through a stable newest-first result:
-
-```bash
-cargo run -- transaction list \
-  --account-id 1 \
-  --description-contains lunch \
-  --min-amount-minor 500 \
-  --max-amount-minor 5000 \
-  --limit 20
-```
-
-When another page exists, the output includes an opaque `Next cursor` value.
-Pass it unchanged with `--cursor`. Page sizes must be between 1 and 200.
-
-Filter transactions by a zoned occurrence-time range:
-
-```bash
-cargo run -- transaction list \
-  --account-id 1 \
-  --from '2026-08-01T00:00:00+08:00[Asia/Shanghai]' \
-  --to '2026-09-01T00:00:00+08:00[Asia/Shanghai]'
-```
-
-The time range uses `from <= occurred_at < to`. This left-closed,
-right-open rule makes adjacent periods nonoverlapping. For example, an August
-query can end at the instant when September begins without including a
-September transaction. A range with `from >= to` is rejected.
-
-Local date-times can instead share a separately supplied IANA time-zone name:
-
-```bash
-cargo run -- transaction list \
-  --account-id 1 \
-  --from '2026-08-01T00:00:00' \
-  --to '2026-09-01T00:00:00' \
-  --time-zone Asia/Shanghai
-```
-
-Either boundary may be omitted. `--time-zone` is accepted only when at least
-one of `--from` or `--to` is present. As with transaction creation, unknown
-time zones and ambiguous or nonexistent local times are rejected.
-
-Export filtered transactions to the fixed CSV exchange format:
-
-```bash
-cargo run -- data export-transactions \
-  --account-id 1 \
-  --category food \
-  --output transactions.csv
-```
-
-Import all CSV rows atomically into existing accounts:
-
-```bash
-cargo run -- data import-transactions --input transactions.csv
-```
-
-The native export/import columns are
-`account_id,kind,amount_minor,currency,occurred_at,description,category`.
-For external migration, CLI and Web imports also detect this exact header:
-
-```csv
-account,kind,amount,currency,occurred_at,description,category
-Cash,expense,12.50,CNY,2026-08-20T10:00:00+08:00[Asia/Shanghai],Lunch,food
-```
-
-Account names match exactly (case-sensitive); unknown or duplicate names are
-rejected with a row number. Amounts must be positive decimals with at most two
-fractional digits, without grouping separators or exponent notation. Conversion
-to minor units is exact and rejects overflow. Currency must match the account.
-Export continues using the native format, which can disambiguate duplicate names.
-
-Internal transaction IDs are deliberately omitted and allocated by the target
-repository. The importer parses and validates every row before writing; an
-invalid row leaves the database unchanged. Re-importing the same file creates
-new transactions and is not idempotent.
-
-Create a complete, identity-preserving JSON backup:
-
-```bash
-cargo run -- data backup --output ledger-backup.json
-```
-
-Restore it into an empty target database:
-
-```bash
-cargo run -- \
-  --database restored.db \
-  data restore \
-  --input ledger-backup.json
-```
-
-The top-level `format_version` is currently `2`; version 1 backups remain readable.
-Version 2 includes dated balance adjustments; older binaries reject version 2
-instead of silently dropping balance data. Unlike CSV exchange, JSON
-backup preserves account, transaction, transfer, and budget IDs as well as all
-references and original zoned timestamps. Restore validates the entire backup
-before opening one SQLite transaction and refuses any database that already
-contains ledger data.
-
-Display the 50 most recent database changes:
-
-```bash
-./ledger_rs data audit-log
-```
-
-Use `--limit N` to return between 1 and 200 entries. Results are newest first
-and include the UTC write time, entity type and ID, operation, and compact JSON
-snapshots from before and/or after the change. Audit entries are retained when
-the referenced business entity is deleted. JSON backups contain
-business aggregates rather than prior audit history; restoring those aggregates
-creates new audit entries for the restore writes.
-
-Query the balance calculated from an account's stored transactions:
-
-```bash
-cargo run -- account balance --id 1
-```
-
-The displayed balance uses integer minor units and the account currency. For
-example, `800 (Cny)` represents `8.00 CNY`.
-
-Query signed net outflow grouped by transaction category:
-
-```bash
-cargo run -- report category --account-id 1
-```
-
-The report displays category rows in a stable order and uses integer minor
-units. A positive total represents net spending in that category. A negative
-total represents net money received through income or expense refunds. For
-example, an expense of `500` followed by a refund of `50` in the same category
-produces a category net outflow of `450`.
-
-Display income, net expenses, net balance change, and category net outflow for
-a zoned time range:
-
-```bash
-cargo run -- report summary \
-  --account-id 1 \
-  --from '2026-08-01T00:00:00+08:00[Asia/Shanghai]' \
-  --to '2026-09-01T00:00:00+08:00[Asia/Shanghai]'
-```
-
-The summary uses the same `from <= occurred_at < to` rule as transaction
-filtering. Its three total rows are followed by category rows in stable order.
-Positive category values represent net outflow, while negative values represent
-net money received.
-
-The boundaries can also be supplied as local date-times with one shared IANA
-time-zone name:
-
-```bash
-cargo run -- report summary \
-  --account-id 1 \
-  --from '2026-08-01T00:00:00' \
-  --to '2026-09-01T00:00:00' \
-  --time-zone Asia/Shanghai
-```
-
-Both boundaries are required. Equal or reversed boundaries, unknown time zones,
-and ambiguous or nonexistent local times are rejected.
-
-After changing Rust code, run:
-
-```bash
-cargo fmt
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo test --workspace -- --list
-git diff --check
-```
-
-## Development Workflow
-
-Work on one small behavior at a time:
-
-1. Describe the expected behavior and invalid inputs
-2. Design the smallest useful type and public interface
-3. Write one failing test
-4. Add only enough implementation to make the test pass
-5. Run formatting, Clippy, and tests
-6. Review ownership, error handling, and module boundaries
-
-Commit messages should explain the change, for example:
-
-```text
-feat: add currency-aware money
-feat: add transaction model
-test: add transaction validation tests
-refactor: separate repository layer
-```
-
-## Documentation Plan
-
-As the project grows, it will gradually maintain:
-
-```text
-docs/
-├── architecture.md
-├── database.md
-├── roadmap.md
-└── decisions.md
-```
-
-These documents should be created when the relevant design actually exists,
-rather than describing implementations that have not been built yet.
-
-
-## Opening balances and reconciliation
-
-When historical income is incomplete, use explicit balance adjustments instead
-of inventing income transactions. Amounts below are in minor units (50000 = 500.00).
-Create the account first, then set its opening balance before its tracked activity:
-
-```bash
-cargo run -- account opening-balance --id 1 --amount-minor 50000 --currency MYR \
-  --at '2025-09-01T00:00:00+08:00[Asia/Kuala_Lumpur]'
-```
-
-An opening balance can be negative or zero and can be set only before any existing
-adjustments, at or before the earliest transaction/transfer. Activity at exactly
-the opening timestamp follows that opening balance. If the opening balance is
-unknown, import known transactions and reconcile against an observed balance:
-
-```bash
-cargo run -- account reconcile --id 1 --balance-minor 450000 --currency MYR \
-  --at '2026-09-01T18:00:00+08:00[Asia/Kuala_Lumpur]' \
-  --description 'Observed bank balance after historical import'
-cargo run -- account adjustments --id 1
-```
-
-Reconciliation includes transactions, transfers, and earlier adjustments at or
-before the specified instant. It records observed minus calculated balance in
-one SQLite write transaction. Later activity is excluded from this calculation.
-Adjustments are fixed historical corrections: backdated imports/edits may change
-balances after an earlier reconciliation; reconcile again after such changes.
-Repeated reconciliation to the same balance at the same instant records a zero
-adjustment when the underlying history has not changed.
-
-CLI, TUI, and Web balance displays include adjustments. Income, expense, category,
-monthly trend, and budget reports exclude them. Entry and adjustment history are
-available through the CLI; `data audit-log` also records before/after adjustment
-snapshots. Renaming retains adjustments and account deletion refuses accounts
-with adjustment history. JSON backup/restore preserves adjustments; transaction
-CSV exchange does not include them.
-
-SQLite schema version 5 adds adjustment storage without changing existing
-transactions. Existing accounts retain a zero baseline. Version 2 JSON backups
-preserve adjustment amounts, currency, timestamps, descriptions, and kinds.
-Backup validation and database reads reject duplicate opening adjustments or an
-opening recorded after another adjustment. Adjustment order is recording order;
-backdated reconciliations remain supported.
-
-### Portfolio reports by currency
-
-Portfolio reports reuse the shared application report logic across CLI, TUI, and
-Web. Each currency has separate income, net expense, net change, and category
-net outflow totals; no exchange-rate conversion is performed. Category net
-outflow follows the existing report convention: expenses minus refunds and
-income in that category. Empty accounts contribute zero totals for their currency,
-and monthly trends include months without activity. With no selected accounts,
-there are no currency groups.
-
-Transfers are excluded from these transaction cash-flow reports, including
-cross-currency transfers and transfers with only one endpoint in the selected
-scope. Opening balances and reconciliation adjustments are also excluded. Net
-change therefore describes transaction cash flow, not a change in account balance.
-
-CLI examples (amounts are printed in minor units):
-
-```bash
-cargo run -- report portfolio-summary --all-accounts \
-  --from 2026-08-01T00:00 --to 2026-09-01T00:00 --time-zone Asia/Shanghai
-
-cargo run -- report portfolio-summary --account-ids 1,2 \
-  --from 2026-08-01T00:00 --to 2026-09-01T00:00 --time-zone Asia/Shanghai
-
-cargo run -- report portfolio-trend --all-accounts \
-  --from 2026-07 --to 2026-09 --time-zone Asia/Shanghai
-```
-
-Choose exactly one of `--all-accounts` or `--account-ids`. Duplicate IDs count
-once; unknown IDs fail the report. Summary ranges include `from` and exclude
-`to`; trend month ranges include both months. The existing `report category`,
-`report summary`, and `report trend` commands remain unchanged.
-
-In Web Reports, select **All accounts** to see summary, category, and monthly
-trend sections for each currency. Budgets remain available in single-account
-reports. In the TUI Reports page (`3`), press uppercase `S` for an all-account
-summary or uppercase `T` for an all-account trend, then use `[` and `]` to switch
-currency groups. These shortcuts also work without a selected account.
-
-Application callers can use `get_portfolio_summary` and `get_portfolio_trend`
-with `ReportScope::All` or `ReportScope::Accounts(Vec<AccountId>)` from
-`application::portfolio_report`.
+| [Usage](docs/usage.md) | Everyday workflows and interface controls |
+| [Database](docs/database.md) | Storage paths, CSV, migrations, backup, recovery, and audit history |
+| [Architecture](docs/architecture.md) | Shared-core boundaries, accounting invariants, and design rationale |
+| [Development](docs/development.md) | Build checks, contribution, release safeguards, and documentation policy |
+| [Web design](docs/ui/web-design.md) | Visual and accessibility conventions |
+| [Release notes](docs/releases/v0.3.0.md) | Version-specific changes and upgrade compatibility |
+| [Agent instructions](https://github.com/singlelektron/ledger_rs/blob/master/AGENTS.md) | AI development workflow and safety boundaries |
+
+Report problems and track planned work in
+[Issues](https://github.com/singlelektron/ledger_rs/issues). Include the version,
+interface, steps to reproduce, and expected result; use synthetic data rather
+than a private ledger. Changes follow a focused branch and Pull Request workflow.
+Completed work and review evidence belong in
+[Pull Requests](https://github.com/singlelektron/ledger_rs/pulls) and Releases.
