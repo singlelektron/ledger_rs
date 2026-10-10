@@ -1,9 +1,16 @@
-# Web visual design and verification
+# Web design reference
 
-The Web UI uses the Configs dark-rose palette with square panels, fine dividers,
-system sans-serif text, and monospaced tabular amounts. Typography separates
-page headings, section labels, and supporting text, informed by
-[Geist's typography reference](https://vercel.com/geist/typography).
+This guide records the visual and accessibility conventions for the local Web
+interface. Update it when those conventions change. User workflows belong in
+the [usage guide](../usage.md); implementation and verification results for an
+individual change belong in its Pull Request.
+
+## Visual conventions
+
+Use the dark-rose palette, square panels, fine dividers, system sans-serif text,
+and monospaced tabular amounts. Typography should distinguish page headings,
+section labels, and supporting text. Avoid remote fonts, scripts, and images;
+the interface should work without fetching presentation assets from a service.
 
 | Role | Color |
 | --- | --- |
@@ -13,103 +20,60 @@ page headings, section labels, and supporting text, informed by
 | Decorative divider / control boundary | `#574254` / `#876b82` |
 | Positive / negative | `#a6c7a0` / `#f08091` |
 
-Control boundaries have at least 3.47:1 contrast against the main surfaces;
-secondary text has at least 6.80:1. A visible rose outline marks keyboard focus.
-Primary controls and row actions have a minimum height of 44 px. No remote
-fonts, scripts, images, or new dependencies are required.
+Navigation selection must be explicit and independent of account names.
+Keep Overview, Reports, and Data accessible on narrow screens. Wide report
+tables should scroll inside their own containers rather than widen the page.
+Long account names, descriptions, and large amounts must wrap or scroll without
+hiding controls.
 
-Navigation remains available on narrow screens. The first Tab stop skips to
-main content, and account action links focus their form panels. Monthly report
-tables have focusable scroll containers. Edited transactions retain their
-stable anchors and highlighted rows; scroll offsets account for the 73 px
-desktop and 97 px mobile sticky headers.
+## Accessibility and interaction
 
-## Scope
+- Keep a visible rose focus outline and sufficient text/control contrast.
+  Distinguish values and actions through text as well as color.
+- Keep primary controls and row actions at least 44 px high.
+- Make **Skip to content** the first Tab stop and move focus to main content
+  when activated.
+- Account shortcuts should focus their target form, with the next Tab reaching
+  its first field. Give form controls accessible labels.
+- Make overflowing report tables keyboard-focusable and horizontally scrollable.
+- Return saved transaction edits to the entry's stable anchor and highlighted
+  row. Account for the sticky header so the row remains visible on desktop and
+  mobile layouts.
+- Preserve form names, validation, amount units, routes, and security behavior
+  during presentation changes unless the task explicitly includes behavior changes.
 
-Only CSS, the shared HTML shell, presentation markup, UI tests, and documentation
-change. Navigation selection is explicit and independent of account names.
-Routes, POST actions, named form controls, query parameters, amount units,
-validation, database schema, and application/domain calculations are unchanged.
-The TUI redesign is delivered independently in PR #45.
+## Verification for UI changes
 
-## Automated verification
+Use an isolated synthetic ledger. Check affected pages at desktop and narrow
+mobile widths, including 320 px where practical. Include empty accounts, long
+text, multiple currencies, large amounts, long transaction histories, and report
+tables when relevant to the change.
 
-Run on 2026-10-01:
+Verify keyboard navigation, labels, focus visibility, table scrolling, and
+control sizes. Save an edit deep in a transaction history and confirm the
+returned row is visible beneath the header. Check error pages and invalid form
+input as well as successful submissions. Native date/time widgets vary with
+browser and locale; report which browsers were actually exercised.
 
-- `cargo fmt --check`
-- `cargo check --locked --workspace --all-features`
-- `cargo test --locked --workspace --all-features`: 332 tests passed
-  (325 library, 5 binary, 2 integration tests), including 37 Web tests.
-- For each feature profile below, strict Clippy, tests, and binary builds passed:
+Run the applicable [development checks](../development.md#build-and-verify) and Web
+tests. Record commands, outcomes, screenshots, and untested cases in the PR;
+an earlier screenshot or test count is not evidence for a later change.
 
-| Profile | Flags |
-| --- | --- |
-| CLI core | `--no-default-features` |
-| TUI | `--no-default-features --features tui` |
-| Web | `--no-default-features --features web` |
-| Combined | `--no-default-features --features tui,web` |
+## Reference screenshots
 
-Commands for each profile:
+These images show synthetic data from the original design work. The historical
+browser matrix and verification report are retained in
+[PR #46](https://github.com/singlelektron/ledger_rs/pull/46) and its Git history;
+the images are visual references, not a claim of current browser coverage.
 
-```sh
-cargo clippy --locked <flags> --all-targets -- -D warnings
-cargo test --locked <flags> --lib --bins
-cargo build --locked <flags> --bins
-```
-
-New tests cover explicit navigation, the skip link and focusable main landmark,
-unique account-action targets with one or multiple accounts, accessible search,
-and escaped error messages with unchanged HTTP status. Existing tests continue
-to cover transaction redirects, form values, time zones, security headers,
-account/transaction/transfer/budget behavior, reports, and data import/export.
-
-## Browser evidence
-
-Actual browser captures use isolated synthetic SQLite ledgers under a temporary
-directory; no user ledger was opened. The initial fixture has seven accounts,
-five currencies, 72 transactions, six transfers, four budgets, Chinese names,
-long descriptions, and an empty account.
-
-The 40-view matrix covers Overview, Account, long text, empty account,
-transaction editor, transfer editor, single-account report, portfolio report,
-Data, and error pages at widths 1440, 768, 375, and 320 px. No page-wide
-horizontal overflow, missing control labels, undersized primary targets, or
-rounded primary components were found. Wide report tables scroll within their
-own containers.
-
-Additional stress checks used a separate editable fixture with an `i64::MAX`
-minor-unit amount (`92233720368547758.07 EUR`) and a 130-character mixed Chinese/
-Latin account name. Overview, account, report, and editor pages remained within
-the viewport at all four widths.
-
-Keyboard checks confirmed that Tab reaches the skip link first, Enter moves
-focus to main content, each account shortcut focuses its target panel, and the
-next Tab reaches its first field. ArrowRight moved a focused report container
-from scroll position 0 to 109 px without moving the document horizontally.
-
-Actual edit-and-save checks used a transaction deep in the history:
-
-| Width | Header bottom | Returned row top | Document scroll |
-| --- | --- | --- | --- |
-| 1440 px | 73 px | 95.84 px | 6024.5 px |
-| 375 px | 97 px | 119.80 px | 10507 px |
-
-Both saves returned to `#transaction-1`, with the highlighted row visible below
-the sticky header. No user data was involved in these writes. The contrast-only
-control-border adjustment was followed by fresh browser captures and a second
-successful run of the automated validation matrix.
-
-Browser evidence is from Chromium; other browser engines were not exercised.
-Native date/time widgets follow the browser's locale.
-
-### Overview · 1440 px
+### Overview
 
 ![Overview](web-overview.jpg)
 
-### Account · 1440 px
+### Account
 
 ![Account](web-account.jpg)
 
-### Saved transaction · 375 px
+### Saved transaction on a narrow screen
 
 ![Mobile transaction anchor](web-mobile-anchor.jpg)

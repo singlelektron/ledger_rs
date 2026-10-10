@@ -1,75 +1,183 @@
-# Database
+# Database, import, and recovery
 
-SQLite is the durable store. Foreign-key enforcement is enabled for every opened
-connection.
+This document owns database selection, data exchange, recovery, and persistence
+contracts. See [usage](usage.md) for everyday workflows and
+[architecture](architecture.md) for accounting semantics. Update this document
+when paths, formats, migrations, or recovery behavior change.
 
-Unless `--database PATH` or a nonempty `LEDGER_RS_DATABASE` is supplied, the CLI,
-TUI, and Web interfaces store `ledger.db` under the current user's platform data
-directory: `$XDG_DATA_HOME/ledger_rs` on Linux
-(falling back to `$HOME/.local/share/ledger_rs`),
-`$HOME/Library/Application Support/ledger_rs` on macOS, and
-`%LOCALAPPDATA%\ledger_rs` on Windows (falling back to `%APPDATA%\ledger_rs`).
-The application creates the directory on first use. Keeping mutable user data
-outside the executable or extracted release directory makes upgrades independent
-from the ledger. An explicit `--database PATH` overrides this location and its
-parent directory is also created when needed. On Unix, the application-owned
-default directory uses mode `0700` and the database uses `0600`; explicit paths
-retain user-selected permissions. Database path precedence is `--database PATH`,
-then nonempty `LEDGER_RS_DATABASE`, then the platform default with the legacy
-fallback below. Empty environment values are ignored, and relative paths resolve
-against the launch directory.
+## Database location
 
-Before the platform default was introduced, the application used `./ledger.db`.
-If this legacy file exists while the platform database does not, the application
-keeps using it and prints the platform migration destination. This compatibility fallback
-prevents an upgrade from presenting a new empty ledger. Migration is an explicit
-move performed while the application is stopped; after the platform database
-exists, it takes precedence. `--database` always has the highest precedence.
+All three executables resolve the database in this order:
 
-Schema changes are applied sequentially using SQLite's `PRAGMA user_version`.
-Schema version 1 contains `accounts` and `transactions`; version 2 adds atomic
-transfer aggregates with foreign keys to both participating accounts; version 3
-adds monthly category budgets with a unique account/category/month scope; version
-4 adds an append-only `audit_log` and triggers for account, transaction, transfer,
-and budget writes; version 5 adds the account `adjustments` column for dated
-opening balances and reconciliations, and includes adjustment history in account
-audit snapshots. Existing accounts start with an empty adjustment history,
-preserving their transactions and zero baseline. Databases created before
-migrations were introduced have `user_version = 0`; initialization adopts their
-existing tables, preserves their rows, and records version 1. Opening a database
-whose version is newer than the
-application supports is rejected.
+1. `--database PATH`.
+2. Nonempty `LEDGER_RS_DATABASE`.
+3. The platform default below, subject to the legacy fallback.
 
-Every migration runs in a transaction. A failed migration must leave both the
-schema version and stored data unchanged.
+| Platform | Default database |
+| --- | --- |
+| Linux | `$XDG_DATA_HOME/ledger_rs/ledger.db`, or `$HOME/.local/share/ledger_rs/ledger.db` |
+| macOS | `$HOME/Library/Application Support/ledger_rs/ledger.db` |
+| Windows | `%LOCALAPPDATA%\ledger_rs\ledger.db`, falling back to `%APPDATA%\ledger_rs\ledger.db` |
 
-Back up the ledger before opening it with v0.3.0. Opening an older supported
-database applies migrations automatically; v0.2.0 binaries cannot reopen a
-database migrated to schema version 5. Keep a backup made before upgrading if
-you need to return to an older binary. See the [v0.3.0 release notes](releases/v0.3.0.md)
-for the upgrade procedure.
+Linux uses `XDG_DATA_HOME` only when it is absolute. If no platform data/home
+location is available, the final fallback is `./ledger.db`. Empty environment
+values are ignored; relative overrides resolve against the launch directory.
+Use an absolute override when launching from different directories.
 
-Audit rows record the entity type and ID, operation, UTC write time, and JSON
-snapshots from before and/or after the write. The triggers run in the same SQLite
-transaction as the original write, so a rollback also removes its audit rows.
-Deleting a business entity does not delete its audit history.
+The parent directory is created on first use. On Unix, the application-owned
+platform directory uses `0700` and the database `0600`; explicit/environment
+locations retain user-selected permissions. Keep the database and backups
+outside extracted release directories so replacing executables cannot replace
+your ledger.
 
-Account and transaction inserts omit their integer primary key and use SQLite's
-generated row ID. Explicit IDs remain an infrastructure-only capability for
-versioned backup restoration and legacy-data tests.
+Older versions defaulted to `./ledger.db`. If that file exists and the platform
+database does not, the application keeps using it and prints the intended
+migration destination. Move it only while all ledger processes are stopped,
+after making a backup. Once the platform database exists, it takes precedence;
+explicit and environment overrides always win. No data is moved automatically.
 
-Transaction repositories also expose atomic batch creation for CSV import.
-SQLite performs the whole batch in one database transaction, so a constraint
-or storage failure cannot leave a partially imported file.
+Examples below use the downloaded CLI (`ledger_rs.exe` on Windows). Replace the
+placeholder paths with your actual ledger and choose unused output filenames;
+backup/export commands overwrite an existing output file.
 
-JSON restore is allowed only when all four data tables are empty. The current
-backup format is version 2, which preserves account adjustment history as well
-as accounts, transactions, transfers, and budgets. Version 1 backups remain
-readable and accounts without adjustment history retain a zero baseline; v0.2.0
-binaries reject version 2 backups. Restore validates IDs, references, currencies,
-and adjustment history, then restores accounts first, followed by transactions,
-transfers, and budgets, with their original integer IDs.
-The empty check and every insert run in one SQLite transaction; any constraint
-or storage error rolls back the whole restore. The
-backup format does not carry earlier audit rows. Restore inserts are audited as
-new writes in the target database.
+## CSV transaction exchange
+
+CLI and Web accept two exact seven-column headers. Native exports use account
+IDs and integer minor units:
+
+```csv
+account_id,kind,amount_minor,currency,occurred_at,description,category
+1,expense,1250,CNY,2026-08-20T10:00:00+08:00[Asia/Shanghai],Lunch,food
+```
+
+External imports can use account names and decimal amounts:
+
+```csv
+account,kind,amount,currency,occurred_at,description,category
+Cash,expense,12.50,CNY,2026-08-20T10:00:00+08:00[Asia/Shanghai],Lunch,food
+```
+
+Create the destination accounts first. Names must match exactly and uniquely
+(case-sensitive); native IDs can disambiguate duplicate names. Amounts must be
+positive, currencies must match their accounts, and descriptions must be
+nonempty. External decimals allow at most two fractional digits, no grouping
+separators or exponent notation; conversion is exact and rejects overflow.
+CSV kinds are `income`, `expense`, and `expense_refund` (with an underscore);
+categories use the CLI's lowercase category names, such as `food`, `salary`,
+and `other`. Occurrence times must parse as zoned timestamps. Standard CSV
+quoting handles commas, quotes, and line breaks in fields.
+
+Export an account's food transactions:
+
+```sh
+./ledger_rs --database /path/to/ledger.db data export-transactions \
+  --account-id 1 --category food --output transactions.csv
+```
+
+To preview an import, first create matching destination accounts in a disposable
+ledger. For native CSV, confirm that its account IDs identify the intended
+accounts in that target, then import there:
+
+```sh
+./ledger_rs --database /path/to/import-preview.db data import-transactions \
+  --input transactions.csv
+```
+
+Exports accept the transaction query filters described by
+`data export-transactions --help`. Import validates the whole file before one
+atomic batch write; an invalid row or storage failure leaves no partial batch.
+Errors identify invalid rows. Success reports `Imported N transactions`.
+
+**Importing the same file again creates duplicate transactions.** CSV omits
+transaction IDs and allocates new ones. It exchanges transactions only: it does
+not preserve accounts, transfers, budgets, adjustments, or audit history. Use
+JSON for full business-data recovery. Back up the ledger before a bulk import;
+for unfamiliar source data, import into a disposable ledger first and compare
+counts, account mappings, and totals before using the real ledger.
+
+## Backup and recovery
+
+Stop other ledger processes before a backup or upgrade so no writer changes the
+ledger while it is being read. Create a JSON backup with the existing binary and
+an explicit database path:
+
+```sh
+./ledger_rs --database /path/to/ledger.db data backup \
+  --output /path/to/ledger-before-upgrade.json
+```
+
+The command reports `Created backup at ...`. Keep that file outside the release
+directory. A backup contains accounts and adjustments, transactions, transfers,
+budgets, original IDs, references, currencies, and zoned timestamps. The current
+`format_version` is `2`; version `1` remains readable and missing adjustment
+history means a zero baseline. Earlier audit rows are not included.
+
+To verify recovery, restore into a separate, empty target:
+
+```sh
+./ledger_rs --database /path/to/restored.db data restore \
+  --input /path/to/ledger-before-upgrade.json
+./ledger_rs --database /path/to/restored.db account list
+./ledger_rs --database /path/to/restored.db account balance --id 1
+```
+
+Restore reports `Restored backup from ...`. Compare restored account lists,
+balances, and important reports with the source before relying on the backup;
+use an account ID actually present in the ledger. Keep the source untouched
+until the recovered ledger has been checked.
+
+Restore validates domain entities, IDs, references, currencies, and adjustment
+history. It refuses a target containing any accounts, transactions, transfers,
+or budgets; it never merges or overwrites business data. Existing audit rows do
+not make an otherwise empty target ineligible. The empty check and all inserts
+share one SQLite transaction, so a constraint/storage failure rolls back the
+restore. Accounts are inserted first, then transactions, transfers, and budgets,
+using their original IDs. These inserts create new audit entries in the target.
+
+CLI and Web use the same validation and restore boundary. In the Web Data page,
+download the JSON backup or paste it into Restore on an empty target ledger.
+
+## Schema and upgrade compatibility
+
+Opening a supported older database automatically applies pending migrations;
+this also happens when the requested operation is only a query. Back up before
+opening an existing ledger with a newer binary. Foreign keys are enabled on
+every connection. Ordered migrations use SQLite `PRAGMA user_version`, and all
+pending changes run in one transaction: failure leaves both schema version and
+stored data unchanged. A newer-than-supported schema is rejected.
+
+| Version | Change |
+| --- | --- |
+| 1 | Accounts and transactions; adopts legacy version-0 tables without dropping rows |
+| 2 | Atomic transfer aggregates with references to both accounts |
+| 3 | Budgets unique by account, category, and month |
+| 4 | Append-only audit history and business-table write triggers |
+| 5 | Dated account adjustments, included in account audit snapshots |
+
+Existing accounts migrated to version 5 have empty adjustment histories and a
+zero baseline; transactions are preserved. Normal creation uses
+repository-allocated IDs. Explicit IDs are reserved for restoration and legacy
+storage support.
+
+v0.3.0 uses schema version 5 and backup format 2. v0.2.0 rejects both. To return
+to v0.2.0, use that binary to restore a **pre-upgrade** backup into a separate empty
+database; later changes are not in that backup. Retain the upgraded ledger while
+checking recovery. See the [v0.3.0 release notes](releases/v0.3.0.md) for its
+version-specific upgrade procedure and download variants.
+
+## Audit history
+
+```sh
+./ledger_rs --database /path/to/ledger.db data audit-log --limit 50
+```
+
+The CLI accepts limits from 1 to 200 (default 50), returning newest entries first.
+Rows contain UTC write time, entity type and ID, operation, and JSON before/after
+snapshots. SQLite triggers capture account, transaction, transfer, and budget
+writes, including imports, adjustments, and restores. Capture shares the original
+write's transaction, so rolled-back writes leave no audit entries.
+
+The log is append-only and has no foreign keys to mutable entities: deleting a
+business entity retains its history. Stored JSON is validated before the
+application exposes typed audit records. JSON backups preserve business state,
+not the original audit trail; restored data has new write history.
