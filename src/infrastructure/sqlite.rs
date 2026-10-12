@@ -18,7 +18,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
-const CURRENT_SCHEMA_VERSION: i64 = 5;
+const CURRENT_SCHEMA_VERSION: i64 = 6;
 
 /// How long a connection waits for a lock held by another connection before
 /// failing with `SQLITE_BUSY`. The local Web UI opens a fresh connection per
@@ -1775,6 +1775,120 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
             PRAGMA user_version = 5;
         "#)?;
     }
+
+    if version < 6 {
+        transaction.execute_batch(
+            r#"
+            DROP TRIGGER audit_accounts_update;
+            CREATE TRIGGER audit_accounts_update AFTER UPDATE ON accounts
+            WHEN OLD.id IS NOT NEW.id
+                OR OLD.name IS NOT NEW.name
+                OR OLD.currency IS NOT NEW.currency
+                OR json(OLD.adjustments) IS NOT json(NEW.adjustments)
+            BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('account', NEW.id, 'update',
+                    json_object('id', OLD.id, 'name', OLD.name, 'currency', OLD.currency, 'adjustments', json(OLD.adjustments)),
+                    json_object('id', NEW.id, 'name', NEW.name, 'currency', NEW.currency, 'adjustments', json(NEW.adjustments))
+                );
+            END;
+
+            DROP TRIGGER audit_transactions_update;
+            CREATE TRIGGER audit_transactions_update AFTER UPDATE ON transactions
+            WHEN OLD.id IS NOT NEW.id
+                OR OLD.account_id IS NOT NEW.account_id
+                OR OLD.kind IS NOT NEW.kind
+                OR OLD.amount_minor IS NOT NEW.amount_minor
+                OR OLD.currency IS NOT NEW.currency
+                OR OLD.occurred_at IS NOT NEW.occurred_at
+                OR OLD.description IS NOT NEW.description
+                OR OLD.category IS NOT NEW.category
+            BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('transaction', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'account_id', OLD.account_id, 'kind', OLD.kind,
+                        'amount_minor', OLD.amount_minor, 'currency', OLD.currency,
+                        'occurred_at', OLD.occurred_at, 'description', OLD.description,
+                        'category', OLD.category
+                    ),
+                    json_object(
+                        'id', NEW.id, 'account_id', NEW.account_id, 'kind', NEW.kind,
+                        'amount_minor', NEW.amount_minor, 'currency', NEW.currency,
+                        'occurred_at', NEW.occurred_at, 'description', NEW.description,
+                        'category', NEW.category
+                    )
+                );
+            END;
+
+            DROP TRIGGER audit_transfers_update;
+            CREATE TRIGGER audit_transfers_update AFTER UPDATE ON transfers
+            WHEN OLD.id IS NOT NEW.id
+                OR OLD.source_account_id IS NOT NEW.source_account_id
+                OR OLD.destination_account_id IS NOT NEW.destination_account_id
+                OR OLD.source_amount_minor IS NOT NEW.source_amount_minor
+                OR OLD.source_currency IS NOT NEW.source_currency
+                OR OLD.destination_amount_minor IS NOT NEW.destination_amount_minor
+                OR OLD.destination_currency IS NOT NEW.destination_currency
+                OR OLD.occurred_at IS NOT NEW.occurred_at
+                OR OLD.description IS NOT NEW.description
+            BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('transfer', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'source_account_id', OLD.source_account_id,
+                        'destination_account_id', OLD.destination_account_id,
+                        'source_amount_minor', OLD.source_amount_minor,
+                        'source_currency', OLD.source_currency,
+                        'destination_amount_minor', OLD.destination_amount_minor,
+                        'destination_currency', OLD.destination_currency,
+                        'occurred_at', OLD.occurred_at, 'description', OLD.description
+                    ),
+                    json_object(
+                        'id', NEW.id, 'source_account_id', NEW.source_account_id,
+                        'destination_account_id', NEW.destination_account_id,
+                        'source_amount_minor', NEW.source_amount_minor,
+                        'source_currency', NEW.source_currency,
+                        'destination_amount_minor', NEW.destination_amount_minor,
+                        'destination_currency', NEW.destination_currency,
+                        'occurred_at', NEW.occurred_at, 'description', NEW.description
+                    )
+                );
+            END;
+
+            DROP TRIGGER audit_budgets_update;
+            CREATE TRIGGER audit_budgets_update AFTER UPDATE ON budgets
+            WHEN OLD.id IS NOT NEW.id
+                OR OLD.account_id IS NOT NEW.account_id
+                OR OLD.category IS NOT NEW.category
+                OR OLD.year IS NOT NEW.year
+                OR OLD.month IS NOT NEW.month
+                OR OLD.limit_minor IS NOT NEW.limit_minor
+                OR OLD.currency IS NOT NEW.currency
+            BEGIN
+                INSERT INTO audit_log
+                    (entity_type, entity_id, operation, before_state, after_state)
+                VALUES ('budget', NEW.id, 'update',
+                    json_object(
+                        'id', OLD.id, 'account_id', OLD.account_id, 'category', OLD.category,
+                        'year', OLD.year, 'month', OLD.month,
+                        'limit_minor', OLD.limit_minor, 'currency', OLD.currency
+                    ),
+                    json_object(
+                        'id', NEW.id, 'account_id', NEW.account_id, 'category', NEW.category,
+                        'year', NEW.year, 'month', NEW.month,
+                        'limit_minor', NEW.limit_minor, 'currency', NEW.currency
+                    )
+                );
+            END;
+
+            PRAGMA user_version = 6;
+            "#,
+        )?;
+    }
     // Audit ordering depends on monotonically increasing rowids. SQLite would
     // choose a random unused rowid after i64::MAX, so current application
     // connections must reject the enclosing write once that space is exhausted.
@@ -1834,6 +1948,12 @@ mod tests {
             CREATE TABLE audit_log (id INTEGER PRIMARY KEY, entity_type TEXT, entity_id INTEGER, operation TEXT, before_state TEXT, after_state TEXT);
             INSERT INTO accounts VALUES (1, 'Legacy', 'CNY');
             INSERT INTO audit_log VALUES (1, 'account', 1, 'create', NULL, '{"name":"Legacy"}');
+            CREATE TABLE transactions (id INTEGER PRIMARY KEY, account_id INTEGER, kind TEXT, amount_minor INTEGER, currency TEXT, occurred_at TEXT, description TEXT, category TEXT);
+            CREATE TABLE transfers (id INTEGER PRIMARY KEY, source_account_id INTEGER, destination_account_id INTEGER, source_amount_minor INTEGER, source_currency TEXT, destination_amount_minor INTEGER, destination_currency TEXT, occurred_at TEXT, description TEXT);
+            CREATE TABLE budgets (id INTEGER PRIMARY KEY, account_id INTEGER, category TEXT, year INTEGER, month INTEGER, limit_minor INTEGER, currency TEXT);
+            CREATE TRIGGER audit_transactions_update AFTER UPDATE ON transactions BEGIN SELECT 1; END;
+            CREATE TRIGGER audit_transfers_update AFTER UPDATE ON transfers BEGIN SELECT 1; END;
+            CREATE TRIGGER audit_budgets_update AFTER UPDATE ON budgets BEGIN SELECT 1; END;
             CREATE TRIGGER audit_accounts_create AFTER INSERT ON accounts BEGIN SELECT 1; END;
             CREATE TRIGGER audit_accounts_update AFTER UPDATE ON accounts BEGIN SELECT 1; END;
             CREATE TRIGGER audit_accounts_delete AFTER DELETE ON accounts BEGIN SELECT 1; END;
@@ -1861,7 +1981,7 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            5
+            CURRENT_SCHEMA_VERSION
         );
     }
 
@@ -2075,6 +2195,337 @@ mod tests {
             .unwrap();
         assert_eq!(entity_type, "account");
         assert_eq!(entity_id, 6);
+    }
+
+    fn seed_audited_entity(connection: &Connection, table: &str) {
+        connection
+            .execute_batch(
+                "INSERT INTO accounts (id, name, currency) VALUES
+             (1, 'Cash', 'CNY'), (2, 'Bank', 'CNY'), (3, 'Savings', 'CNY');",
+            )
+            .unwrap();
+        let sql = match table {
+            "accounts" => return,
+            "transactions" => {
+                "INSERT INTO transactions VALUES
+                (1, 1, 'expense', 100, 'CNY', '2026-08-10T10:00:00Z', 'Lunch', 'food')"
+            }
+            "transfers" => {
+                "INSERT INTO transfers VALUES
+                (1, 1, 2, 100, 'CNY', 100, 'CNY', '2026-08-10T10:00:00Z', 'Move')"
+            }
+            "budgets" => "INSERT INTO budgets VALUES (1, 1, 'food', 2026, 8, 1000, 'CNY')",
+            _ => unreachable!(),
+        };
+        connection.execute(sql, []).unwrap();
+    }
+
+    fn audit_count(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn skips_noop_updates_for_every_audited_entity() {
+        for (table, assignments) in [
+            (
+                "accounts",
+                "id = id, name = name, currency = currency, adjustments = adjustments",
+            ),
+            (
+                "transactions",
+                "id = id, account_id = account_id, kind = kind, amount_minor = amount_minor, currency = currency, occurred_at = occurred_at, description = description, category = category",
+            ),
+            (
+                "transfers",
+                "id = id, source_account_id = source_account_id, destination_account_id = destination_account_id, source_amount_minor = source_amount_minor, source_currency = source_currency, destination_amount_minor = destination_amount_minor, destination_currency = destination_currency, occurred_at = occurred_at, description = description",
+            ),
+            (
+                "budgets",
+                "id = id, account_id = account_id, category = category, year = year, month = month, limit_minor = limit_minor, currency = currency",
+            ),
+        ] {
+            let connection = Connection::open_in_memory().unwrap();
+            initialize_schema(&connection).unwrap();
+            seed_audited_entity(&connection, table);
+            let original_count = audit_count(&connection);
+            assert_eq!(
+                connection
+                    .execute(
+                        &format!("UPDATE {table} SET {assignments} WHERE id = 1"),
+                        []
+                    )
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                audit_count(&connection),
+                original_count,
+                "{table} no-op update"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_noop_updates_preserve_adjustment_and_zoned_time_serialization() {
+        use crate::domain::account::{BalanceAdjustment, BalanceAdjustmentKind};
+
+        for timestamp in [
+            "2026-10-25T02:30:00+01:00[Europe/Berlin]",
+            "2026-10-25T10:30:00+05:30[+05:30]",
+        ] {
+            let (mut accounts, mut transactions, mut transfers, mut budgets) =
+                in_memory_complete_repositories().unwrap();
+            let occurred_at: Zoned = timestamp.parse().unwrap();
+            let source = accounts
+                .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+                .unwrap();
+            let destination = accounts
+                .create(NewAccount::new("Bank".into(), Currency::Cny).unwrap())
+                .unwrap();
+            let source = source
+                .with_adjustments(vec![BalanceAdjustment {
+                    amount_minor: 500,
+                    currency: "CNY".into(),
+                    occurred_at: occurred_at.clone(),
+                    description: "Opening".into(),
+                    kind: BalanceAdjustmentKind::Opening,
+                }])
+                .unwrap();
+            assert!(accounts.update(source.clone()).unwrap());
+            let transaction = transactions
+                .create(
+                    NewTransaction::new(
+                        source.id(),
+                        TransactionKind::Expense,
+                        Money::from_minor_units(100, Currency::Cny),
+                        occurred_at.clone(),
+                        "Lunch".into(),
+                        Category::Food,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let transfer = transfers
+                .create(
+                    NewTransfer::new(
+                        source.id(),
+                        destination.id(),
+                        Money::from_minor_units(100, Currency::Cny),
+                        Money::from_minor_units(100, Currency::Cny),
+                        occurred_at,
+                        "Move".into(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let budget = NewBudget::new(
+                source.id(),
+                Category::Food,
+                BudgetMonth::new(2026, 10).unwrap(),
+                Money::from_minor_units(1000, Currency::Cny),
+            )
+            .unwrap();
+            budgets.set(budget.clone()).unwrap();
+            let count = audit_count(&accounts.connection);
+
+            let source = accounts.find_by_id(source.id()).unwrap().unwrap();
+            let transaction = transactions.find_by_id(transaction.id()).unwrap().unwrap();
+            let transfer = transfers.find_by_id(transfer.id()).unwrap().unwrap();
+            assert!(accounts.update(source).unwrap());
+            assert!(transactions.update(transaction).unwrap());
+            assert!(transfers.update(transfer).unwrap());
+            budgets.set(budget).unwrap();
+            assert_eq!(audit_count(&accounts.connection), count, "{timestamp}");
+        }
+    }
+
+    #[test]
+    fn skips_adjustment_json_whitespace_changes_with_identical_snapshots() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+        seed_audited_entity(&connection, "accounts");
+        let original_count = audit_count(&connection);
+        connection
+            .execute("UPDATE accounts SET adjustments = '[ ]' WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(audit_count(&connection), original_count);
+    }
+
+    #[test]
+    fn records_changes_to_every_snapshot_field() {
+        for (table, changes) in [
+            (
+                "accounts",
+                vec![
+                    ("id", "4"),
+                    ("name", "'Wallet'"),
+                    ("currency", "'USD'"),
+                    (
+                        "adjustments",
+                        r#"'[{"kind":"opening","amount_minor":100,"currency":"CNY","occurred_at":"2026-08-01T10:00:00Z","description":"Opening"}]'"#,
+                    ),
+                ],
+            ),
+            (
+                "transactions",
+                vec![
+                    ("id", "4"),
+                    ("account_id", "2"),
+                    ("kind", "'income'"),
+                    ("amount_minor", "200"),
+                    ("currency", "'USD'"),
+                    ("occurred_at", "'2026-08-11T10:00:00Z'"),
+                    ("description", "'Dinner'"),
+                    ("category", "'other'"),
+                ],
+            ),
+            (
+                "transfers",
+                vec![
+                    ("id", "4"),
+                    ("source_account_id", "3"),
+                    ("destination_account_id", "3"),
+                    ("source_amount_minor", "200"),
+                    ("source_currency", "'USD'"),
+                    ("destination_amount_minor", "200"),
+                    ("destination_currency", "'USD'"),
+                    ("occurred_at", "'2026-08-11T10:00:00Z'"),
+                    ("description", "'Save'"),
+                ],
+            ),
+            (
+                "budgets",
+                vec![
+                    ("id", "4"),
+                    ("account_id", "2"),
+                    ("category", "'other'"),
+                    ("year", "2027"),
+                    ("month", "9"),
+                    ("limit_minor", "2000"),
+                    ("currency", "'USD'"),
+                ],
+            ),
+        ] {
+            for (column, value) in changes {
+                let connection = Connection::open_in_memory().unwrap();
+                initialize_schema(&connection).unwrap();
+                seed_audited_entity(&connection, table);
+                let original_count = audit_count(&connection);
+                connection
+                    .execute(
+                        &format!("UPDATE {table} SET {column} = {value} WHERE id = 1"),
+                        [],
+                    )
+                    .unwrap();
+                assert_eq!(
+                    audit_count(&connection),
+                    original_count + 1,
+                    "{table}.{column}"
+                );
+                let (operation, before, after): (String, String, String) = connection.query_row(
+                    "SELECT operation, before_state, after_state FROM audit_log ORDER BY id DESC LIMIT 1",
+                    [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                ).unwrap();
+                assert_eq!(operation, "update");
+                let before: serde_json::Value = serde_json::from_str(&before).unwrap();
+                let after: serde_json::Value = serde_json::from_str(&after).unwrap();
+                assert_ne!(before[column], after[column], "{table}.{column}");
+            }
+        }
+    }
+
+    fn install_v5_update_triggers(connection: &Connection) {
+        for (table, entity) in [
+            ("accounts", "account"),
+            ("transactions", "transaction"),
+            ("transfers", "transfer"),
+            ("budgets", "budget"),
+        ] {
+            connection.execute_batch(&format!(
+                "DROP TRIGGER audit_{table}_update;
+                 CREATE TRIGGER audit_{table}_update AFTER UPDATE ON {table} BEGIN
+                     INSERT INTO audit_log (entity_type, entity_id, operation, before_state, after_state)
+                     VALUES ('{entity}', NEW.id, 'update', '{{}}', '{{}}');
+                 END;"
+            )).unwrap();
+        }
+        connection.pragma_update(None, "user_version", 5).unwrap();
+    }
+
+    #[test]
+    fn migrates_v5_update_triggers_and_preserves_all_existing_history() {
+        for table in ["accounts", "transactions", "transfers", "budgets"] {
+            let connection = Connection::open_in_memory().unwrap();
+            initialize_schema(&connection).unwrap();
+            seed_audited_entity(&connection, table);
+            install_v5_update_triggers(&connection);
+            connection
+                .execute(&format!("UPDATE {table} SET id = id WHERE id = 1"), [])
+                .unwrap();
+            let history_before: String = connection.query_row(
+                "SELECT json_group_array(json_object('id', id, 'changed_at', changed_at, 'entity_type', entity_type, 'entity_id', entity_id, 'operation', operation, 'before_state', before_state, 'after_state', after_state)) FROM audit_log", [], |row| row.get(0),
+            ).unwrap();
+            initialize_schema(&connection).unwrap();
+            initialize_schema(&connection).unwrap();
+            connection
+                .execute(&format!("UPDATE {table} SET id = id WHERE id = 1"), [])
+                .unwrap();
+            let history_after: String = connection.query_row(
+                "SELECT json_group_array(json_object('id', id, 'changed_at', changed_at, 'entity_type', entity_type, 'entity_id', entity_id, 'operation', operation, 'before_state', before_state, 'after_state', after_state)) FROM audit_log", [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(
+                history_after, history_before,
+                "{table} retains legacy no-op entries"
+            );
+            assert_eq!(
+                connection
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                CURRENT_SCHEMA_VERSION
+            );
+            let field = if table == "accounts" {
+                "name"
+            } else if table == "budgets" {
+                "category"
+            } else {
+                "description"
+            };
+            let count = audit_count(&connection);
+            connection
+                .execute(
+                    &format!("UPDATE {table} SET {field} = 'other' WHERE id = 1"),
+                    [],
+                )
+                .unwrap();
+            assert_eq!(audit_count(&connection), count + 1);
+        }
+    }
+
+    #[test]
+    fn rolls_back_failed_v6_trigger_migration() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_schema(&connection).unwrap();
+        seed_audited_entity(&connection, "accounts");
+        install_v5_update_triggers(&connection);
+        connection
+            .execute_batch("DROP TRIGGER audit_transactions_update;")
+            .unwrap();
+        let count = audit_count(&connection);
+        assert!(initialize_schema(&connection).is_err());
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            5
+        );
+        assert_eq!(audit_count(&connection), count);
+        // The earlier account trigger replacement must also have rolled back.
+        connection
+            .execute("UPDATE accounts SET name = name WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(audit_count(&connection), count + 1);
     }
 
     #[test]
