@@ -298,6 +298,11 @@ Editing preserves an existing timestamp's fixed UTC offset or its original
 occurrence within an overlap. Saving a transaction edit returns to that entry's
 highlighted row, including when its place in history changes.
 
+Above 900 px, account history and the entry forms scroll independently. Focus
+either region with Tab to scroll it with the keyboard; form shortcuts and saved
+transaction anchors bring their targets into view. Narrow layouts use ordinary
+page scrolling so every field stays reachable.
+
 Reports offers one-account or **All accounts** summaries and monthly trends.
 All-account results are grouped by currency; budget reports use one account.
 Data downloads CSV or JSON and accepts pasted CSV/JSON documents for import or

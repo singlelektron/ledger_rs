@@ -108,6 +108,14 @@ async fn account_actions_have_focusable_targets_with_one_or_multiple_accounts() 
             assert!(html.contains(&format!("id=\"{target}\" tabindex=\"-1\"")));
         }
         assert!(html.contains(r#"name="q" value="" aria-label="Search description""#));
+        assert!(html.contains(r#"class="dashboard account-dashboard""#));
+        assert!(
+            html.contains(
+                r#"class="account-history" tabindex="0" aria-labelledby="history-heading""#
+            )
+        );
+        assert_eq!(html.matches(r#"id="history-heading""#).count(), 1);
+        assert!(html.contains(r#"class="action-stack account-entry" tabindex="0" aria-label="Record transactions, transfers, and budgets""#));
         assert_eq!(
             html.contains("Add another account first"),
             name == "Reports"
