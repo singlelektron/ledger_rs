@@ -271,7 +271,7 @@ fn render_batch(
             r#"<label>Amount ("# (currency_code(account.currency())) r#")<input name="row_"# (index) r#"_amount" required inputmode="decimal" placeholder="0.00" value=""# (amount) r#""></label>"#
             r#"<label>Description<input name="row_"# (index) r#"_description" required maxlength="120" value=""# (description) r#""></label>"#
             r#"<div class="field-pair"><label>When<input type="datetime-local" name="row_"# (index) r#"_occurred_at" required step="any" value=""# (occurred_at) r#""></label>"#
-            r#"<label>Time zone<input name="row_"# (index) r#"_time_zone" required value=""# (time_zone) r#""></label></div>"#
+            r#"<label>Time zone<input name="row_"# (index) r#"_time_zone" required value=""# (time_zone) r#"" list="batch-time-zones"></label></div>"#
             (remove) "</fieldset>"
         }
     }).collect();
@@ -283,6 +283,7 @@ fn render_batch(
         r#"<form method="post" action="/accounts/"# (account.id().value()) r#"/transactions/batch"><input type="hidden" name="row_count" value=""# (rows.len()) r#"">"#
         // Keep the safe Enter default before add/remove controls in document order.
         r#"<button type="submit" name="action" value="save">Record all "# (rows.len()) " transactions</button>"
+        r#"<datalist id="batch-time-zones"><option value="UTC"></option><option value="Asia/Shanghai"></option><option value="Asia/Kuala_Lumpur"></option></datalist>"#
         (row_fields)
         r#"<button class="button secondary" type="submit" name="action" value="add" formnovalidate>Add row</button>"#
         r#"<button type="submit" name="action" value="save">Record all "# (rows.len()) " transactions</button>"

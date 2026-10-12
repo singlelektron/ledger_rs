@@ -152,6 +152,9 @@ async fn batch_form_is_discoverable_and_starts_with_two_complete_rows() {
                 }
             }
             assert!(html.contains("CSV import"));
+            assert_eq!(html.matches("list=\"batch-time-zones\"").count(), 2);
+            assert_eq!(html.matches("id=\"batch-time-zones\"").count(), 1);
+            assert!(html.contains("<option value=\"Asia/Kuala_Lumpur\"></option>"));
             let first_submit = html.split("type=\"submit\"").nth(1).unwrap();
             assert!(first_submit.starts_with(" name=\"action\" value=\"save\""));
         }

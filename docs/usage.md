@@ -301,8 +301,9 @@ highlighted row, including when its place in history changes.
 Choose **Record a batch** from an account to enter a small-to-medium group of
 transactions in one workflow. The account and currency apply to every row;
 each row has its own type, decimal amount, description, category, local date/time,
-and time zone. Start with two rows, use **Add row** to copy the last row's type,
-category, date/time, and zone, and remove unused rows before saving. Up to 50 rows
+and time zone. Time-zone fields suggest UTC, Asia/Shanghai, and Asia/Kuala_Lumpur;
+other valid IANA zones or fixed offsets can be entered directly. Start with two
+rows, use **Add row** to copy the last row's type, category, date/time, and zone, and remove unused rows before saving. Up to 50 rows
 can be recorded together. Adding or removing rows preserves the other entries
 without saving transactions.
 
