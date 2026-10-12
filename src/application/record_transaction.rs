@@ -33,6 +33,14 @@ pub fn record_transaction(
     transaction_repository: &mut impl TransactionRepository,
     transaction: NewTransaction,
 ) -> Result<Transaction, RecordTransactionError> {
+    validate_transaction_account(account_repository, &transaction)?;
+    Ok(transaction_repository.create(transaction)?)
+}
+
+fn validate_transaction_account(
+    account_repository: &impl AccountRepository,
+    transaction: &NewTransaction,
+) -> Result<(), RecordTransactionError> {
     let account = account_repository
         .find_by_id(transaction.account_id())?
         .ok_or(RecordTransactionError::AccountNotFound(
@@ -46,7 +54,46 @@ pub fn record_transaction(
         });
     }
 
-    Ok(transaction_repository.create(transaction)?)
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecordTransactionsError {
+    /// Rows are numbered from one, matching interactive batch-entry forms.
+    InvalidRow {
+        row: usize,
+        source: RecordTransactionError,
+    },
+    Repository(RepositoryError),
+}
+
+impl std::fmt::Display for RecordTransactionsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRow { row, source } => write!(f, "Row {row}: {source}"),
+            Self::Repository(error) => write!(f, "repository error: {error}"),
+        }
+    }
+}
+
+/// Validate every account/currency before asking the repository for one atomic
+/// batch write. Domain-valid drafts are required, as for single-entry recording.
+pub fn record_transactions(
+    account_repository: &impl AccountRepository,
+    transaction_repository: &mut impl TransactionRepository,
+    transactions: Vec<NewTransaction>,
+) -> Result<Vec<Transaction>, RecordTransactionsError> {
+    for (index, transaction) in transactions.iter().enumerate() {
+        validate_transaction_account(account_repository, transaction).map_err(|source| {
+            RecordTransactionsError::InvalidRow {
+                row: index + 1,
+                source,
+            }
+        })?;
+    }
+    transaction_repository
+        .create_many(transactions)
+        .map_err(RecordTransactionsError::Repository)
 }
 
 #[cfg(test)]
@@ -160,5 +207,61 @@ mod tests {
         .unwrap();
 
         assert_ne!(first.id(), second.id());
+    }
+    #[test]
+    fn records_batch_across_accounts_with_distinct_ids() {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        for (id, currency) in [(1, Currency::Cny), (2, Currency::Usd)] {
+            accounts
+                .save(Account::new(AccountId::new(id), format!("Account {id}"), currency).unwrap())
+                .unwrap();
+        }
+        let created = record_transactions(
+            &accounts,
+            &mut transactions,
+            vec![
+                new_transaction(AccountId::new(1), Currency::Cny),
+                new_transaction(AccountId::new(2), Currency::Usd),
+            ],
+        )
+        .unwrap();
+        assert_ne!(created[0].id(), created[1].id());
+        for transaction in created {
+            assert_eq!(
+                transactions.find_by_id(transaction.id()).unwrap(),
+                Some(transaction)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_later_batch_account_or_currency_leaves_no_records() {
+        let mut accounts = InMemoryAccountRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        for invalid in [
+            new_transaction(AccountId::new(999), Currency::Cny),
+            new_transaction(AccountId::new(1), Currency::Usd),
+        ] {
+            let mut transactions = InMemoryTransactionRepository::new();
+            let error = record_transactions(
+                &accounts,
+                &mut transactions,
+                vec![new_transaction(AccountId::new(1), Currency::Cny), invalid],
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                RecordTransactionsError::InvalidRow { row: 2, .. }
+            ));
+            assert!(
+                transactions
+                    .find_by_account_id(AccountId::new(1))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 }
