@@ -100,7 +100,12 @@ pub enum Command {
 #[derive(Debug, Subcommand)]
 pub enum DataCommand {
     AuditLog {
-        #[arg(long, default_value_t = 50, value_parser = parse_audit_log_limit)]
+        #[arg(
+            long,
+            default_value_t = 50,
+            value_parser = parse_audit_log_limit,
+            allow_negative_numbers = true
+        )]
         limit: usize,
     },
     Backup {

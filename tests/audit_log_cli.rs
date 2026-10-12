@@ -2,7 +2,15 @@ use std::process::Command;
 
 #[test]
 fn invalid_audit_limits_report_the_supported_range_before_database_io() {
-    for limit in ["0", "201", "18446744073709551616", "abc"] {
+    for limit in [
+        "-1",
+        "-200",
+        "-1.5",
+        "0",
+        "201",
+        "18446744073709551616",
+        "abc",
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("unopened").join("ledger.db");
         let output = Command::new(env!("CARGO_BIN_EXE_ledger_rs"))
