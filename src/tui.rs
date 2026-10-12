@@ -3306,20 +3306,34 @@ fn render_transactions(
         return;
     };
 
-    // Stack metadata on narrow panes so long category names stay readable.
-    let compact = area.width < 88;
+    // Keep the complete signed amount and currency in one cell. Large amounts
+    // need a wider amount column, or the same compact layout as narrow panes.
+    let amount_width = account
+        .transactions()
+        .iter()
+        .map(|transaction| Span::raw(format_transaction_amount(transaction)).width())
+        .max()
+        .unwrap_or(15)
+        .max(15);
+    let compact = usize::from(area.width) < 88 + amount_width.saturating_sub(15);
+    let inner = panel("", false).inner(area);
+    // The table reserves two columns for its selection marker and one gap.
+    // On very narrow panes, give the money line space before category metadata.
+    let category_width = 14.min(inner.width.saturating_sub(13));
+    let transaction_width = usize::from(inner.width.saturating_sub(category_width + 3));
     let rows = account.transactions().iter().map(|transaction| {
         let category = Cell::from(category_label(transaction.category()));
         if compact {
             Row::new(vec![
                 category,
                 Cell::from(Text::from(vec![
-                    Line::from(transaction.description().to_string()),
                     Line::from(format!(
-                        "{} {}",
+                        "{} · {}",
                         kind_label(transaction.kind()),
-                        format_transaction_amount(transaction)
+                        transaction.description()
                     )),
+                    Line::from(fit_transaction_amount(transaction, transaction_width))
+                        .right_aligned(),
                     Line::from(transaction.occurred_at().to_string()),
                 ])),
             ])
@@ -3328,7 +3342,7 @@ fn render_transactions(
             Row::new(vec![
                 Cell::from(transaction.occurred_at().to_string()),
                 Cell::from(kind_label(transaction.kind())),
-                Cell::from(format_transaction_amount(transaction)),
+                Cell::from(Line::from(format_transaction_amount(transaction)).right_aligned()),
                 category,
                 Cell::from(transaction.description().to_string()),
             ])
@@ -3337,7 +3351,7 @@ fn render_transactions(
     let (headers, widths) = if compact {
         (
             vec!["Category", "Transaction"],
-            vec![Constraint::Length(14), Constraint::Min(12)],
+            vec![Constraint::Length(category_width), Constraint::Min(0)],
         )
     } else {
         (
@@ -3345,7 +3359,7 @@ fn render_transactions(
             vec![
                 Constraint::Length(24),
                 Constraint::Length(8),
-                Constraint::Length(15),
+                Constraint::Length(amount_width as u16),
                 Constraint::Length(14),
                 Constraint::Min(12),
             ],
@@ -3366,7 +3380,6 @@ fn render_transactions(
         .with_selected(app.selected_transaction_index());
     frame.render_stateful_widget(table, area, &mut state);
     ui.detail_offset = state.offset();
-    let inner = panel("", false).inner(area);
     let body = Rect::new(
         inner.x,
         inner.y.saturating_add(1),
@@ -3952,6 +3965,31 @@ fn format_transaction_amount(transaction: &Transaction) -> String {
     format!("{sign}{}", format_money(transaction.amount()))
 }
 
+fn fit_transaction_amount(transaction: &Transaction, width: usize) -> String {
+    let amount = format_transaction_amount(transaction);
+    if amount.len() <= width {
+        return amount;
+    }
+    // Avoid displaying a clipped prefix as a different amount. Keep the sign
+    // and currency with an explicit ellipsis when all digits cannot fit.
+    let sign = if transaction.kind() == TransactionKind::Expense {
+        "-"
+    } else {
+        "+"
+    };
+    let currency = currency_code(transaction.amount().currency());
+    for abbreviated in [format!("{sign}… {currency}"), format!("{sign}…{currency}")] {
+        if Span::raw(&abbreviated).width() <= width {
+            return abbreviated;
+        }
+    }
+    if width == 0 {
+        String::new()
+    } else {
+        "…".to_owned()
+    }
+}
+
 fn format_money(money: &Money) -> String {
     let absolute = money.minor_units().unsigned_abs();
     format!(
@@ -4341,6 +4379,134 @@ mod tests {
         assert!(screen.contains("Cash"));
         assert!(screen.contains("0.00 CNY"));
         assert!(screen.contains("Transactions (0)"));
+    }
+
+    fn amount_layout_app(entries: &[(TransactionKind, i64)]) -> App {
+        let mut accounts = InMemoryAccountRepository::new();
+        let mut transactions = InMemoryTransactionRepository::new();
+        let transfers = InMemoryTransferRepository::new();
+        accounts
+            .save(Account::new(AccountId::new(1), "Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        for (index, &(kind, amount)) in entries.iter().enumerate() {
+            transactions
+                .save(
+                    Transaction::new(
+                        TransactionId::new(index as u64 + 1),
+                        AccountId::new(1),
+                        kind,
+                        Money::from_minor_units(amount, Currency::Cny),
+                        "2026-08-30T10:00:00+08:00[Asia/Shanghai]".parse().unwrap(),
+                        format!("Entry {index}"),
+                        Category::Food,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut app = App::load(&accounts, &transactions, &transfers).unwrap();
+        app.focus = Focus::Transactions;
+        app
+    }
+
+    #[test]
+    fn transaction_amounts_and_currencies_share_a_line_and_align() {
+        let app = amount_layout_app(&[
+            (TransactionKind::Income, 250000),
+            (TransactionKind::Expense, 1500),
+            (TransactionKind::ExpenseRefund, 125),
+        ]);
+        for width in [80, 100, 118, 136, 160] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let mut ends = Vec::new();
+            for expected in ["+2500.00 CNY", "-15.00 CNY", "+1.25 CNY"] {
+                let row = (0..24)
+                    .find_map(|y| {
+                        (0..width.saturating_sub(expected.len() as u16))
+                            .find(|&x| {
+                                expected.chars().enumerate().all(|(offset, character)| {
+                                    buffer[(x + offset as u16, y)].symbol() == character.to_string()
+                                })
+                            })
+                            .map(|x| (usize::from(x) + expected.len(), y))
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("width {width}, missing {expected}: {}", terminal.backend())
+                    });
+                ends.push(row.0);
+            }
+            assert!(
+                ends.iter().all(|end| *end == ends[0]),
+                "unaligned amounts at width {width}"
+            );
+            assert!(terminal.backend().to_string().contains("e edit"));
+        }
+    }
+
+    #[test]
+    fn largest_transaction_amounts_keep_all_digits_and_currency() {
+        for kind in [
+            TransactionKind::Expense,
+            TransactionKind::Income,
+            TransactionKind::ExpenseRefund,
+        ] {
+            let app = amount_layout_app(&[(kind, i64::MAX)]);
+            let expected = format_transaction_amount(app.selected_transaction().unwrap());
+            for width in [80, 100, 118, 127, 128, 136, 160] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let screen = terminal.backend().to_string();
+                assert!(
+                    screen.contains(&expected),
+                    "width {width}, missing {expected}:\n{screen}"
+                );
+                assert!(screen.contains("e edit"));
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_transaction_rows_use_explicit_overflow_without_corrupting_borders() {
+        for kind in [
+            TransactionKind::Expense,
+            TransactionKind::Income,
+            TransactionKind::ExpenseRefund,
+        ] {
+            let app = amount_layout_app(&[(kind, i64::MAX)]);
+            let sign = if kind == TransactionKind::Expense {
+                "-"
+            } else {
+                "+"
+            };
+            for width in [1, 8, 20, 36, 48, 64, 72] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                terminal.draw(|frame| render(frame, &app)).unwrap();
+                let screen = terminal.backend().to_string();
+                if (36..=64).contains(&width) {
+                    assert!(
+                        screen.contains(&format!("{sign}… CNY")),
+                        "width {width}:\n{screen}"
+                    );
+                    let (_, _, detail, _) = workspace_areas(Rect::new(0, 0, width, 24));
+                    let buffer = terminal.backend().buffer();
+                    let detail_text = (detail.y..detail.y + detail.height)
+                        .flat_map(|y| {
+                            (detail.x..detail.x + detail.width)
+                                .map(move |x| buffer[(x, y)].symbol())
+                        })
+                        .collect::<String>();
+                    assert!(
+                        !detail_text.contains("922337203"),
+                        "clipped numeric prefix at width {width}:\n{screen}"
+                    );
+                    for y in (detail.y + 1)..(detail.y + detail.height - 1) {
+                        assert_eq!(buffer[(detail.x + detail.width - 1, y)].symbol(), "│");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
