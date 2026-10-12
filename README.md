@@ -138,6 +138,7 @@ decisions to accept a change, authorize a merge, and authorize a release.
 | [Database](docs/database.md) | Storage paths, CSV, migrations, backup, recovery, and audit history |
 | [Architecture](docs/architecture.md) | Shared-core boundaries, accounting invariants, and design rationale |
 | [Development](docs/development.md) | Build checks, contribution, release safeguards, and documentation policy |
+| [Private remote access design](docs/remote-access-design.md) | Proposed iPhone access, privacy requirements, connectivity limits, and implementation gates; not implemented |
 | [Web design](docs/ui/web-design.md) | Visual and accessibility conventions |
 | [Release notes](docs/releases/v0.3.0.md) | Version-specific changes and upgrade compatibility |
 | [Agent instructions](https://github.com/singlelektron/ledger_rs/blob/master/AGENTS.md) | AI development workflow and safety boundaries |
