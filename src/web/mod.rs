@@ -9,6 +9,7 @@ use std::{io, net::SocketAddr, path::PathBuf};
 mod error;
 mod forms;
 mod handlers;
+mod html;
 mod middleware;
 mod render;
 

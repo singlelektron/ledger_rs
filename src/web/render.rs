@@ -6,7 +6,10 @@ use crate::domain::{
 };
 use jiff::{civil::DateTime, tz::TimeZone};
 
-use super::error::WebError;
+use super::{
+    error::WebError,
+    html::{HtmlFragment, html},
+};
 
 pub(crate) fn parse_major_amount(value: &str) -> Option<i64> {
     let value = value.trim();
@@ -206,15 +209,18 @@ pub(crate) fn category_label(category: Category) -> &'static str {
     }
 }
 
-pub(crate) fn category_options() -> String {
+pub(crate) fn category_options() -> HtmlFragment {
     category_options_selected(None, false)
 }
 
-pub(crate) fn category_options_selected(selected: Option<Category>, include_any: bool) -> String {
+pub(crate) fn category_options_selected(
+    selected: Option<Category>,
+    include_any: bool,
+) -> HtmlFragment {
     let mut options = if include_any {
-        String::from(r#"<option value="">Any category</option>"#)
+        HtmlFragment::literal(r#"<option value="">Any category</option>"#)
     } else {
-        String::new()
+        HtmlFragment::new()
     };
     [
         Category::Food,
@@ -235,19 +241,17 @@ pub(crate) fn category_options_selected(selected: Option<Category>, include_any:
     .into_iter()
     .map(|category| {
         let value = category_label(category).to_ascii_lowercase();
-        let selected_attribute = if selected == Some(category) {
+        let selected_attribute = HtmlFragment::literal(if selected == Some(category) {
             " selected"
         } else {
             ""
-        };
-        format!(
-            r#"<option value="{}"{}>{}</option>"#,
-            value,
-            selected_attribute,
-            category_label(category)
-        )
+        });
+        html! {
+            r#"<option value=""# (value) r#"""# (selected_attribute) ">" (category_label(category))
+            "</option>"
+        }
     })
-    .for_each(|option| options.push_str(&option));
+    .for_each(|option| options.push(&option));
     options
 }
 
@@ -262,26 +266,26 @@ pub(crate) fn transaction_kind_label(kind: TransactionKind) -> &'static str {
 pub(crate) fn transaction_kind_options(
     selected: Option<TransactionKind>,
     include_any: bool,
-) -> String {
+) -> HtmlFragment {
     let mut options = if include_any {
-        String::from(r#"<option value="">Any type</option>"#)
+        HtmlFragment::literal(r#"<option value="">Any type</option>"#)
     } else {
-        String::new()
+        HtmlFragment::new()
     };
     for (kind, value) in [
         (TransactionKind::Expense, "expense"),
         (TransactionKind::Income, "income"),
         (TransactionKind::ExpenseRefund, "expense_refund"),
     ] {
-        let selected_attribute = if selected == Some(kind) {
+        let selected_attribute = HtmlFragment::literal(if selected == Some(kind) {
             " selected"
         } else {
             ""
-        };
+        });
         let label = transaction_kind_label(kind);
-        options.push_str(&format!(
-            r#"<option value="{value}"{selected_attribute}>{label}</option>"#
-        ));
+        options.push(&html! {
+            r#"<option value=""# (value) r#"""# (selected_attribute) ">" (label) "</option>"
+        });
     }
     options
 }
@@ -307,38 +311,37 @@ pub(crate) fn currency_code(currency: Currency) -> &'static str {
     }
 }
 
-pub(crate) fn currency_options() -> String {
+pub(crate) fn currency_options() -> HtmlFragment {
     ["CNY", "USD", "EUR", "HKD", "MYR"]
         .into_iter()
-        .map(|code| format!(r#"<option value="{code}">{code}</option>"#))
-        .collect::<Vec<_>>()
-        .join("")
+        .map(|code| {
+            html! {
+                r#"<option value=""# (code) r#"">"# (code) "</option>"
+            }
+        })
+        .collect::<HtmlFragment>()
 }
 
 pub(crate) fn account_options(
     accounts: &[crate::domain::account::Account],
     excluded: Option<AccountId>,
     selected: Option<AccountId>,
-) -> String {
+) -> HtmlFragment {
     accounts
         .iter()
         .filter(|account| Some(account.id()) != excluded)
         .map(|account| {
-            let selected_attribute = if Some(account.id()) == selected {
+            let selected_attribute = HtmlFragment::literal(if Some(account.id()) == selected {
                 " selected"
             } else {
                 ""
-            };
-            format!(
-                r#"<option value="{}"{}>{} · {}</option>"#,
-                account.id().value(),
-                selected_attribute,
-                escape_html(account.name()),
-                currency_code(account.currency()),
-            )
+            });
+            html! {
+                r#"<option value=""# (account.id().value()) r#"""# (selected_attribute) ">"
+                (account.name()) " · " (currency_code(account.currency())) "</option>"
+            }
         })
-        .collect::<Vec<_>>()
-        .join("")
+        .collect::<HtmlFragment>()
 }
 
 pub(crate) fn format_money(money: &Money) -> String {
@@ -353,15 +356,6 @@ pub(crate) fn format_money(money: &Money) -> String {
     )
 }
 
-pub(crate) fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum NavSection {
     Overview,
@@ -370,9 +364,8 @@ pub(crate) enum NavSection {
     Data,
 }
 
-pub(crate) fn page(title: &str, content: &str, section: Option<NavSection>) -> String {
-    let title = escape_html(title);
-    let style = include_str!("../web_style.css");
+pub(crate) fn page(title: &str, content: &HtmlFragment, section: Option<NavSection>) -> String {
+    let style = HtmlFragment::literal(include_str!("../web_style.css"));
     let (overview, reports, data) = match section {
         Some(NavSection::Overview) => (r#" aria-current="page""#, "", ""),
         Some(NavSection::Accounts) => (r#" aria-current="location""#, "", ""),
@@ -380,20 +373,30 @@ pub(crate) fn page(title: &str, content: &str, section: Option<NavSection>) -> S
         Some(NavSection::Data) => ("", "", r#" aria-current="page""#),
         None => ("", "", ""),
     };
-    format!(
-        r##"<!doctype html>
+    html! {
+        r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title} · ledger_rs</title>
-  <style>{style}</style>
+  <title>"#
+        (title)
+        r#" · ledger_rs</title>
+  <style>"#
+        (style)
+        r##"</style>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
-  <header><nav aria-label="Primary"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><div class="nav-links"><a href="/"{overview}>Overview</a><a href="/reports"{reports}>Reports</a><a href="/data"{data}>Data</a></div><span class="status">LOCAL LEDGER</span></nav></header>
-  <main id="main-content" tabindex="-1">{content}</main>
+  <header><nav aria-label="Primary"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">L</span><span>LEDGER<span class="brand-dim">_RS</span></span></a><div class="nav-links"><a href="/""##
+        (HtmlFragment::literal(overview)) r#">Overview</a><a href="/reports""#
+        (HtmlFragment::literal(reports)) r#">Reports</a><a href="/data""#
+        (HtmlFragment::literal(data))
+        r#">Data</a></div><span class="status">LOCAL LEDGER</span></nav></header>
+  <main id="main-content" tabindex="-1">"#
+        (content)
+        r#"</main>
 </body>
-</html>"##
-    )
+</html>"#
+    }.into_string()
 }

@@ -114,6 +114,15 @@ business rules and a frontend build toolchain. Shared state holds only the
 SQLite path; each request opens repository adapters and invokes synchronous use
 cases, keeping non-`Send` SQLite connections out of server state.
 
+Web pages, forms, option lists, and errors use the small `html!` template helper
+in `src/web/html.rs`. Literal markup alternates with parenthesized values:
+`html! { "<p>" (message) "</p>" }`. Every ordinary value is escaped automatically,
+including text and quoted attribute values. Rendered `HtmlFragment` values
+compose as markup; they have no conversion from runtime strings or `Display`
+implementation. Only static literals (including the embedded stylesheet) can
+enter as raw markup. Keep fragments at markup boundaries, quote attributes,
+and keep tag names, attribute names, CSS, scripts, and URL schemes static.
+
 The current server is local and single-user. It rejects non-loopback listen
 addresses and requires a loopback `Host` (`127.0.0.0/8`, `localhost`, or `[::1]`)
 on every request. Host validation prevents DNS rebinding from exposing readable
