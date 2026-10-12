@@ -67,7 +67,11 @@ fn page_exposes_keyboard_landmark_and_explicit_navigation() {
         (NavSection::Data, r#"href="/data" aria-current="page""#),
     ] {
         // Navigation is independent of user-controlled account/page titles.
-        let html = page("Reports <&>", "<h1>Content</h1>", Some(section));
+        let html = page(
+            "Reports <&>",
+            &html::html! { "<h1>Content</h1>" },
+            Some(section),
+        );
         assert_current_navigation(&html, expected);
         assert!(html.contains(r##"<a class="skip-link" href="#main-content">"##));
         assert_eq!(html.matches(r#"id="main-content""#).count(), 1);
@@ -114,16 +118,200 @@ async fn account_actions_have_focusable_targets_with_one_or_multiple_accounts() 
 
 #[tokio::test]
 async fn error_page_preserves_status_and_escapes_the_message() {
-    let response = error::WebError::bad_request("Invalid <amount> & currency").into_response();
+    let response = error::WebError::bad_request(
+        "Invalid <script>alert(1)</script> & \"currency\" 'name' &amp;",
+    )
+    .into_response();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let html = String::from_utf8(body.to_vec()).unwrap();
-    assert!(html.contains("Invalid &lt;amount&gt; &amp; currency"));
+    assert!(html.contains(
+        "Invalid &lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;currency&quot; &#39;name&#39; &amp;amp;"
+    ));
+    assert!(!html.contains("<script>"));
     assert!(html.contains(r#"class="empty-state error-state" role="alert""#));
     assert!(!html.contains(" aria-current="));
     assert!(html.contains(r#"<main id="main-content" tabindex="-1">"#));
+}
+
+#[tokio::test]
+async fn stored_names_and_descriptions_remain_text_across_pages_and_edit_forms() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = WebState::new(directory.path().join("web.db"));
+    let name = "<img src=x onerror=alert(1)> & \"' café";
+    let escaped_name = "&lt;img src=x onerror=alert(1)&gt; &amp; &quot;&#39; café";
+    let description = "\"><svg onload=alert(1)> &amp; ' lunch";
+    let escaped_description = "&quot;&gt;&lt;svg onload=alert(1)&gt; &amp;amp; &#39; lunch";
+    for account_name in [name, "Savings"] {
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: account_name.to_owned(),
+                currency: "CNY".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+    }
+    let _redirect = create_transaction_handler(
+        State(state.clone()),
+        Path(1),
+        Form(CreateTransactionForm {
+            kind: "expense".to_owned(),
+            amount: "12.50".to_owned(),
+            occurred_at: "2026-09-01T12:00".to_owned(),
+            time_zone: "Asia/Shanghai".to_owned(),
+            time_zone_offset: None,
+            description: description.to_owned(),
+            category: "food".to_owned(),
+        }),
+    )
+    .await
+    .unwrap();
+    let _redirect = create_transfer_handler(
+        State(state.clone()),
+        Path(1),
+        Form(CreateTransferForm {
+            destination_account_id: 2,
+            source_amount: "1.00".to_owned(),
+            destination_amount: "1.00".to_owned(),
+            occurred_at: "2026-09-01T12:00".to_owned(),
+            time_zone: "Asia/Shanghai".to_owned(),
+            description: description.to_owned(),
+        }),
+    )
+    .await
+    .unwrap();
+
+    let detail = account_detail(
+        State(state.clone()),
+        Path(1),
+        Query(TransactionQuery::default()),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(detail.contains(&format!("<title>{escaped_name} · ledger_rs</title>")));
+    assert!(detail.contains(&format!("value=\"{escaped_name}\"")));
+    assert!(detail.contains(&format!("<strong>{escaped_description}</strong>")));
+    let transaction = transaction_edit(State(state.clone()), Path(1))
+        .await
+        .unwrap()
+        .0;
+    let transfer = transfer_edit(State(state.clone()), Path(1))
+        .await
+        .unwrap()
+        .0;
+    for edit in [&transaction, &transfer] {
+        assert!(edit.contains(&format!("value=\"{escaped_description}\"")));
+    }
+    let report = reports(
+        State(state.clone()),
+        Query(ReportQuery {
+            account_id: Some("1".to_owned()),
+            from: Some("2026-09".to_owned()),
+            to: Some("2026-09".to_owned()),
+            time_zone: Some("Asia/Shanghai".to_owned()),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    let counterparty = account_detail(
+        State(state.clone()),
+        Path(2),
+        Query(TransactionQuery::default()),
+    )
+    .await
+    .unwrap()
+    .0;
+    for rendered in [
+        home(State(state.clone())).await.unwrap().0,
+        data_tools(State(state.clone())).await.unwrap().0,
+        detail,
+        transaction,
+        transfer,
+        report,
+        counterparty,
+    ] {
+        assert!(rendered.contains(escaped_name));
+        assert!(!rendered.contains(name));
+        assert!(!rendered.contains("<svg"));
+        assert!(!rendered.contains("&amp;lt;img"));
+        // The typed stylesheet fragment must retain CSS selectors verbatim.
+        assert!(rendered.contains(include_str!("../web_style.css")));
+    }
+
+    // Escaping belongs to rendering; values in the ledger retain their meaning.
+    let (accounts, transactions, transfers) = open_all_repositories(state.database_path()).unwrap();
+    assert_eq!(
+        crate::application::manage_account::get_account(&accounts, AccountId::new(1))
+            .unwrap()
+            .name(),
+        name
+    );
+    assert_eq!(
+        get_transaction(&transactions, TransactionId::new(1))
+            .unwrap()
+            .description(),
+        description
+    );
+    assert_eq!(
+        get_transfer(&transfers, TransferId::new(1))
+            .unwrap()
+            .description(),
+        description
+    );
+}
+
+#[tokio::test]
+async fn query_values_cannot_escape_quoted_form_attributes() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = WebState::new(directory.path().join("web.db"));
+    let _redirect = create_account_handler(
+        State(state.clone()),
+        Form(CreateAccountForm {
+            name: "Cash".to_owned(),
+            currency: "CNY".to_owned(),
+        }),
+    )
+    .await
+    .unwrap();
+    let query = "\" autofocus onfocus=\"alert(1)\"><script> &amp; '";
+    let escaped = "&quot; autofocus onfocus=&quot;alert(1)&quot;&gt;&lt;script&gt; &amp;amp; &#39;";
+    let detail = account_detail(
+        State(state.clone()),
+        Path(1),
+        Query(TransactionQuery {
+            q: Some(query.to_owned()),
+            ..TransactionQuery::default()
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(detail.contains(&format!("name=\"q\" value=\"{escaped}\"")));
+    let report = reports(
+        State(state),
+        Query(ReportQuery {
+            from: Some(query.to_owned()),
+            to: Some(query.to_owned()),
+            time_zone: Some(query.to_owned()),
+            ..ReportQuery::default()
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    for field in ["from", "to", "time_zone"] {
+        assert!(report.contains(&format!("name=\"{field}\" required value=\"{escaped}\"")));
+    }
+    for rendered in [detail, report] {
+        assert!(!rendered.contains("<script>"));
+        assert!(!rendered.contains("\" autofocus"));
+    }
 }
 
 #[tokio::test]

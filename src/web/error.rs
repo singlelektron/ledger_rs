@@ -3,7 +3,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 
-use super::render::{escape_html, page};
+use super::{html::html, render::page};
 
 #[derive(Debug)]
 pub(crate) struct WebError {
@@ -48,10 +48,11 @@ impl IntoResponse for WebError {
             self.status,
             Html(page(
                 "Request error",
-                &format!(
-                    r#"<section class="empty-state error-state" role="alert"><p class="eyebrow">Request error</p><h1 class="compact">Something went wrong.</h1><p>{}</p><a class="button secondary" href="/">Back to overview</a></section>"#,
-                    escape_html(&self.message)
-                ),
+                &html! {
+                    r#"<section class="empty-state error-state" role="alert"><p class="eyebrow">Request error</p><h1 class="compact">Something went wrong.</h1><p>"#
+                    (&self.message)
+                    r#"</p><a class="button secondary" href="/">Back to overview</a></section>"#
+                },
                 None,
             )),
         )
