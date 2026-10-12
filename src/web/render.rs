@@ -13,11 +13,17 @@ use super::{
 };
 
 /// The submitted values remain strings until validation succeeds. In particular,
-/// rendering an amount error must not normalize the other fields or edit offset.
+/// rendering a field error must not normalize the other fields or edit offset.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TransactionFormErrors {
+    pub(crate) amount: bool,
+    pub(crate) time_zone: bool,
+}
+
 pub(crate) fn transaction_fields(
     input: &CreateTransactionForm,
     currency: Currency,
-    amount_invalid: bool,
+    errors: TransactionFormErrors,
 ) -> HtmlFragment {
     let kind = parse_transaction_kind(&input.kind);
     let category = parse_category(&input.category);
@@ -33,11 +39,11 @@ pub(crate) fn transaction_fields(
         r#"<label>Type<select name="kind">"# (kinds) "</select></label>"
         (amount_field("amount", &format!("Amount ({})", currency_code(currency)),
             &input.amount, "transaction-amount-error",
-            "Enter a positive amount with at most two decimals.", amount_invalid, amount_invalid))
+            "Enter a positive amount with at most two decimals.", errors.amount, errors.amount))
         r#"<label>Description<input name="description" required maxlength="120" placeholder="What was it for?" value=""#
         (&input.description) r#""></label>
         <label>Category<select name="category">"# (categories) "</select></label>"
-        (time_fields(&input.occurred_at, &input.time_zone, input.time_zone_offset.as_deref()))
+        (time_fields(&input.occurred_at, &input.time_zone, input.time_zone_offset.as_deref(), "transaction-time-zone", errors.time_zone))
     }
 }
 
@@ -85,16 +91,17 @@ impl<'a> TransferFormValues<'a> {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct TransferAmountErrors {
+pub(crate) struct TransferFormErrors {
     pub(crate) source: bool,
     pub(crate) destination: bool,
+    pub(crate) time_zone: bool,
 }
 
 pub(crate) fn transfer_fields(
     accounts: &[Account],
     input: TransferFormValues<'_>,
     editing: bool,
-    errors: TransferAmountErrors,
+    errors: TransferFormErrors,
 ) -> HtmlFragment {
     let distinct = input.source_account_id != input.destination_account_id;
     let source_options = if editing {
@@ -134,7 +141,7 @@ pub(crate) fn transfer_fields(
             errors.destination, errors.destination && !errors.source))
         r#"<label>Description<input name="description" required maxlength="120" placeholder="Why move it?" value=""#
         (input.description) r#""></label>"#
-        (time_fields(input.occurred_at, input.time_zone, input.time_zone_offset))
+        (time_fields(input.occurred_at, input.time_zone, input.time_zone_offset, "transfer-time-zone", errors.time_zone))
     }
 }
 
@@ -165,15 +172,59 @@ fn amount_field(
     }
 }
 
-fn time_fields(occurred_at: &str, time_zone: &str, offset: Option<&str>) -> HtmlFragment {
+fn time_fields(
+    occurred_at: &str,
+    time_zone: &str,
+    offset: Option<&str>,
+    id: &str,
+    invalid: bool,
+) -> HtmlFragment {
     let offset = offset.map_or_else(HtmlFragment::new, |value| {
         html! { r#"<input type="hidden" name="time_zone_offset" value=""# (value) r#"">"# }
     });
     html! {
         r#"<label>When<input type="datetime-local" name="occurred_at" required step="any" value=""#
-        (occurred_at) r#""></label>
-        <label>Time zone<input name="time_zone" required value=""# (time_zone) r#""></label>"#
+        (occurred_at) r#""></label>"#
+        (time_zone_field(time_zone, id, invalid, true))
         (offset)
+    }
+}
+
+/// Suggestions leave the field editable, including existing custom names and offsets.
+pub(crate) fn time_zone_field(
+    value: &str,
+    id: &str,
+    invalid: bool,
+    allow_offset: bool,
+) -> HtmlFragment {
+    let options = crate::COMMON_TIME_ZONES
+        .iter()
+        .map(|zone| {
+            html! { r#"<option value=""# (zone) r#""></option>"# }
+        })
+        .collect::<HtmlFragment>();
+    let list_id = format!("{id}-options");
+    let error_id = format!("{id}-error");
+    let attributes = if invalid {
+        html! { r#" aria-invalid="true" aria-describedby=""# (&error_id) r#"" autofocus"# }
+    } else {
+        HtmlFragment::new()
+    };
+    let message = if allow_offset {
+        "Choose or enter an IANA time zone, or a UTC offset such as +08:00."
+    } else {
+        "Choose or enter an IANA time zone."
+    };
+    let error = if invalid {
+        html! { r#"<span class="field-error" id=""# (&error_id) r#"" role="alert">"# (message) "</span>" }
+    } else {
+        HtmlFragment::new()
+    };
+    html! {
+        r#"<label>Time zone<input name="time_zone" required value=""# (value)
+        r#"" list=""# (&list_id) r#"""# (attributes) ">" (error)
+        "<small>" (message) "</small></label>"
+        r#"<datalist id=""# (&list_id) r#"">"# (options) "</datalist>"
     }
 }
 

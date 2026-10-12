@@ -302,14 +302,22 @@ async fn query_values_cannot_escape_quoted_form_attributes() {
         }),
     )
     .await
-    .unwrap()
-    .0;
+    .unwrap_err()
+    .into_response();
+    assert_eq!(report.status(), StatusCode::BAD_REQUEST);
+    let report = String::from_utf8(
+        axum::body::to_bytes(report.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
     for field in ["from", "to", "time_zone"] {
         assert!(report.contains(&format!("name=\"{field}\" required value=\"{escaped}\"")));
     }
     for rendered in [detail, report] {
         assert!(!rendered.contains("<script>"));
-        assert!(!rendered.contains("\" autofocus"));
+        assert!(!rendered.contains("\" autofocus onfocus=\""));
     }
 }
 

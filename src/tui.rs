@@ -2008,6 +2008,18 @@ fn active_budget_text(form: &mut BudgetForm) -> Option<&mut String> {
     }
 }
 
+fn cycle_time_zone(value: &mut String, forward: bool) {
+    let zones = crate::COMMON_TIME_ZONES;
+    let selected = zones.iter().position(|zone| *zone == value);
+    let index = match (selected, forward) {
+        (Some(index), true) => (index + 1) % zones.len(),
+        (Some(index), false) => (index + zones.len() - 1) % zones.len(),
+        (None, true) => 0,
+        (None, false) => zones.len() - 1,
+    };
+    *value = zones[index].to_owned();
+}
+
 fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (Mode, Action) {
     match key {
         KeyCode::Esc => return (Mode::Browse, Action::Continue),
@@ -2042,6 +2054,12 @@ fn handle_budget_status_form_key(mut form: BudgetStatusForm, key: KeyCode) -> (M
                 BudgetStatusField::Month => BudgetStatusField::TimeZone,
                 BudgetStatusField::TimeZone => BudgetStatusField::Month,
             };
+        }
+        KeyCode::Left | KeyCode::Up if form.field == BudgetStatusField::TimeZone => {
+            cycle_time_zone(&mut form.time_zone, false)
+        }
+        KeyCode::Right | KeyCode::Down if form.field == BudgetStatusField::TimeZone => {
+            cycle_time_zone(&mut form.time_zone, true)
         }
         KeyCode::Delete => active_budget_status_text(&mut form).clear(),
         KeyCode::Backspace => {
@@ -2205,6 +2223,12 @@ fn handle_trend_report_form_key(mut form: TrendReportForm, key: KeyCode) -> (Mod
                 ReportField::To => ReportField::From,
                 ReportField::TimeZone => ReportField::To,
             };
+        }
+        KeyCode::Left | KeyCode::Up if form.field == ReportField::TimeZone => {
+            cycle_time_zone(&mut form.time_zone, false)
+        }
+        KeyCode::Right | KeyCode::Down if form.field == ReportField::TimeZone => {
+            cycle_time_zone(&mut form.time_zone, true)
         }
         KeyCode::Delete => active_trend_text(&mut form).clear(),
         KeyCode::Backspace => {
@@ -2827,6 +2851,8 @@ fn render_budget_status_form(
             form.field == BudgetStatusField::TimeZone,
         ),
         Line::from("Month uses YYYY-MM; Tab changes field."),
+        Line::from("Time zone: arrows choose; Delete then type a custom IANA name."),
+        Line::from("Options: UTC, Asia/Shanghai, Asia/Kuala_Lumpur."),
         Line::from("Delete clears text; Enter runs; Esc cancels."),
     ];
     push_form_error(&mut lines, form.error.as_deref());
@@ -2931,6 +2957,8 @@ fn render_trend_report_form(frame: &mut Frame, form: &TrendReportForm, ui: &mut 
             form.field == ReportField::TimeZone,
         ),
         Line::from("Months use YYYY-MM; Tab changes field."),
+        Line::from("Time zone: arrows choose; Delete then type a custom IANA name."),
+        Line::from("Options: UTC, Asia/Shanghai, Asia/Kuala_Lumpur."),
         Line::from("Delete clears text; Enter runs; Esc cancels."),
     ];
     push_form_error(&mut lines, form.error.as_deref());
@@ -5171,6 +5199,127 @@ mod tests {
             Mode::TrendReportForm(form)
                 if form.error.as_deref() == Some("invalid month \"abc\"; expected YYYY-MM")
         ));
+    }
+
+    #[test]
+    fn time_zone_arrows_cycle_common_names_in_both_forms() {
+        let mut trend = default_trend_form(Some(AccountId::new(1)));
+        trend.field = ReportField::TimeZone;
+        trend.time_zone = "UTC".into();
+        for expected in ["Asia/Shanghai", "Asia/Kuala_Lumpur", "UTC"] {
+            let (Mode::TrendReportForm(next), Action::Continue) =
+                handle_trend_report_form_key(trend, KeyCode::Right)
+            else {
+                panic!("expected trend form")
+            };
+            assert_eq!(next.time_zone, expected);
+            trend = next;
+        }
+        let (Mode::TrendReportForm(trend), _) = handle_trend_report_form_key(trend, KeyCode::Left)
+        else {
+            panic!("expected trend form")
+        };
+        assert_eq!(trend.time_zone, "Asia/Kuala_Lumpur");
+        let (_, action) = handle_trend_report_form_key(trend, KeyCode::Enter);
+        assert!(
+            matches!(action, Action::RunReport(ReportRequest::Trend {time_zone, ..}) if time_zone == "Asia/Kuala_Lumpur")
+        );
+
+        let mut budget = default_budget_status_form(AccountId::new(1));
+        budget.field = BudgetStatusField::TimeZone;
+        budget.time_zone = "UTC".into();
+        for expected in ["Asia/Shanghai", "Asia/Kuala_Lumpur", "UTC"] {
+            let (Mode::BudgetStatusForm(next), Action::Continue) =
+                handle_budget_status_form_key(budget, KeyCode::Down)
+            else {
+                panic!("expected budget form")
+            };
+            assert_eq!(next.time_zone, expected);
+            budget = next;
+        }
+        let (Mode::BudgetStatusForm(budget), _) =
+            handle_budget_status_form_key(budget, KeyCode::Up)
+        else {
+            panic!("expected budget form")
+        };
+        assert_eq!(budget.time_zone, "Asia/Kuala_Lumpur");
+        let (_, action) = handle_budget_status_form_key(budget, KeyCode::Enter);
+        assert!(
+            matches!(action, Action::RunBudget(BudgetRequest::Status {time_zone, ..}) if time_zone == "Asia/Kuala_Lumpur")
+        );
+    }
+
+    #[test]
+    fn time_zone_selection_preserves_custom_values_and_allows_typing() {
+        let mut trend = default_trend_form(None);
+        trend.time_zone = "America/New_York".into();
+        let (Mode::TrendReportForm(trend), _) =
+            handle_trend_report_form_key(trend, KeyCode::BackTab)
+        else {
+            panic!("expected trend form")
+        };
+        assert_eq!(trend.field, ReportField::TimeZone);
+        assert_eq!(trend.time_zone, "America/New_York");
+        let (_, action) = handle_trend_report_form_key(trend.clone(), KeyCode::Enter);
+        assert!(
+            matches!(action, Action::RunReport(ReportRequest::PortfolioTrend {time_zone, ..}) if time_zone == "America/New_York")
+        );
+        let (Mode::TrendReportForm(trend), _) = handle_trend_report_form_key(trend, KeyCode::Right)
+        else {
+            panic!("expected trend form")
+        };
+        assert_eq!(trend.time_zone, "UTC");
+
+        let mut budget = default_budget_status_form(AccountId::new(1));
+        budget.time_zone = "Europe/London".into();
+        let (Mode::BudgetStatusForm(mut budget), _) =
+            handle_budget_status_form_key(budget, KeyCode::Tab)
+        else {
+            panic!("expected budget form")
+        };
+        assert_eq!(budget.time_zone, "Europe/London");
+        let (Mode::BudgetStatusForm(next), _) =
+            handle_budget_status_form_key(budget, KeyCode::Delete)
+        else {
+            panic!("expected budget form")
+        };
+        budget = next;
+        for character in "America/New_York".chars() {
+            let (Mode::BudgetStatusForm(next), _) =
+                handle_budget_status_form_key(budget, KeyCode::Char(character))
+            else {
+                panic!("expected budget form")
+            };
+            budget = next;
+        }
+        let (_, action) = handle_budget_status_form_key(budget, KeyCode::Enter);
+        assert!(
+            matches!(action, Action::RunBudget(BudgetRequest::Status {time_zone, ..}) if time_zone == "America/New_York")
+        );
+    }
+
+    #[test]
+    fn time_zone_forms_render_keyboard_instructions_and_custom_values() {
+        let mut trend = default_trend_form(None);
+        trend.time_zone = "America/New_York".into();
+        let mut budget = default_budget_status_form(AccountId::new(1));
+        budget.time_zone = "America/New_York".into();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut ui = InteractionState::default();
+        terminal
+            .draw(|frame| render_trend_report_form(frame, &trend, &mut ui))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("America/New_York"));
+        assert!(screen.contains("arrows choose"));
+        assert!(screen.contains("UTC, Asia/Shanghai, Asia/Kuala_Lumpur"));
+        terminal
+            .draw(|frame| render_budget_status_form(frame, &budget, &mut ui))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("America/New_York"));
+        assert!(screen.contains("arrows choose"));
+        assert!(screen.contains("UTC, Asia/Shanghai, Asia/Kuala_Lumpur"));
     }
 
     #[test]

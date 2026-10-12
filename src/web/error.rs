@@ -9,13 +9,20 @@ use super::{html::html, render::page};
 pub(crate) struct WebError {
     pub(crate) status: StatusCode,
     pub(crate) message: String,
+    form: Option<Html<String>>,
 }
 
 impl WebError {
+    pub(crate) fn with_form(mut self, form: Html<String>) -> Self {
+        self.form = Some(form);
+        self
+    }
+
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            form: None,
         }
     }
 
@@ -24,6 +31,7 @@ impl WebError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: String::from("The ledger could not complete that request."),
+            form: None,
         }
     }
 
@@ -31,6 +39,7 @@ impl WebError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            form: None,
         }
     }
 
@@ -38,12 +47,16 @@ impl WebError {
         Self {
             status: StatusCode::FORBIDDEN,
             message: message.into(),
+            form: None,
         }
     }
 }
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
+        if let Some(form) = self.form {
+            return (self.status, form).into_response();
+        }
         (
             self.status,
             Html(page(

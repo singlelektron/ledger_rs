@@ -54,12 +54,12 @@ use super::{
     },
     html::{HtmlFragment, html},
     render::{
-        NavSection, TransferAmountErrors, TransferFormValues, account_options, category_label,
-        category_options, category_options_selected, currency_code, currency_options,
-        edit_time_zone, format_budget_month, format_major_input, format_money,
+        NavSection, TransactionFormErrors, TransferFormErrors, TransferFormValues, account_options,
+        category_label, category_options, category_options_selected, currency_code,
+        currency_options, edit_time_zone, format_budget_month, format_major_input, format_money,
         next_budget_month_for_report, page, parse_budget_month, parse_category, parse_currency,
-        parse_local_zoned, parse_local_zoned_with_offset, parse_major_amount,
-        parse_transaction_kind, transaction_fields, transaction_kind_label,
+        parse_local_zoned, parse_local_zoned_with_offset, parse_major_amount, parse_time_zone,
+        parse_transaction_kind, time_zone_field, transaction_fields, transaction_kind_label,
         transaction_kind_options, transfer_fields,
     },
 };
@@ -155,6 +155,19 @@ pub(crate) async fn reports(
         .as_deref()
         .filter(|value| !value.is_empty())
         .unwrap_or(DEFAULT_TIME_ZONE);
+
+    if jiff::tz::TimeZone::get(time_zone).is_err() {
+        let form = render_reports_page(
+            &all_accounts,
+            selected_account,
+            portfolio,
+            &query,
+            time_zone,
+            HtmlFragment::new(),
+            true,
+        );
+        return Err(WebError::bad_request("Choose or enter an IANA time zone.").with_form(form));
+    }
 
     let results = match (selected_account, query.from.as_deref(), query.to.as_deref()) {
         (Some(account_id), Some(from), Some(to)) if !from.is_empty() && !to.is_empty() => {
@@ -343,9 +356,29 @@ pub(crate) async fn reports(
         ),
     };
 
+    Ok(render_reports_page(
+        &all_accounts,
+        selected_account,
+        portfolio,
+        &query,
+        time_zone,
+        results,
+        false,
+    ))
+}
+
+fn render_reports_page(
+    all_accounts: &[Account],
+    selected_account: Option<AccountId>,
+    portfolio: bool,
+    query: &ReportQuery,
+    time_zone: &str,
+    results: HtmlFragment,
+    invalid: bool,
+) -> Html<String> {
     let report_account_options = html! {
         r#"<option value="all""# (HtmlFragment::literal(if portfolio { " selected" } else { "" }))
-        ">All accounts</option>" (account_options(&all_accounts, None, selected_account))
+        ">All accounts</option>" (account_options(all_accounts, None, selected_account))
     };
     let content = html! {
         r#"
@@ -360,10 +393,9 @@ pub(crate) async fn reports(
           <label>To<input type="month" name="to" required value=""#
         (query.to.as_deref().unwrap_or_default())
         r#""></label>
-          <label>Time zone<input name="time_zone" required value=""#
-        (time_zone)
-        r#""></label>
-          <button type="submit">Run report</button>
+    "#
+        (time_zone_field(time_zone, "report-time-zone", invalid, false))
+        r#"          <button type="submit">Run report</button>
         </form>
         "#
         (results)
@@ -371,7 +403,7 @@ pub(crate) async fn reports(
         "#
     };
 
-    Ok(Html(page("Reports", &content, Some(NavSection::Reports))))
+    Html(page("Reports", &content, Some(NavSection::Reports)))
 }
 
 /// The application layer owns the `from <= to` rule; the web layer only turns
@@ -522,8 +554,8 @@ pub(crate) async fn account_detail(
 
 #[derive(Clone, Copy)]
 enum AccountFormError<'a> {
-    Transaction(&'a CreateTransactionForm),
-    Transfer(&'a CreateTransferForm, TransferAmountErrors),
+    Transaction(&'a CreateTransactionForm, TransactionFormErrors),
+    Transfer(&'a CreateTransferForm, TransferFormErrors),
 }
 
 fn render_account_detail(
@@ -659,9 +691,9 @@ fn render_account_detail(
         description: String::new(),
         category: "food".to_owned(),
     };
-    let (transaction_input, transaction_invalid) = match form_error {
-        Some(AccountFormError::Transaction(input)) => (input, true),
-        _ => (&new_transaction, false),
+    let (transaction_input, transaction_errors) = match form_error {
+        Some(AccountFormError::Transaction(input, errors)) => (input, errors),
+        _ => (&new_transaction, TransactionFormErrors::default()),
     };
     let transfer_form = if all_accounts.len() < 2 {
         HtmlFragment::literal(
@@ -683,7 +715,7 @@ fn render_account_detail(
         };
         let (input, errors) = match form_error {
             Some(AccountFormError::Transfer(input, errors)) => (input, errors),
-            _ => (&new_transfer, TransferAmountErrors::default()),
+            _ => (&new_transfer, TransferFormErrors::default()),
         };
         html! {
             r#"<div class="form-card" id="new-transfer" tabindex="-1"><p class="eyebrow">New transfer</p><h2>Move money to another account</h2>
@@ -814,7 +846,7 @@ fn render_account_detail(
               <form method="post" action="/accounts/"#
         (account.id().value())
         r#"/transactions">"#
-        (transaction_fields(transaction_input, account.currency(), transaction_invalid))
+        (transaction_fields(transaction_input, account.currency(), transaction_errors))
         r#"<button type="submit">Record transaction</button>
               </form>
             </div>
@@ -883,7 +915,13 @@ pub(crate) async fn create_transaction_handler(
             &state,
             account_id,
             &TransactionQuery::default(),
-            Some(AccountFormError::Transaction(&input)),
+            Some(AccountFormError::Transaction(
+                &input,
+                TransactionFormErrors {
+                    amount: true,
+                    ..Default::default()
+                },
+            )),
         )?;
         return Ok((StatusCode::BAD_REQUEST, form).into_response());
     };
@@ -891,6 +929,21 @@ pub(crate) async fn create_transaction_handler(
         .ok_or_else(|| WebError::bad_request("Choose a supported transaction type."))?;
     let category = parse_category(&input.category)
         .ok_or_else(|| WebError::bad_request("Choose a supported category."))?;
+    if parse_time_zone(&input.time_zone).is_err() {
+        let form = render_account_detail(
+            &state,
+            account_id,
+            &TransactionQuery::default(),
+            Some(AccountFormError::Transaction(
+                &input,
+                TransactionFormErrors {
+                    time_zone: true,
+                    ..Default::default()
+                },
+            )),
+        )?;
+        return Ok((StatusCode::BAD_REQUEST, form).into_response());
+    }
     let occurred_at = parse_local_zoned(&input.occurred_at, &input.time_zone)?;
     let transaction = NewTransaction::new(
         account_id,
@@ -936,7 +989,7 @@ pub(crate) async fn transaction_edit(
         &account,
         transaction_id,
         &input,
-        false,
+        TransactionFormErrors::default(),
     ))
 }
 
@@ -944,7 +997,7 @@ fn render_transaction_editor(
     account: &Account,
     transaction_id: TransactionId,
     input: &CreateTransactionForm,
-    amount_invalid: bool,
+    errors: TransactionFormErrors,
 ) -> Html<String> {
     let content = html! {
         r#"<a class="back" href="/accounts/"# (account.id().value())
@@ -954,7 +1007,7 @@ fn render_transaction_editor(
         r#"</p><h1 class="compact">Edit transaction</h1><p class="lede">Update the details below. Saving returns you to this transaction in the account history.</p></div>
           <div class="form-card">
             <form method="post" action="/transactions/"# (transaction_id.value()) r#"/edit">"#
-        (transaction_fields(input, account.currency(), amount_invalid))
+        (transaction_fields(input, account.currency(), errors))
         r#"<button type="submit">Save changes</button>
             </form>
             <form class="delete-form" method="post" action="/transactions/"# (transaction_id.value())
@@ -980,13 +1033,33 @@ pub(crate) async fn update_transaction_handler(
     let current = get_transaction(&transactions, transaction_id).map_err(map_transaction_error)?;
     let account = get_account(&accounts, current.account_id()).map_err(map_account_error)?;
     let Some(amount_minor) = parse_major_amount(&input.amount) else {
-        let form = render_transaction_editor(&account, transaction_id, &input, true);
+        let form = render_transaction_editor(
+            &account,
+            transaction_id,
+            &input,
+            TransactionFormErrors {
+                amount: true,
+                ..Default::default()
+            },
+        );
         return Ok((StatusCode::BAD_REQUEST, form).into_response());
     };
     let kind = parse_transaction_kind(&input.kind)
         .ok_or_else(|| WebError::bad_request("Choose a supported transaction type."))?;
     let category = parse_category(&input.category)
         .ok_or_else(|| WebError::bad_request("Choose a supported category."))?;
+    if parse_time_zone(&input.time_zone).is_err() {
+        let form = render_transaction_editor(
+            &account,
+            transaction_id,
+            &input,
+            TransactionFormErrors {
+                time_zone: true,
+                ..Default::default()
+            },
+        );
+        return Ok((StatusCode::BAD_REQUEST, form).into_response());
+    }
     let occurred_at = parse_local_zoned_with_offset(
         &input.occurred_at,
         &input.time_zone,
@@ -1046,9 +1119,10 @@ pub(crate) async fn create_transfer_handler(
     let destination_amount = parse_major_amount(&input.destination_amount);
     let (Some(source_amount), Some(destination_amount)) = (source_amount, destination_amount)
     else {
-        let errors = TransferAmountErrors {
+        let errors = TransferFormErrors {
             source: source_amount.is_none(),
             destination: destination_amount.is_none(),
+            ..Default::default()
         };
         let form = render_account_detail(
             &state,
@@ -1058,6 +1132,21 @@ pub(crate) async fn create_transfer_handler(
         )?;
         return Ok((StatusCode::BAD_REQUEST, form).into_response());
     };
+    if parse_time_zone(&input.time_zone).is_err() {
+        let form = render_account_detail(
+            &state,
+            source_account_id,
+            &TransactionQuery::default(),
+            Some(AccountFormError::Transfer(
+                &input,
+                TransferFormErrors {
+                    time_zone: true,
+                    ..Default::default()
+                },
+            )),
+        )?;
+        return Ok((StatusCode::BAD_REQUEST, form).into_response());
+    }
     let occurred_at = parse_local_zoned(&input.occurred_at, &input.time_zone)?;
     let transfer = NewTransfer::new(
         source_account_id,
@@ -1099,7 +1188,7 @@ pub(crate) async fn transfer_edit(
         &all_accounts,
         transfer_id,
         &input,
-        TransferAmountErrors::default(),
+        TransferFormErrors::default(),
     ))
 }
 
@@ -1108,7 +1197,7 @@ fn render_transfer_editor(
     accounts: &[Account],
     transfer_id: TransferId,
     input: &UpdateTransferForm,
-    errors: TransferAmountErrors,
+    errors: TransferFormErrors,
 ) -> Html<String> {
     let content = html! {
         r#"<a class="back" href="/accounts/"# (original_source.id().value())
@@ -1146,9 +1235,10 @@ pub(crate) async fn update_transfer_handler(
     let destination_amount = parse_major_amount(&input.destination_amount);
     let (Some(source_amount), Some(destination_amount)) = (source_amount, destination_amount)
     else {
-        let errors = TransferAmountErrors {
+        let errors = TransferFormErrors {
             source: source_amount.is_none(),
             destination: destination_amount.is_none(),
+            ..Default::default()
         };
         let all_accounts =
             list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
@@ -1158,6 +1248,23 @@ pub(crate) async fn update_transfer_handler(
             render_transfer_editor(&original_source, &all_accounts, transfer_id, &input, errors);
         return Ok((StatusCode::BAD_REQUEST, form).into_response());
     };
+    if parse_time_zone(&input.time_zone).is_err() {
+        let all_accounts =
+            list_accounts(&accounts).map_err(|error| WebError::internal("list accounts", error))?;
+        let original_source =
+            get_account(&accounts, current.source_account_id()).map_err(map_account_error)?;
+        let form = render_transfer_editor(
+            &original_source,
+            &all_accounts,
+            transfer_id,
+            &input,
+            TransferFormErrors {
+                time_zone: true,
+                ..Default::default()
+            },
+        );
+        return Ok((StatusCode::BAD_REQUEST, form).into_response());
+    }
     let occurred_at = parse_local_zoned_with_offset(
         &input.occurred_at,
         &input.time_zone,
