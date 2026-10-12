@@ -25,6 +25,9 @@ Keep Overview, Reports, and Data accessible on narrow screens. Wide report
 tables should scroll inside their own containers rather than widen the page.
 Long account names, descriptions, and large amounts must wrap or scroll without
 hiding controls.
+In transaction rows, keep the sign, amount, and currency together on one line.
+Details may wrap; move the complete amount/action area to another row when it
+cannot fit beside them, and wrap actions separately when needed on narrow screens.
 
 ## Accessibility and interaction
 

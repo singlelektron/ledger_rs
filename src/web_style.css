@@ -244,18 +244,19 @@ button:hover, .button:hover { background: var(--ink); border-color: var(--ink); 
 .filter-bar input, .filter-bar select { font-size: .8rem; padding-left: 10px; }
 .filter-bar a { display: inline-flex; min-height: 44px; padding: 8px; align-items: center; color: var(--muted); font-size: .8rem; }
 .filter-bar a:hover { color: var(--ink); }
-.transaction-row { display: flex; min-height: 88px; padding: 16px 18px; border-bottom: 1px solid var(--line); align-items: center; justify-content: space-between; gap: 20px; scroll-margin-top: var(--anchor-offset); }
+.transaction-row { display: flex; flex-wrap: wrap; min-height: 88px; padding: 16px 18px; border-bottom: 1px solid var(--line); align-items: center; justify-content: space-between; gap: 20px; scroll-margin-top: var(--anchor-offset); }
 .transaction-row:last-child { border-bottom: 0; }
 .transaction-row:target { background: var(--accent-soft); border-left: 2px solid var(--accent); padding-left: 16px; }
 .transaction-row div { display: grid; min-width: 0; gap: 5px; overflow-wrap: anywhere; }
+.transaction-row > div { flex: 1 1 12rem; }
 .transaction-row strong { font-size: .9rem; font-weight: 500; }
 .transaction-row small { color: var(--muted); font-size: .75rem; line-height: 1.6; }
 .transaction-kind { color: var(--ink); font-weight: 500; }
 .transaction-row b { font: 500 .875rem/1.5 var(--mono); }
 .transaction-row .expense { color: var(--negative); }
 .transaction-row .income { color: var(--positive); }
-.transaction-end { display: flex; min-width: 0; align-items: center; justify-content: end; gap: 16px; }
-.transaction-end b { min-width: 0; text-align: right; }
+.transaction-end { display: flex; flex: 0 0 auto; flex-wrap: wrap; max-width: 100%; min-width: 0; margin-left: auto; align-items: center; justify-content: end; gap: 16px; }
+.transaction-end b { flex: 0 0 auto; max-width: 100%; text-align: right; white-space: nowrap; overflow-wrap: normal; }
 .transaction-end a { display: inline-flex; min-width: 44px; min-height: 44px; padding: 8px 4px; align-items: center; justify-content: center; color: var(--muted); font: 500 12px/1.5 var(--mono); text-decoration: none; }
 .transaction-end a:hover { color: var(--accent); text-decoration: underline; }
 .row-form { display: block; margin: 0; }
@@ -338,6 +339,7 @@ tbody tr:hover { background: var(--surface); }
   .account-card b { text-align: left; }
   .action-stack, .manage-grid, .data-grid { grid-template-columns: minmax(0, 1fr); }
   .transaction-row { align-items: start; flex-direction: column; gap: 8px; }
+  .transaction-row > div { flex-basis: auto; width: 100%; }
   .transaction-end { width: 100%; justify-content: space-between; }
   .transaction-end b { text-align: left; }
   .metric-row { align-items: start; flex-direction: column; gap: 8px; }

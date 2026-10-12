@@ -740,6 +740,54 @@ async fn transaction_rows_display_types_consistent_with_forms() {
 }
 
 #[tokio::test]
+async fn transaction_rows_preserve_full_large_amounts_and_currency_for_every_kind() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = WebState::new(directory.path().join("web.db"));
+    for (index, currency) in ["CNY", "USD", "EUR", "HKD", "MYR"].iter().enumerate() {
+        let _redirect = create_account_handler(
+            State(state.clone()),
+            Form(CreateAccountForm {
+                name: format!("Long history {currency}"),
+                currency: (*currency).to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let account_id = index as u64 + 1;
+        for kind in ["expense", "income", "expense_refund"] {
+            create_transaction_handler(
+                State(state.clone()),
+                Path(account_id),
+                Form(CreateTransactionForm {
+                    kind: kind.to_owned(),
+                    amount: "92233720368547758.07".to_owned(),
+                    occurred_at: "2026-10-12T12:00".to_owned(),
+                    time_zone: "Asia/Kuala_Lumpur".to_owned(),
+                    time_zone_offset: None,
+                    description: "Long description that wraps on several lines ".repeat(3),
+                    category: "food".to_owned(),
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let html = account_detail(
+            State(state.clone()),
+            Path(account_id),
+            Query(TransactionQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        let expense = format!("−92233720368547758.07 {currency}</b>");
+        let positive = format!("+92233720368547758.07 {currency}</b>");
+        assert_eq!(html.matches(&expense).count(), 1);
+        assert_eq!(html.matches(&positive).count(), 2);
+        assert_eq!(html.matches(">Edit</a>").count(), 3);
+    }
+}
+
+#[tokio::test]
 async fn account_detail_returns_not_found_for_unknown_id() {
     let temp_dir = tempfile::tempdir().unwrap();
     let state = WebState::new(temp_dir.path().join("web.db"));
