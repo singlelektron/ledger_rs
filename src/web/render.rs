@@ -1,5 +1,5 @@
 use crate::domain::{
-    account::AccountId,
+    account::{Account, AccountId},
     budget::BudgetMonth,
     money::{Currency, Money},
     transaction::{Category, TransactionKind},
@@ -8,8 +8,174 @@ use jiff::{civil::DateTime, tz::TimeZone};
 
 use super::{
     error::WebError,
+    forms::{CreateTransactionForm, CreateTransferForm, UpdateTransferForm},
     html::{HtmlFragment, html},
 };
+
+/// The submitted values remain strings until validation succeeds. In particular,
+/// rendering an amount error must not normalize the other fields or edit offset.
+pub(crate) fn transaction_fields(
+    input: &CreateTransactionForm,
+    currency: Currency,
+    amount_invalid: bool,
+) -> HtmlFragment {
+    let kind = parse_transaction_kind(&input.kind);
+    let category = parse_category(&input.category);
+    let mut kinds = transaction_kind_options(kind, false);
+    let mut categories = category_options_selected(category, false);
+    if kind.is_none() {
+        kinds.push(&submitted_option(&input.kind));
+    }
+    if category.is_none() {
+        categories.push(&submitted_option(&input.category));
+    }
+    html! {
+        r#"<label>Type<select name="kind">"# (kinds) "</select></label>"
+        (amount_field("amount", &format!("Amount ({})", currency_code(currency)),
+            &input.amount, "transaction-amount-error",
+            "Enter a positive amount with at most two decimals.", amount_invalid, amount_invalid))
+        r#"<label>Description<input name="description" required maxlength="120" placeholder="What was it for?" value=""#
+        (&input.description) r#""></label>
+        <label>Category<select name="category">"# (categories) "</select></label>"
+        (time_fields(&input.occurred_at, &input.time_zone, input.time_zone_offset.as_deref()))
+    }
+}
+
+fn submitted_option(value: &str) -> HtmlFragment {
+    html! { r#"<option value=""# (value) r#"" selected>"# (value) "</option>" }
+}
+
+pub(crate) struct TransferFormValues<'a> {
+    source_account_id: AccountId,
+    destination_account_id: AccountId,
+    source_amount: &'a str,
+    destination_amount: &'a str,
+    description: &'a str,
+    occurred_at: &'a str,
+    time_zone: &'a str,
+    time_zone_offset: Option<&'a str>,
+}
+
+impl<'a> TransferFormValues<'a> {
+    pub(crate) fn create(source: AccountId, input: &'a CreateTransferForm) -> Self {
+        Self {
+            source_account_id: source,
+            destination_account_id: AccountId::new(input.destination_account_id),
+            source_amount: &input.source_amount,
+            destination_amount: &input.destination_amount,
+            description: &input.description,
+            occurred_at: &input.occurred_at,
+            time_zone: &input.time_zone,
+            time_zone_offset: None,
+        }
+    }
+
+    pub(crate) fn edit(input: &'a UpdateTransferForm) -> Self {
+        Self {
+            source_account_id: AccountId::new(input.source_account_id),
+            destination_account_id: AccountId::new(input.destination_account_id),
+            source_amount: &input.source_amount,
+            destination_amount: &input.destination_amount,
+            description: &input.description,
+            occurred_at: &input.occurred_at,
+            time_zone: &input.time_zone,
+            time_zone_offset: input.time_zone_offset.as_deref(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TransferAmountErrors {
+    pub(crate) source: bool,
+    pub(crate) destination: bool,
+}
+
+pub(crate) fn transfer_fields(
+    accounts: &[Account],
+    input: TransferFormValues<'_>,
+    editing: bool,
+    errors: TransferAmountErrors,
+) -> HtmlFragment {
+    let distinct = input.source_account_id != input.destination_account_id;
+    let source_options = if editing {
+        html! {
+            r#"<label>Source<select name="source_account_id">"#
+            (account_options(accounts, distinct.then_some(input.destination_account_id),
+                Some(input.source_account_id))) "</select></label>"
+        }
+    } else {
+        HtmlFragment::new()
+    };
+    let amount_label = |label: &str, id: AccountId| {
+        accounts
+            .iter()
+            .find(|account| account.id() == id)
+            .map_or_else(
+                || label.to_owned(),
+                |account| format!("{label} ({})", currency_code(account.currency())),
+            )
+    };
+    let destination_label = if editing {
+        amount_label("Amount received", input.destination_account_id)
+    } else {
+        "Amount received".to_owned()
+    };
+    html! {
+        (source_options)
+        r#"<label>Destination<select name="destination_account_id">"#
+        (account_options(accounts, distinct.then_some(input.source_account_id),
+            Some(input.destination_account_id))) "</select></label>"
+        (amount_field("source_amount", &amount_label("Amount sent", input.source_account_id),
+            input.source_amount, "transfer-source-amount-error",
+            "Enter a positive amount sent with at most two decimals.", errors.source, errors.source))
+        (amount_field("destination_amount", &destination_label,
+            input.destination_amount, "transfer-destination-amount-error",
+            "Enter a positive amount received with at most two decimals.",
+            errors.destination, errors.destination && !errors.source))
+        r#"<label>Description<input name="description" required maxlength="120" placeholder="Why move it?" value=""#
+        (input.description) r#""></label>"#
+        (time_fields(input.occurred_at, input.time_zone, input.time_zone_offset))
+    }
+}
+
+fn amount_field(
+    name: &str,
+    label: &str,
+    value: &str,
+    error_id: &str,
+    message: &str,
+    invalid: bool,
+    autofocus: bool,
+) -> HtmlFragment {
+    let error_attributes = if invalid {
+        html! { r#" aria-invalid="true" aria-describedby=""# (error_id) r#"""# }
+    } else {
+        HtmlFragment::new()
+    };
+    let focus = HtmlFragment::literal(if autofocus { " autofocus" } else { "" });
+    let error = if invalid {
+        html! { r#"<span class="field-error" id=""# (error_id) r#"" role="alert">"# (message) "</span>" }
+    } else {
+        HtmlFragment::new()
+    };
+    html! {
+        "<label>" (label) r#"<input name=""# (name)
+        r#"" required inputmode="decimal" placeholder="0.00" value=""# (value) r#"""#
+        (error_attributes) (focus) ">" (error) "</label>"
+    }
+}
+
+fn time_fields(occurred_at: &str, time_zone: &str, offset: Option<&str>) -> HtmlFragment {
+    let offset = offset.map_or_else(HtmlFragment::new, |value| {
+        html! { r#"<input type="hidden" name="time_zone_offset" value=""# (value) r#"">"# }
+    });
+    html! {
+        r#"<label>When<input type="datetime-local" name="occurred_at" required step="any" value=""#
+        (occurred_at) r#""></label>
+        <label>Time zone<input name="time_zone" required value=""# (time_zone) r#""></label>"#
+        (offset)
+    }
+}
 
 pub(crate) fn parse_major_amount(value: &str) -> Option<i64> {
     let value = value.trim();

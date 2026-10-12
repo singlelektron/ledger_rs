@@ -41,6 +41,11 @@ hiding controls.
   mobile layouts.
 - Preserve form names, validation, amount units, routes, and security behavior
   during presentation changes unless the task explicitly includes behavior changes.
+- Rejected transaction and transfer amounts keep the submitted form values and
+  show an error beside each invalid amount. Connect the message with
+  `aria-describedby`, mark the field with `aria-invalid`, and focus the first
+  invalid amount so the user can correct and resubmit it. The server remains
+  authoritative and writes nothing when amount parsing fails.
 
 ## Verification for UI changes
 
