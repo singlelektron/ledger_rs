@@ -269,6 +269,10 @@ Click page tabs, accounts, and selectable rows to navigate. The wheel moves
 selection or scrolls the content under the pointer. Click a form field to focus
 it. Dialogs block interaction with the workspace behind them.
 
+Transaction amounts keep their sign and currency together and align across rows.
+When an amount cannot fit in a narrow pane, an ellipsis replaces its digits;
+widen the terminal or open the edit form to read the full amount.
+
 In forms, Tab moves between fields, arrows change enum values, and Backspace
 edits text. Enter submits; Escape cancels. Validation errors keep the form open
 and preserve input. Deletion prompts require confirmation. Press `r` to reload
