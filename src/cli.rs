@@ -7,7 +7,7 @@ use crate::{
     app_paths::{prepare_database_parent, resolve_database_path, secure_database_file},
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
-        audit_log::{ListAuditLogError, list_recent_audit_entries},
+        audit_log::{ListAuditLogError, MAX_AUDIT_LOG_LIMIT, list_recent_audit_entries},
         backup::{BackupError, validate_json_backup},
         budget_report::{BudgetReportError, get_budget_statuses},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
@@ -100,7 +100,7 @@ pub enum Command {
 #[derive(Debug, Subcommand)]
 pub enum DataCommand {
     AuditLog {
-        #[arg(long, default_value_t = 50)]
+        #[arg(long, default_value_t = 50, value_parser = parse_audit_log_limit)]
         limit: usize,
     },
     Backup {
@@ -724,6 +724,16 @@ impl From<ListAuditLogError> for CliError {
     fn from(error: ListAuditLogError) -> Self {
         Self::ListAuditLog(error)
     }
+}
+
+fn parse_audit_log_limit(input: &str) -> Result<usize, String> {
+    input
+        .parse::<usize>()
+        .ok()
+        .filter(|limit| (1..=MAX_AUDIT_LOG_LIMIT).contains(limit))
+        .ok_or_else(|| {
+            format!("audit-log limit must be a whole number from 1 to {MAX_AUDIT_LOG_LIMIT}")
+        })
 }
 
 fn parse_occurred_at(input: &str, time_zone: Option<&str>) -> Result<Zoned, CliError> {
