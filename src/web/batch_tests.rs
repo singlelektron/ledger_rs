@@ -319,6 +319,9 @@ async fn later_storage_failure_rolls_back_every_row_and_audit_and_retains_input(
     let (status, _, html) = post(&state, &fields).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(html.contains("No transactions were saved."));
+    assert!(html.contains("try again after resolving the storage problem"));
+    assert!(!html.contains("synthetic batch failure"));
+    assert!(!html.contains("Row 2:"));
     assert!(html.contains("value=\"Lunch\""));
     assert!(html.contains("value=\"Reject\""));
     assert!(transactions(&state).is_empty());

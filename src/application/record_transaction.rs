@@ -84,12 +84,17 @@ pub fn record_transactions(
     transactions: Vec<NewTransaction>,
 ) -> Result<Vec<Transaction>, RecordTransactionsError> {
     for (index, transaction) in transactions.iter().enumerate() {
-        validate_transaction_account(account_repository, transaction).map_err(|source| {
-            RecordTransactionsError::InvalidRow {
-                row: index + 1,
-                source,
-            }
-        })?;
+        validate_transaction_account(account_repository, transaction).map_err(
+            |source| match source {
+                RecordTransactionError::Repository(error) => {
+                    RecordTransactionsError::Repository(error)
+                }
+                source => RecordTransactionsError::InvalidRow {
+                    row: index + 1,
+                    source,
+                },
+            },
+        )?;
     }
     transaction_repository
         .create_many(transactions)
@@ -100,7 +105,7 @@ pub fn record_transactions(
 mod tests {
     use super::*;
 
-    use crate::domain::account::{Account, AccountId};
+    use crate::domain::account::{Account, AccountId, NewAccount};
     use crate::domain::money::{Currency, Money};
     use crate::domain::transaction::{Category, NewTransaction, TransactionKind};
     use crate::infrastructure::in_memory::{
@@ -241,9 +246,18 @@ mod tests {
         accounts
             .save(Account::new(AccountId::new(1), "Cash".into(), Currency::Cny).unwrap())
             .unwrap();
-        for invalid in [
-            new_transaction(AccountId::new(999), Currency::Cny),
-            new_transaction(AccountId::new(1), Currency::Usd),
+        for (invalid, source) in [
+            (
+                new_transaction(AccountId::new(999), Currency::Cny),
+                RecordTransactionError::AccountNotFound(AccountId::new(999)),
+            ),
+            (
+                new_transaction(AccountId::new(1), Currency::Usd),
+                RecordTransactionError::CurrencyMismatch {
+                    expected: Currency::Cny,
+                    found: Currency::Usd,
+                },
+            ),
         ] {
             let mut transactions = InMemoryTransactionRepository::new();
             let error = record_transactions(
@@ -252,16 +266,90 @@ mod tests {
                 vec![new_transaction(AccountId::new(1), Currency::Cny), invalid],
             )
             .unwrap_err();
-            assert!(matches!(
+            assert_eq!(
                 error,
-                RecordTransactionsError::InvalidRow { row: 2, .. }
-            ));
+                RecordTransactionsError::InvalidRow { row: 2, source }
+            );
             assert!(
                 transactions
                     .find_by_account_id(AccountId::new(1))
                     .unwrap()
                     .is_empty()
             );
+        }
+    }
+
+    struct FailingLookupAccounts {
+        accounts: InMemoryAccountRepository,
+        invalid_stored_data: bool,
+    }
+
+    impl AccountRepository for FailingLookupAccounts {
+        fn create(&mut self, account: NewAccount) -> Result<Account, RepositoryError> {
+            self.accounts.create(account)
+        }
+
+        fn save(&mut self, account: Account) -> Result<(), RepositoryError> {
+            self.accounts.save(account)
+        }
+
+        fn find_by_id(&self, id: AccountId) -> Result<Option<Account>, RepositoryError> {
+            if id == AccountId::new(2) {
+                let message = "synthetic account lookup failure".into();
+                return Err(if self.invalid_stored_data {
+                    RepositoryError::InvalidStoredData(message)
+                } else {
+                    RepositoryError::Storage(message)
+                });
+            }
+            self.accounts.find_by_id(id)
+        }
+
+        fn find_all(&self) -> Result<Vec<Account>, RepositoryError> {
+            self.accounts.find_all()
+        }
+
+        fn update(&mut self, account: Account) -> Result<bool, RepositoryError> {
+            self.accounts.update(account)
+        }
+
+        fn delete(&mut self, id: AccountId) -> Result<bool, RepositoryError> {
+            self.accounts.delete(id)
+        }
+    }
+
+    #[test]
+    fn later_batch_account_lookup_failures_remain_repository_errors_without_writes() {
+        for invalid_stored_data in [false, true] {
+            let mut accounts = FailingLookupAccounts {
+                accounts: InMemoryAccountRepository::new(),
+                invalid_stored_data,
+            };
+            accounts
+                .save(Account::new(AccountId::new(1), "Cash".into(), Currency::Cny).unwrap())
+                .unwrap();
+            let mut transactions = InMemoryTransactionRepository::new();
+            let expected = accounts.find_by_id(AccountId::new(2)).unwrap_err();
+
+            assert_eq!(
+                record_transactions(
+                    &accounts,
+                    &mut transactions,
+                    vec![
+                        new_transaction(AccountId::new(1), Currency::Cny),
+                        new_transaction(AccountId::new(2), Currency::Cny),
+                    ],
+                ),
+                Err(RecordTransactionsError::Repository(expected))
+            );
+            for id in [1, 2] {
+                assert!(
+                    transactions
+                        .find_by_account_id(AccountId::new(id))
+                        .unwrap()
+                        .is_empty()
+                );
+            }
         }
     }
 }

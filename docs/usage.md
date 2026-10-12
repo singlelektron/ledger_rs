@@ -317,9 +317,10 @@ rows, use **Add row** to copy the last row's type, category, date/time, and zone
 and remove unused rows before saving. Up to 50 rows can be recorded together.
 Adding or removing rows preserves the other entries without saving transactions.
 
-**Record all transactions** validates every row before one atomic write. Errors
-identify the affected rows and retain the full batch for correction; a validation
-or storage failure saves no transactions or audit entries. The normal amount,
+**Record all transactions** validates every row before one atomic write. Validation
+errors identify the affected rows and retain the full batch for correction;
+storage failures report a ledger problem instead of blaming a row. Neither failure
+saves transactions or audit entries. The normal amount,
 description, currency, and time-zone rules apply. A successful save returns to
 the account history. Submitting the same successful batch again creates new
 transactions, so confirm the history before repeating a completed submission.
