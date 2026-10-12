@@ -39,6 +39,10 @@ cannot fit beside them, and wrap actions separately when needed on narrow screen
 - Account shortcuts should focus their target form, with the next Tab reaching
   its first field. Give form controls accessible labels.
 - Make overflowing report tables keyboard-focusable and horizontally scrollable.
+- Above 900 px, keep account history and entry forms in independently scrollable,
+  keyboard-focusable regions sized below the sticky navigation. Use natural page
+  scrolling in the single-column layout; retain visible focus outlines inside
+  the scrolling regions.
 - Return saved transaction edits to the entry's stable anchor and highlighted
   row. Account for the sticky header so the row remains visible on desktop and
   mobile layouts.

@@ -802,9 +802,9 @@ fn render_account_detail(
             </form>
           </div>
         </details>
-        <div class="dashboard">
-          <section>
-            <div class="section-heading"><div><p class="eyebrow">History</p><h2>Transactions</h2></div><span class="count">"#
+        <div class="dashboard account-dashboard">
+          <section class="account-history" tabindex="0" aria-labelledby="history-heading">
+            <div class="section-heading"><div><p class="eyebrow">History</p><h2 id="history-heading">Transactions</h2></div><span class="count">"#
         (transactions.len())
         r#"</span></div>
             <form class="filter-bar" method="get" action="/accounts/"#
@@ -840,7 +840,7 @@ fn render_account_detail(
         (budget_rows)
         r#"</div>
           </section>
-          <aside class="action-stack">
+          <aside class="action-stack account-entry" tabindex="0" aria-label="Record transactions, transfers, and budgets">
             <div class="form-card" id="new-transaction" tabindex="-1">
               <p class="eyebrow">New transaction</p><h2>Record money in or out</h2>
               <form method="post" action="/accounts/"#
