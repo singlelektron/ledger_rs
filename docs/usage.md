@@ -270,7 +270,9 @@ selection or scrolls the content under the pointer. Click a form field to focus
 it. Dialogs block interaction with the workspace behind them.
 
 In forms, Tab moves between fields, arrows change enum values, and Backspace
-edits text. Enter submits; Escape cancels. Validation errors keep the form open
+edits text. In monthly trend and budget status time zone fields, arrows cycle
+UTC, Asia/Shanghai, and Asia/Kuala_Lumpur; Delete clears the field so you can
+type another supported IANA name. Enter submits; Escape cancels. Validation errors keep the form open
 and preserve input. Deletion prompts require confirmation. Press `r` to reload
 while preserving the page, focus, and selection; `q` or Ctrl+C quits.
 
@@ -291,7 +293,10 @@ workspace without authentication or remote-access support.
 Overview lists accounts and balances. Open an account to manage transactions,
 transfers, and budgets. Account history filters by kind, category, and description.
 Amounts in forms use decimal values such as `12.50`. Transaction and transfer
-forms default to `Asia/Shanghai`; enter the intended zone explicitly.
+forms default to `Asia/Shanghai`. Time zone fields offer suggestions for `UTC`,
+`Asia/Shanghai`, and `Asia/Kuala_Lumpur`; select a suggestion or type another
+supported IANA name. Transaction and transfer fields also accept fixed UTC
+offsets such as `+08:00`. Invalid zones keep the submitted form values visible.
 
 New local times that fall in a daylight-saving gap or overlap are rejected.
 Editing preserves an existing timestamp's fixed UTC offset or its original

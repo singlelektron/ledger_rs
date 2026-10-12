@@ -19,6 +19,9 @@ mod tests;
 #[cfg(test)]
 mod amount_tests;
 
+#[cfg(test)]
+mod time_zone_tests;
+
 #[derive(Clone, Debug)]
 pub struct WebState {
     database_path: PathBuf,
