@@ -101,8 +101,12 @@ the terminal session, and forms retain entered values.
 
 CSV exchange and JSON backup/restore are available through CLI and Web, outside
 the interactive TUI session. CSV parsing and complete-file validation belong in
-the application layer; SQLite owns atomic batch writes. JSON validation also
-belongs in the application layer, while SQLite owns the final empty-target check
+the application layer; SQLite owns atomic batch writes. Interactive Web batch
+entry parses row fields with the normal Web parsers and constructs domain-valid
+transaction drafts. The shared batch-recording use case reuses single-entry
+account/currency validation before the repository's atomic `create_many` call;
+failed writes roll back transactions and their audit capture together. JSON
+validation also belongs in the application layer, while SQLite owns the final empty-target check
 and cross-table restore transaction. Audit history is exposed through a read-only
 application model and repository trait; trigger capture remains in persistence.
 CLI and Web JSON backups use one SQLite read transaction for business state and

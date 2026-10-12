@@ -363,3 +363,9 @@ tbody tr:hover { background: var(--surface); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto; }
 }
+
+.batch-shell { max-width: 780px; margin-inline: auto; }
+.batch-row { display: grid; min-width: 0; gap: 16px; margin: 0; padding: 20px; border: 1px solid var(--line); scroll-margin-top: var(--anchor-offset); }
+.batch-row legend { padding-inline: 8px; font-weight: 600; }
+.batch-errors { margin-top: 24px; padding: 20px; border: 1px solid var(--negative); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .batch-row .field-pair { grid-template-columns: minmax(0, 1fr); } }

@@ -748,6 +748,9 @@ fn render_account_detail(
         </section>
         <div class="account-shortcuts" role="navigation" aria-label="Account actions">
           <a href="#new-transaction">Record transaction <span aria-hidden="true">↗</span></a>
+          <a href="/accounts/"##
+        (account.id().value())
+        r##"/transactions/batch">Record a batch <span aria-hidden="true">↗</span></a>
           <a href="#new-transfer">Create transfer <span aria-hidden="true">↗</span></a>
           <a href="#new-budget">Set budget <span aria-hidden="true">↗</span></a>
         </div>

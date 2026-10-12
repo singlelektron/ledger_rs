@@ -6,6 +6,7 @@ use axum::{
 };
 use std::{io, net::SocketAddr, path::PathBuf};
 
+mod batch;
 mod error;
 mod forms;
 mod handlers;
@@ -18,6 +19,9 @@ mod tests;
 
 #[cfg(test)]
 mod amount_tests;
+
+#[cfg(test)]
+mod batch_tests;
 
 #[derive(Clone, Debug)]
 pub struct WebState {
@@ -71,6 +75,10 @@ pub fn router(database_path: PathBuf) -> Router {
         .route(
             "/accounts/{account_id}/transactions",
             post(handlers::create_transaction_handler),
+        )
+        .route(
+            "/accounts/{account_id}/transactions/batch",
+            get(batch::batch_entry).post(batch::submit_batch),
         )
         .route(
             "/transactions/{transaction_id}/edit",
