@@ -105,6 +105,13 @@ the application layer; SQLite owns atomic batch writes. JSON validation also
 belongs in the application layer, while SQLite owns the final empty-target check
 and cross-table restore transaction. Audit history is exposed through a read-only
 application model and repository trait; trigger capture remains in persistence.
+CLI and Web JSON backups use one SQLite read transaction for business state and
+complete audit history. Format 3 validation belongs in the application layer;
+SQLite owns atomic empty-target restore and temporarily suspends only INSERT
+capture while restoring supplied audit rows. Audit UPDATE/DELETE guards remain
+active. The existing four-repository `create_json_backup` API remains a legacy
+format 2 business-only serializer; `sqlite::create_backup` is the full snapshot
+entry point. Formats 1 and 2 remain readable and regenerate target create events.
 
 ### Local Web security and connection ownership
 

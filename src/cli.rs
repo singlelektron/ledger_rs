@@ -8,7 +8,7 @@ use crate::{
     application::{
         account_balance::{GetAccountBalanceError, get_account_balance_with_transfers},
         audit_log::{ListAuditLogError, list_recent_audit_entries},
-        backup::{BackupError, create_json_backup, validate_json_backup},
+        backup::{BackupError, validate_json_backup},
         budget_report::{BudgetReportError, get_budget_statuses},
         category_report::{GetCategoryReportError, get_net_outflow_by_category},
         create_account::{CreateAccountError, create_account},
@@ -43,7 +43,7 @@ use crate::{
         transfer::{NewTransfer, TransferError, TransferId},
     },
     infrastructure::sqlite::{
-        open_audit_log_repository, open_complete_repositories, restore_backup,
+        create_backup, open_audit_log_repository, open_complete_repositories, restore_backup,
     },
 };
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
@@ -1555,12 +1555,7 @@ pub fn run(cli: Cli) -> Result<String, CliError> {
                     .join("\n"))
             }
             DataCommand::Backup { output } => {
-                let contents = create_json_backup(
-                    &account_repository,
-                    &transaction_repository,
-                    &transfer_repository,
-                    &budget_repository,
-                )?;
+                let contents = create_backup(database.path())?;
                 std::fs::write(&output, contents).map_err(|error| CliError::Io {
                     path: output.clone(),
                     message: error.to_string(),
@@ -3572,6 +3567,35 @@ mod tests {
         })
         .unwrap();
 
+        // Include history that cannot be reconstructed from the live aggregates.
+        run(Cli {
+            database: Some(source_database.clone()),
+            command: Command::Account {
+                command: AccountCommand::Update {
+                    id: 1,
+                    name: "Cash wallet".to_owned(),
+                },
+            },
+        })
+        .unwrap();
+        run(create_account_cli(source_database.clone(), 0, "Temporary")).unwrap();
+        run(Cli {
+            database: Some(source_database.clone()),
+            command: Command::Account {
+                command: AccountCommand::Delete { id: 3 },
+            },
+        })
+        .unwrap();
+        let audit_cli = |database| Cli {
+            database: Some(database),
+            command: Command::Data {
+                command: DataCommand::AuditLog { limit: 200 },
+            },
+        };
+        let original_audit = run(audit_cli(source_database.clone())).unwrap();
+        assert!(original_audit.contains(" | delete | "));
+        assert!(original_audit.contains(" | update | "));
+
         run(Cli {
             database: Some(source_database),
             command: Command::Data {
@@ -3581,6 +3605,10 @@ mod tests {
             },
         })
         .unwrap();
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
+        assert_eq!(document["format_version"], 3);
+        assert_eq!(document["audit_log"].as_array().unwrap().len(), 8);
         run(Cli {
             database: Some(target_database.clone()),
             command: Command::Data {
@@ -3588,6 +3616,10 @@ mod tests {
             },
         })
         .unwrap();
+        assert_eq!(
+            run(audit_cli(target_database.clone())).unwrap(),
+            original_audit
+        );
 
         assert!(
             run(Cli {

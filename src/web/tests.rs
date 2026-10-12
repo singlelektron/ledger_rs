@@ -21,7 +21,6 @@ use super::{
 };
 use crate::{
     application::{
-        backup::create_json_backup,
         manage_transaction::get_transaction,
         manage_transfer::{create_transfer, get_transfer},
     },
@@ -31,7 +30,7 @@ use crate::{
         transaction::TransactionId,
         transfer::{NewTransfer, TransferId},
     },
-    infrastructure::sqlite::{open_all_repositories, open_complete_repositories},
+    infrastructure::sqlite::open_all_repositories,
 };
 use axum::{
     Form,
@@ -1363,16 +1362,31 @@ async fn backup_download_and_empty_database_restore_work() {
     )
     .await
     .unwrap();
+    let _redirect = rename_account_handler(
+        State(source_state.clone()),
+        Path(1),
+        Form(RenameAccountForm {
+            name: "Restored wallet after rename".to_owned(),
+        }),
+    )
+    .await
+    .unwrap();
     let download = download_backup(State(source_state.clone())).await.unwrap();
     assert_eq!(
         download.headers().get("content-type").unwrap(),
         "application/json; charset=utf-8"
     );
-    let backup = {
-        let (accounts, transactions, transfers, budgets) =
-            open_complete_repositories(source_state.database_path()).unwrap();
-        create_json_backup(&accounts, &transactions, &transfers, &budgets).unwrap()
-    };
+    let backup = String::from_utf8(
+        axum::body::to_bytes(download.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let source_json: serde_json::Value = serde_json::from_str(&backup).unwrap();
+    assert_eq!(source_json["format_version"], 3);
+    assert_eq!(source_json["audit_log"].as_array().unwrap().len(), 2);
+    assert_eq!(source_json["audit_log"][1]["operation"], "update");
 
     let target_dir = tempfile::tempdir().unwrap();
     let target_state = WebState::new(target_dir.path().join("target.db"));
@@ -1383,6 +1397,14 @@ async fn backup_download_and_empty_database_restore_work() {
     .await
     .unwrap();
 
+    let restored_download = download_backup(State(target_state.clone())).await.unwrap();
+    let restored_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(restored_download.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(restored_json, source_json);
     let overview = home(State(target_state)).await.unwrap();
     assert!(overview.0.contains("Restored wallet"));
     assert!(overview.0.contains("0.00 USD"));

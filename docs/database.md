@@ -93,15 +93,16 @@ Errors identify invalid rows. Success reports `Imported N transactions`.
 **Importing the same file again creates duplicate transactions.** CSV omits
 transaction IDs and allocates new ones. It exchanges transactions only: it does
 not preserve accounts, transfers, budgets, adjustments, or audit history. Use
-JSON for full business-data recovery. Back up the ledger before a bulk import;
+JSON for full ledger recovery. Back up the ledger before a bulk import;
 for unfamiliar source data, import into a disposable ledger first and compare
 counts, account mappings, and totals before using the real ledger.
 
 ## Backup and recovery
 
-Stop other ledger processes before a backup or upgrade so no writer changes the
-ledger while it is being read. Create a JSON backup with the existing binary and
-an explicit database path:
+Stop other ledger processes before a planned backup or upgrade. Backups read
+business data and audit history in one SQLite snapshot, so concurrent writes
+cannot mix revisions within a backup. Create a JSON backup with the existing
+binary and an explicit database path:
 
 ```sh
 ./ledger_rs --database /path/to/ledger.db data backup \
@@ -110,9 +111,12 @@ an explicit database path:
 
 The command reports `Created backup at ...`. Keep that file outside the release
 directory. A backup contains accounts and adjustments, transactions, transfers,
-budgets, original IDs, references, currencies, and zoned timestamps. The current
-`format_version` is `2`; version `1` remains readable and missing adjustment
-history means a zero baseline. Earlier audit rows are not included.
+budgets, original IDs, references, currencies, zoned timestamps, and the complete
+audit history, including updates and deleted entities. The current CLI and Web
+`format_version` is `3`; audit IDs, write times, operations, and before/after JSON
+snapshots are retained without the audit viewer's 200-row limit. Versions `1`
+and `2` remain readable. They contain no original audit history; missing
+adjustment history in version `1` means a zero baseline.
 
 To verify recovery, restore into a separate, empty target:
 
@@ -124,17 +128,31 @@ To verify recovery, restore into a separate, empty target:
 ```
 
 Restore reports `Restored backup from ...`. Compare restored account lists,
-balances, and important reports with the source before relying on the backup;
-use an account ID actually present in the ledger. Keep the source untouched
+balances, audit history, and important reports with the source before relying on
+the backup; use an account ID actually present in the ledger. Keep the source untouched
 until the recovered ledger has been checked.
 
-Restore validates domain entities, IDs, references, currencies, and adjustment
-history. It refuses a target containing any accounts, transactions, transfers,
-or budgets; it never merges or overwrites business data. Existing audit rows do
-not make an otherwise empty target ineligible. The empty check and all inserts
-share one SQLite transaction, so a constraint/storage failure rolls back the
-restore. Accounts are inserted first, then transactions, transfers, and budgets,
-using their original IDs. These inserts create new audit entries in the target.
+Restore validates domain entities, IDs, references, currencies, adjustment
+history, and audit record structure. Version `3` requires an audit array, even
+when it is empty. Audit event IDs must be positive and less than
+`9223372036854775807` so a restored ledger has room for a later audit event;
+entity IDs retain the full positive signed 64-bit range. Historical snapshots
+need not refer to currently existing entities or use the latest entity schema.
+Validation does not authenticate the source or prove that supplied history is
+complete or unaltered.
+
+Restore refuses a target containing any accounts, transactions, transfers, or
+budgets; it never merges or overwrites business data. A version `3` restore also
+requires an empty audit table, preserving original audit IDs without collisions.
+It inserts the supplied history without generating replacement create events.
+Legacy version `1`/`2` restores still generate new create events and may append
+them to existing history in an otherwise empty target.
+
+The empty check, business inserts, audit inserts, and capture-trigger restoration
+share one SQLite transaction. A constraint/storage failure rolls back the entire
+restore. Version `3` temporarily suspends only business INSERT capture triggers
+inside that transaction; audit UPDATE/DELETE protection stays active. Capture
+resumes before commit, and subsequent writes append after the preserved IDs.
 
 CLI and Web use the same validation and restore boundary. In the Web Data page,
 download the JSON backup or paste it into Restore on an empty target ledger.
@@ -161,8 +179,12 @@ zero baseline; transactions are preserved. Normal creation uses
 repository-allocated IDs. Explicit IDs are reserved for restoration and legacy
 storage support.
 
-v0.3.0 uses schema version 5 and backup format 2. v0.2.0 rejects both. To return
-to v0.2.0, use that binary to restore a **pre-upgrade** backup into a separate empty
+The published v0.3.0 release uses schema version 5 and backup format 2; it rejects
+format 3 backups. Audit-preserving backups require a build with format 3 support.
+The database schema remains version 5, so this change does not migrate storage.
+Keep a backup readable by the intended older binary before reverting versions.
+v0.2.0 rejects schema 5 and backup format 2. To return to v0.2.0, use that binary
+to restore a **pre-upgrade** backup into a separate empty
 database; later changes are not in that backup. Retain the upgraded ledger while
 checking recovery. See the [v0.3.0 release notes](releases/v0.3.0.md) for its
 version-specific upgrade procedure and download variants.
@@ -176,10 +198,21 @@ version-specific upgrade procedure and download variants.
 The CLI accepts limits from 1 to 200 (default 50), returning newest entries first.
 Rows contain UTC write time, entity type and ID, operation, and JSON before/after
 snapshots. SQLite triggers capture account, transaction, transfer, and budget
-writes, including imports, adjustments, and restores. Capture shares the original
-write's transaction, so rolled-back writes leave no audit entries.
+writes, including imports and adjustments. Legacy restores generate create
+events; version `3` restores preserve the supplied history instead. Capture
+shares the original write's transaction, so rolled-back writes leave no audit
+entries.
 
 The log is append-only and has no foreign keys to mutable entities: deleting a
 business entity retains its history. Stored JSON is validated before the
-application exposes typed audit records. JSON backups preserve business state,
-not the original audit trail; restored data has new write history.
+application exposes typed audit records. Current JSON backups preserve both
+business state and the original audit trail. CSV imports still record new writes
+and cannot restore historical audit events.
+
+Current application connections install a temporary guard against audit ID
+exhaustion. Once an event reaches `9223372036854775807`, further audited writes
+fail and roll back their business changes instead of allocating lower random
+IDs. This guard does not migrate the stored schema and does not protect writes
+made by older binaries or external SQLite tools. An exhausted ledger remains
+readable, but its audit history cannot be exported as a restorable version `3`
+backup because that format rejects the exhausted ID.

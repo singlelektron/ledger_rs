@@ -1,5 +1,7 @@
 use crate::application::audit_log::{AuditEntity, AuditLogEntry, AuditOperation};
-use crate::application::backup::ValidatedBackup;
+use crate::application::backup::{
+    BackupError, ValidatedBackup, create_json_backup_with_audit, validate_json_backup,
+};
 use crate::application::repository::{
     AccountRepository, AuditLogRepository, BudgetRepository, RepositoryError,
     TransactionRepository, TransferRepository,
@@ -256,7 +258,23 @@ fn audit_operation_from_code(code: &str) -> Result<AuditOperation, RepositoryErr
 
 impl AuditLogRepository for SqliteAuditLogRepository {
     fn list_recent(&self, limit: usize) -> Result<Vec<AuditLogEntry>, RepositoryError> {
-        let limit = i64::try_from(limit).map_err(|_| RepositoryError::InvalidLimit(limit))?;
+        self.read_entries(Some(limit))
+    }
+}
+
+impl SqliteAuditLogRepository {
+    fn list_all(&self) -> Result<Vec<AuditLogEntry>, RepositoryError> {
+        let mut entries = self.read_entries(None)?;
+        entries.reverse();
+        Ok(entries)
+    }
+
+    fn read_entries(&self, limit: Option<usize>) -> Result<Vec<AuditLogEntry>, RepositoryError> {
+        // SQLite's negative limit reads every row, independently of the UI limit.
+        let limit = limit
+            .map(|limit| i64::try_from(limit).map_err(|_| RepositoryError::InvalidLimit(limit)))
+            .transpose()?
+            .unwrap_or(-1);
         let mut statement = self
             .connection
             .prepare(
@@ -1212,6 +1230,39 @@ pub fn open_repositories(
     ))
 }
 
+/// Capture business data and every audit event from one SQLite read snapshot.
+pub fn create_backup(path: impl AsRef<Path>) -> Result<String, BackupError> {
+    let (accounts, transactions, transfers, budgets) = open_complete_repositories(path)?;
+    let transaction = accounts
+        .connection
+        .unchecked_transaction()
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    let audit_log = SqliteAuditLogRepository {
+        connection: Rc::clone(&accounts.connection),
+    }
+    .list_all()?;
+    let contents = create_json_backup_with_audit(
+        &accounts,
+        &transactions,
+        &transfers,
+        &budgets,
+        Some(&audit_log),
+    )?;
+    // Refuse to produce an unrestorable document from malformed stored history.
+    validate_json_backup(&contents)?;
+    transaction
+        .commit()
+        .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    Ok(contents)
+}
+
+const AUDIT_INSERT_TRIGGERS: [&str; 4] = [
+    "audit_accounts_create",
+    "audit_transactions_create",
+    "audit_transfers_create",
+    "audit_budgets_create",
+];
+
 pub fn restore_backup(
     path: impl AsRef<Path>,
     backup: &ValidatedBackup,
@@ -1238,6 +1289,31 @@ pub fn restore_backup(
         .map_err(|error| RepositoryError::Storage(error.to_string()))?;
     if stored_count != 0 {
         return Err(RepositoryError::RestoreTargetNotEmpty);
+    }
+
+    let mut capture_triggers = Vec::new();
+    if backup.audit_log().is_some() {
+        let audit_count: i64 = transaction
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        if audit_count != 0 {
+            return Err(RepositoryError::RestoreTargetNotEmpty);
+        }
+        // Restored rows already have their original history. Suspend only insert
+        // capture inside this transaction; append-only guards remain active.
+        for name in AUDIT_INSERT_TRIGGERS {
+            let sql: String = transaction
+                .query_row(
+                    "SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?1",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            transaction
+                .execute_batch(&format!("DROP TRIGGER {name}"))
+                .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+            capture_triggers.push(sql);
+        }
     }
 
     for account in backup.accounts() {
@@ -1320,6 +1396,34 @@ pub fn restore_backup(
                     currency_to_code(value.limit().currency()),
                 ],
             )
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+    }
+
+    if let Some(entries) = backup.audit_log() {
+        for entry in entries {
+            transaction
+                .execute(
+                    "INSERT INTO audit_log
+                     (id, changed_at, entity_type, entity_id, operation, before_state, after_state)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        i64::try_from(entry.id())
+                            .map_err(|_| RepositoryError::InvalidId(entry.id()))?,
+                        entry.changed_at().to_string(),
+                        entry.entity().as_str(),
+                        i64::try_from(entry.entity_id())
+                            .map_err(|_| RepositoryError::InvalidId(entry.entity_id()))?,
+                        entry.operation().as_str(),
+                        entry.before_state().map(serde_json::Value::to_string),
+                        entry.after_state().map(serde_json::Value::to_string),
+                    ],
+                )
+                .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        }
+    }
+    for sql in capture_triggers {
+        transaction
+            .execute_batch(&sql)
             .map_err(|error| RepositoryError::Storage(error.to_string()))?;
     }
     transaction
@@ -1671,6 +1775,16 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
             PRAGMA user_version = 5;
         "#)?;
     }
+    // Audit ordering depends on monotonically increasing rowids. SQLite would
+    // choose a random unused rowid after i64::MAX, so current application
+    // connections must reject the enclosing write once that space is exhausted.
+    // A temporary trigger adds this guard without changing the stored schema.
+    transaction.execute_batch(
+        "CREATE TEMP TRIGGER IF NOT EXISTS guard_audit_log_id_exhaustion
+         BEFORE INSERT ON main.audit_log
+         WHEN (SELECT MAX(id) FROM main.audit_log) = 9223372036854775807
+         BEGIN SELECT RAISE(ABORT, 'audit log id space exhausted'); END;",
+    )?;
     transaction.commit()
 }
 
@@ -2381,6 +2495,440 @@ mod tests {
             .unwrap();
         assert_eq!(account_count, 0);
         assert_eq!(transaction_count, 0);
+    }
+
+    #[test]
+    fn backup_preserves_complete_audit_history_and_future_append_only_capture() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source = temp_dir.path().join("source.db");
+        let target = temp_dir.path().join("restored.db");
+        let (mut accounts, mut transactions, mut transfers, mut budgets) =
+            open_complete_repositories(&source).unwrap();
+        let cash = accounts
+            .create(NewAccount::new("Cash".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let bank = accounts
+            .create(NewAccount::new("Bank".into(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts
+            .save(
+                Account::new(AccountId::new(99), "Deleted account".into(), Currency::Cny).unwrap(),
+            )
+            .unwrap();
+        accounts.delete(AccountId::new(99)).unwrap();
+        let expense = transactions
+            .create(
+                NewTransaction::new(
+                    cash.id(),
+                    TransactionKind::Expense,
+                    Money::from_minor_units(1250, Currency::Cny),
+                    sample_occurred_at(),
+                    "Lunch".into(),
+                    Category::Food,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        transactions
+            .update(
+                Transaction::new(
+                    expense.id(),
+                    cash.id(),
+                    TransactionKind::Expense,
+                    Money::from_minor_units(1500, Currency::Cny),
+                    sample_occurred_at(),
+                    "Corrected lunch".into(),
+                    Category::Food,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let transfer = transfers
+            .create(
+                NewTransfer::new(
+                    cash.id(),
+                    bank.id(),
+                    Money::from_minor_units(200, Currency::Cny),
+                    Money::from_minor_units(200, Currency::Cny),
+                    sample_occurred_at(),
+                    "Moved funds".into(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        transfers.delete(transfer.id()).unwrap();
+        budgets
+            .set(
+                NewBudget::new(
+                    cash.id(),
+                    Category::Food,
+                    BudgetMonth::new(2026, 8).unwrap(),
+                    Money::from_minor_units(20000, Currency::Cny),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        for index in 0..205 {
+            accounts
+                .update(Account::new(cash.id(), format!("Cash {index}"), Currency::Cny).unwrap())
+                .unwrap();
+        }
+        // Gaps and timestamps with greater precision than SQLite's clock must
+        // survive; audit entity IDs need not refer to surviving business rows.
+        accounts
+            .connection
+            .execute(
+                "INSERT INTO audit_log
+                 (id, changed_at, entity_type, entity_id, operation, before_state)
+                 VALUES (1000, '2020-01-02T03:04:05.123456789Z', 'account', 99, 'delete',
+                         '{\"id\":99,\"name\":\"Historical account\",\"currency\":\"CNY\"}')",
+                [],
+            )
+            .unwrap();
+
+        let backup = validate_json_backup(&create_backup(&source).unwrap()).unwrap();
+        let entries = backup.audit_log().unwrap();
+        assert!(entries.len() > 200);
+        assert_eq!(entries.last().unwrap().id(), 1000);
+        assert_eq!(entries.last().unwrap().entity_id(), 99);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.entity() == AuditEntity::Transaction)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.entity() == AuditEntity::Transfer)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.entity() == AuditEntity::Budget)
+        );
+        restore_backup(&target, &backup).unwrap();
+        assert_eq!(
+            validate_json_backup(&create_backup(&target).unwrap()).unwrap(),
+            backup
+        );
+
+        let (mut target_accounts, _, _, _) = open_complete_repositories(&target).unwrap();
+        target_accounts
+            .create(NewAccount::new("After restore".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let new_history = open_audit_log_repository(&target)
+            .unwrap()
+            .list_all()
+            .unwrap();
+        assert_eq!(&new_history[..entries.len()], entries);
+        assert_eq!(new_history.last().unwrap().id(), 1001);
+        assert!(
+            target_accounts
+                .connection
+                .execute("UPDATE audit_log SET entity_id = 1 WHERE id = 1000", [])
+                .is_err()
+        );
+        assert!(
+            target_accounts
+                .connection
+                .execute("DELETE FROM audit_log WHERE id = 1000", [])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn restored_audit_ids_stop_atomically_at_sqlite_rowid_exhaustion() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target = temp_dir.path().join("near-exhaustion.db");
+        let backup = validate_json_backup(
+            &serde_json::json!({
+                "format_version": 3,
+                "accounts": [], "transactions": [], "transfers": [], "budgets": [],
+                "audit_log": [{
+                    "id": i64::MAX - 1, "changed_at": "2026-08-20T02:00:00Z",
+                    "entity_type": "account", "entity_id": i64::MAX, "operation": "delete",
+                    "before_state": {"id": i64::MAX, "name": "Deleted account", "currency": "CNY"},
+                    "after_state": null
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        restore_backup(&target, &backup).unwrap();
+        let (mut accounts, _, _, _) = open_complete_repositories(&target).unwrap();
+        let last_account = accounts
+            .create(NewAccount::new("Last audited write".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let history = open_audit_log_repository(&target)
+            .unwrap()
+            .list_all()
+            .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0], backup.audit_log().unwrap()[0]);
+        assert_eq!(history[1].id(), i64::MAX as u64);
+
+        for write in [
+            accounts
+                .create(NewAccount::new("Must roll back".into(), Currency::Cny).unwrap())
+                .map(|_| ()),
+            accounts
+                .update(
+                    Account::new(last_account.id(), "Must not rename".into(), Currency::Cny)
+                        .unwrap(),
+                )
+                .map(|_| ()),
+            accounts.delete(last_account.id()).map(|_| ()),
+        ] {
+            assert_eq!(
+                write,
+                Err(RepositoryError::Storage(
+                    "audit log id space exhausted".into()
+                ))
+            );
+        }
+        assert_eq!(accounts.find_all().unwrap(), vec![last_account]);
+        assert_eq!(
+            open_audit_log_repository(&target)
+                .unwrap()
+                .list_all()
+                .unwrap(),
+            history
+        );
+        // The runtime guard does not migrate or add to the persistent schema.
+        let stored_guard_count: i64 = accounts.connection.query_row(
+            "SELECT COUNT(*) FROM main.sqlite_schema WHERE name = 'guard_audit_log_id_exhaustion'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored_guard_count, 0);
+    }
+
+    #[test]
+    fn existing_exhausted_audit_ids_block_writes_and_legacy_restore() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target = temp_dir.path().join("already-exhausted.db");
+        // Simulate a ledger written by an earlier binary or external SQLite tool.
+        drop(open_complete_repositories(&target).unwrap());
+        let external_connection = Connection::open(&target).unwrap();
+        external_connection
+            .execute(
+                "INSERT INTO audit_log (id, entity_type, entity_id, operation, before_state)
+             VALUES (?1, 'account', 1, 'delete', '{\"id\":1}')",
+                params![i64::MAX],
+            )
+            .unwrap();
+        drop(external_connection);
+        let original_history = open_audit_log_repository(&target)
+            .unwrap()
+            .list_all()
+            .unwrap();
+        let (mut accounts, _, _, _) = open_complete_repositories(&target).unwrap();
+        assert_eq!(
+            accounts.create(NewAccount::new("Must not create".into(), Currency::Cny).unwrap()),
+            Err(RepositoryError::Storage(
+                "audit log id space exhausted".into()
+            ))
+        );
+        for version in [1, 2] {
+            let backup = validate_json_backup(
+                &serde_json::json!({
+                    "format_version": version,
+                    "accounts": [{"id": 20, "name": "Must not restore", "currency": "CNY"}],
+                    "transactions": [], "transfers": [], "budgets": []
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert_eq!(
+                restore_backup(&target, &backup),
+                Err(RepositoryError::Storage(
+                    "audit log id space exhausted".into()
+                ))
+            );
+            assert!(accounts.find_all().unwrap().is_empty());
+            assert_eq!(
+                open_audit_log_repository(&target)
+                    .unwrap()
+                    .list_all()
+                    .unwrap(),
+                original_history
+            );
+        }
+    }
+
+    #[test]
+    fn restores_audit_only_backup_and_preserves_legacy_audit_only_target_behavior() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source = temp_dir.path().join("source.db");
+        let (mut accounts, _, _, _) = open_complete_repositories(&source).unwrap();
+        let account = accounts
+            .create(NewAccount::new("Deleted".into(), Currency::Cny).unwrap())
+            .unwrap();
+        accounts.delete(account.id()).unwrap();
+        let backup = validate_json_backup(&create_backup(&source).unwrap()).unwrap();
+        assert!(backup.accounts().is_empty());
+        assert_eq!(backup.audit_log().unwrap().len(), 2);
+        let target = temp_dir.path().join("restored.db");
+        restore_backup(&target, &backup).unwrap();
+        assert_eq!(
+            validate_json_backup(&create_backup(&target).unwrap()).unwrap(),
+            backup
+        );
+        assert_eq!(
+            restore_backup(&target, &backup),
+            Err(RepositoryError::RestoreTargetNotEmpty)
+        );
+        assert_eq!(
+            validate_json_backup(&create_backup(&target).unwrap()).unwrap(),
+            backup
+        );
+
+        for version in [1, 2] {
+            let legacy_target = temp_dir.path().join(format!("legacy-{version}.db"));
+            restore_backup(&legacy_target, &backup).unwrap();
+            let legacy = validate_json_backup(
+                &serde_json::json!({
+                    "format_version": version,
+                    "accounts": [{"id": 20, "name": "Legacy restore", "currency": "CNY"}],
+                    "transactions": [], "transfers": [], "budgets": []
+                })
+                .to_string(),
+            )
+            .unwrap();
+            restore_backup(&legacy_target, &legacy).unwrap();
+            let restored = validate_json_backup(&create_backup(&legacy_target).unwrap()).unwrap();
+            assert_eq!(restored.accounts().len(), 1);
+            let history = restored.audit_log().unwrap();
+            assert_eq!(&history[..2], backup.audit_log().unwrap());
+            assert_eq!(history[2].entity_id(), 20);
+            assert_eq!(history[2].operation(), AuditOperation::Create);
+        }
+    }
+
+    #[test]
+    fn empty_original_history_does_not_generate_restoration_events() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target = temp_dir.path().join("restored.db");
+        let backup = validate_json_backup(
+            &serde_json::json!({
+                "format_version": 3,
+                "accounts": [{"id": 20, "name": "Predates audit capture", "currency": "CNY"}],
+                "transactions": [], "transfers": [], "budgets": [], "audit_log": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        restore_backup(&target, &backup).unwrap();
+        assert_eq!(
+            validate_json_backup(&create_backup(&target).unwrap()).unwrap(),
+            backup
+        );
+        let (mut accounts, _, _, _) = open_complete_repositories(&target).unwrap();
+        accounts
+            .create(NewAccount::new("New account".into(), Currency::Cny).unwrap())
+            .unwrap();
+        assert_eq!(
+            open_audit_log_repository(target)
+                .unwrap()
+                .list_all()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn refuses_to_export_malformed_stored_audit_snapshots() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source = temp_dir.path().join("source.db");
+        let (accounts, _, _, _) = open_complete_repositories(&source).unwrap();
+        accounts
+            .connection
+            .execute_batch(
+                "INSERT INTO audit_log (entity_type, entity_id, operation, after_state)
+                 VALUES ('account', 1, 'create', '[]')",
+            )
+            .unwrap();
+        assert!(matches!(
+            create_backup(source),
+            Err(BackupError::InvalidEntity {
+                entity: "audit log",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn failed_audit_restore_rolls_back_rows_and_restores_capture_triggers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source = temp_dir.path().join("source.db");
+        let target = temp_dir.path().join("restored.db");
+        let (mut source_accounts, _, _, _) = open_complete_repositories(&source).unwrap();
+        source_accounts
+            .create(NewAccount::new("Source".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let backup = validate_json_backup(&create_backup(source).unwrap()).unwrap();
+        let (mut target_accounts, _, _, _) = open_complete_repositories(&target).unwrap();
+        target_accounts
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_restored_audit BEFORE INSERT ON audit_log
+                 BEGIN SELECT RAISE(ABORT, 'test audit restore failure'); END;",
+            )
+            .unwrap();
+        assert!(matches!(
+            restore_backup(&target, &backup),
+            Err(RepositoryError::Storage(_))
+        ));
+        for table in [
+            "accounts",
+            "transactions",
+            "transfers",
+            "budgets",
+            "audit_log",
+        ] {
+            let count: i64 = target_accounts
+                .connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "restore left partial rows in {table}");
+        }
+        for trigger in AUDIT_INSERT_TRIGGERS
+            .into_iter()
+            .chain(["protect_audit_log_update", "protect_audit_log_delete"])
+        {
+            let exists: bool = target_accounts
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = ?1)",
+                    params![trigger],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "restore left trigger {trigger} missing");
+        }
+        target_accounts
+            .connection
+            .execute_batch("DROP TRIGGER reject_restored_audit")
+            .unwrap();
+        target_accounts
+            .create(NewAccount::new("After failed restore".into(), Currency::Cny).unwrap())
+            .unwrap();
+        assert_eq!(
+            open_audit_log_repository(target)
+                .unwrap()
+                .list_all()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            target_accounts
+                .connection
+                .execute("DELETE FROM audit_log", [])
+                .is_err()
+        );
     }
 
     #[test]
