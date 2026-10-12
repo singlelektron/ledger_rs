@@ -26,6 +26,7 @@ pub trait AccountRepository {
 pub trait TransactionRepository {
     fn create(&mut self, transaction: NewTransaction) -> Result<Transaction, RepositoryError>;
 
+    /// Create the entire batch atomically: on failure, no transaction is saved.
     fn create_many(
         &mut self,
         transactions: Vec<NewTransaction>,

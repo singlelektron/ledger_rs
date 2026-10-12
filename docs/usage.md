@@ -321,3 +321,25 @@ or restoring data.
 The first Tab stop is **Skip to content**. Account shortcuts focus their forms;
 wide report tables scroll inside focusable regions on narrow screens. See the
 [Web design reference](ui/web-design.md) for screenshots and accessibility checks.
+
+Choose **Record a batch** from an account to enter a small-to-medium group of
+transactions in one workflow. The account and currency apply to every row;
+each row has its own type, decimal amount, description, category, local date/time,
+and time zone. Time-zone fields suggest UTC, Asia/Shanghai, and Asia/Kuala_Lumpur;
+other valid IANA zones or fixed offsets can be entered directly. Start with two
+rows, use **Add row** to copy the last row's type, category, date/time, and zone,
+and remove unused rows before saving. Up to 50 rows can be recorded together.
+Adding or removing rows preserves the other entries without saving transactions.
+
+**Record all transactions** validates every row before one atomic write. Validation
+errors identify the affected rows and retain the full batch for correction;
+storage failures report a ledger problem instead of blaming a row. Neither failure
+saves transactions or audit entries. The normal amount,
+description, currency, and time-zone rules apply. A successful save returns to
+the account history. Submitting the same successful batch again creates new
+transactions, so confirm the history before repeating a completed submission.
+
+Use batch entry for a handful of transactions entered or corrected interactively.
+Use [CSV import](database.md#csv-transaction-exchange) for an existing file or a
+larger external dataset. CSV remains available through CLI and Web; interactive
+batch entry currently uses Web. Batch editing and deletion are not provided.

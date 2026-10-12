@@ -12,6 +12,7 @@ learning project for maintainable Rust software. Its command-line (CLI), termina
   by currency.
 - Search transaction history, exchange CSV transactions, and back up or restore
   the ledger with versioned JSON through the CLI and Web.
+- Enter groups of transactions together through the Web batch-entry form.
 - Preserve recorded time zones and an append-only database audit trail.
 
 Supported currencies are CNY, USD, EUR, HKD, and MYR. Amounts use exact integer
