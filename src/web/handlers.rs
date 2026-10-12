@@ -4,7 +4,7 @@ use crate::application::portfolio_report::{
 use crate::{
     application::{
         account_balance::get_account_balance_with_transfers,
-        backup::{create_json_backup, validate_json_backup},
+        backup::validate_json_backup,
         budget_report::get_budget_statuses,
         create_account::create_account,
         csv_exchange::{export_transactions_csv, import_transactions_csv},
@@ -33,7 +33,9 @@ use crate::{
         transaction::{NewTransaction, TransactionId, TransactionKind},
         transfer::{NewTransfer, TransferId},
     },
-    infrastructure::sqlite::{open_all_repositories, open_complete_repositories, restore_backup},
+    infrastructure::sqlite::{
+        create_backup, open_all_repositories, open_complete_repositories, restore_backup,
+    },
 };
 use axum::{
     Form,
@@ -407,12 +409,12 @@ pub(crate) async fn data_tools(State(state): State<WebState>) -> Result<Html<Str
         r#"
         <section class="hero compact-hero"><p class="eyebrow">Local storage</p><h1 class="compact">Data tools</h1><p class="lede">Move data in and out of this workstation without a remote service.</p></section>
         <div class="data-grid">
-          <section class="data-card"><p class="eyebrow">Full recovery</p><h2>JSON backup</h2><p>Download accounts, transactions, transfers, budgets, IDs, and zoned timestamps.</p><a class="button" href="/data/backup">Download backup</a></section>
+          <section class="data-card"><p class="eyebrow">Full recovery</p><h2>JSON backup</h2><p>Download accounts, adjustments, transactions, transfers, budgets, IDs, zoned timestamps, and complete audit history.</p><a class="button" href="/data/backup">Download backup</a></section>
           <section class="data-card"><p class="eyebrow">Transaction exchange</p><h2>CSV export</h2><div class="data-links">"#
         (export_links)
         r#"</div></section>
           <section class="data-card"><p class="eyebrow">Transaction exchange</p><h2>Import CSV</h2><p>Paste a seven-column CSV document with its header. For external data, use account names and decimal amounts:</p><p><code>account,kind,amount,currency,occurred_at,description,category</code></p><p>Account names are case-sensitive and must match exactly one existing account. Amounts must be positive decimals such as 12.50, with at most two fractional digits. Currency must match the account.</p><p>Native exports are also accepted with this header:</p><p><code>account_id,kind,amount_minor,currency,occurred_at,description,category</code></p><p>The import is atomic: one invalid row writes nothing.</p><form method="post" action="/data/import"><label>CSV document<textarea name="csv" required rows="9" placeholder="account,kind,amount,currency,occurred_at,description,category&#10;Cash,expense,12.50,CNY,2026-09-01T12:00:00+08:00[Asia/Shanghai],Lunch,food"></textarea></label><button type="submit">Import transactions</button></form></section>
-          <section class="data-card danger-zone"><p class="eyebrow">Full recovery</p><h2>Restore JSON backup</h2><p>Restore is accepted only when all ledger tables are empty. Existing data is never merged or overwritten.</p><form method="post" action="/data/restore"><label>Backup document<textarea name="json" required rows="9" placeholder="Paste a ledger_rs JSON backup"></textarea></label><button class="button danger" type="submit">Restore into empty ledger</button></form></section>
+          <section class="data-card danger-zone"><p class="eyebrow">Full recovery</p><h2>Restore JSON backup</h2><p>Restore requires empty business tables. Current backups also require empty audit history and preserve original audit events; older backups generate new events. Existing data is never merged or overwritten.</p><form method="post" action="/data/restore"><label>Backup document<textarea name="json" required rows="9" placeholder="Paste a ledger_rs JSON backup"></textarea></label><button class="button danger" type="submit">Restore into empty ledger</button></form></section>
         </div>
         "#
     };
@@ -420,10 +422,7 @@ pub(crate) async fn data_tools(State(state): State<WebState>) -> Result<Html<Str
 }
 
 pub(crate) async fn download_backup(State(state): State<WebState>) -> Result<Response, WebError> {
-    let (accounts, transactions, transfers, budgets) =
-        open_complete_repositories(state.database_path())
-            .map_err(|error| WebError::internal("open database", error))?;
-    let backup = create_json_backup(&accounts, &transactions, &transfers, &budgets)
+    let backup = create_backup(state.database_path())
         .map_err(|error| WebError::internal("create backup", error))?;
     Ok((
         [
