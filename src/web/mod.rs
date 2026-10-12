@@ -7,6 +7,8 @@ use axum::{
 use std::{io, net::SocketAddr, path::PathBuf};
 
 mod batch;
+#[cfg(test)]
+mod batch_tests;
 mod error;
 mod forms;
 mod handlers;
@@ -19,9 +21,6 @@ mod tests;
 
 #[cfg(test)]
 mod amount_tests;
-
-#[cfg(test)]
-mod batch_tests;
 
 #[derive(Clone, Debug)]
 pub struct WebState {
