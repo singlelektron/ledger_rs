@@ -134,9 +134,12 @@ until the recovered ledger has been checked.
 
 Restore validates domain entities, IDs, references, currencies, adjustment
 history, and audit record structure. Version `3` requires an audit array, even
-when it is empty. Historical snapshots need not refer to currently existing
-entities or use the latest entity schema. Validation does not authenticate the
-source or prove that supplied history is complete or unaltered.
+when it is empty. Audit event IDs must be positive and less than
+`9223372036854775807` so a restored ledger has room for a later audit event;
+entity IDs retain the full positive signed 64-bit range. Historical snapshots
+need not refer to currently existing entities or use the latest entity schema.
+Validation does not authenticate the source or prove that supplied history is
+complete or unaltered.
 
 Restore refuses a target containing any accounts, transactions, transfers, or
 budgets; it never merges or overwrites business data. A version `3` restore also
@@ -205,3 +208,11 @@ business entity retains its history. Stored JSON is validated before the
 application exposes typed audit records. Current JSON backups preserve both
 business state and the original audit trail. CSV imports still record new writes
 and cannot restore historical audit events.
+
+Current application connections install a temporary guard against audit ID
+exhaustion. Once an event reaches `9223372036854775807`, further audited writes
+fail and roll back their business changes instead of allocating lower random
+IDs. This guard does not migrate the stored schema and does not protect writes
+made by older binaries or external SQLite tools. An exhausted ledger remains
+readable, but its audit history cannot be exported as a restorable version `3`
+backup because that format rejects the exhausted ID.

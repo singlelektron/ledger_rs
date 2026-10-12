@@ -558,6 +558,14 @@ pub fn validate_json_backup(input: &str) -> Result<ValidatedBackup, BackupError>
                 .into_iter()
                 .map(|entry| {
                     checked_id("audit log", entry.id)?;
+                    // SQLite chooses lower random rowids after reaching this
+                    // value, which would break newest-first audit ordering.
+                    if entry.id == i64::MAX as u64 {
+                        return Err(BackupError::InvalidId {
+                            entity: "audit log",
+                            id: entry.id,
+                        });
+                    }
                     checked_id("audit entity", entry.entity_id)?;
                     if !ids.insert(entry.id) {
                         return Err(BackupError::DuplicateId {
@@ -702,6 +710,7 @@ mod tests {
     fn validates_audit_ids_timestamps_enums_and_snapshot_shapes() {
         for (field, value) in [
             ("id", serde_json::json!(0)),
+            ("id", serde_json::json!(i64::MAX)),
             ("id", serde_json::json!(u64::MAX)),
             ("entity_id", serde_json::json!(0)),
             ("entity_id", serde_json::json!(u64::MAX)),
@@ -735,6 +744,26 @@ mod tests {
                 id: 7,
             })
         );
+    }
+
+    #[test]
+    fn reserves_the_last_audit_id_without_restricting_entity_ids() {
+        let mut document = audit_backup_document();
+        document["audit_log"][0]["id"] = serde_json::json!(i64::MAX);
+        assert_eq!(
+            validate_json_backup(&document.to_string()),
+            Err(BackupError::InvalidId {
+                entity: "audit log",
+                id: i64::MAX as u64,
+            })
+        );
+        document["audit_log"][0]["id"] = serde_json::json!(i64::MAX - 1);
+        document["audit_log"][0]["entity_id"] = serde_json::json!(i64::MAX);
+        document["audit_log"][0]["after_state"]["id"] = serde_json::json!(i64::MAX);
+        let backup = validate_json_backup(&document.to_string()).unwrap();
+        let entry = &backup.audit_log().unwrap()[0];
+        assert_eq!(entry.id(), (i64::MAX - 1) as u64);
+        assert_eq!(entry.entity_id(), i64::MAX as u64);
     }
 
     #[test]

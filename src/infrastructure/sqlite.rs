@@ -1775,6 +1775,16 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
             PRAGMA user_version = 5;
         "#)?;
     }
+    // Audit ordering depends on monotonically increasing rowids. SQLite would
+    // choose a random unused rowid after i64::MAX, so current application
+    // connections must reject the enclosing write once that space is exhausted.
+    // A temporary trigger adds this guard without changing the stored schema.
+    transaction.execute_batch(
+        "CREATE TEMP TRIGGER IF NOT EXISTS guard_audit_log_id_exhaustion
+         BEFORE INSERT ON main.audit_log
+         WHEN (SELECT MAX(id) FROM main.audit_log) = 9223372036854775807
+         BEGIN SELECT RAISE(ABORT, 'audit log id space exhausted'); END;",
+    )?;
     transaction.commit()
 }
 
@@ -2624,6 +2634,125 @@ mod tests {
                 .execute("DELETE FROM audit_log WHERE id = 1000", [])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn restored_audit_ids_stop_atomically_at_sqlite_rowid_exhaustion() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target = temp_dir.path().join("near-exhaustion.db");
+        let backup = validate_json_backup(
+            &serde_json::json!({
+                "format_version": 3,
+                "accounts": [], "transactions": [], "transfers": [], "budgets": [],
+                "audit_log": [{
+                    "id": i64::MAX - 1, "changed_at": "2026-08-20T02:00:00Z",
+                    "entity_type": "account", "entity_id": i64::MAX, "operation": "delete",
+                    "before_state": {"id": i64::MAX, "name": "Deleted account", "currency": "CNY"},
+                    "after_state": null
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        restore_backup(&target, &backup).unwrap();
+        let (mut accounts, _, _, _) = open_complete_repositories(&target).unwrap();
+        let last_account = accounts
+            .create(NewAccount::new("Last audited write".into(), Currency::Cny).unwrap())
+            .unwrap();
+        let history = open_audit_log_repository(&target)
+            .unwrap()
+            .list_all()
+            .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0], backup.audit_log().unwrap()[0]);
+        assert_eq!(history[1].id(), i64::MAX as u64);
+
+        for write in [
+            accounts
+                .create(NewAccount::new("Must roll back".into(), Currency::Cny).unwrap())
+                .map(|_| ()),
+            accounts
+                .update(
+                    Account::new(last_account.id(), "Must not rename".into(), Currency::Cny)
+                        .unwrap(),
+                )
+                .map(|_| ()),
+            accounts.delete(last_account.id()).map(|_| ()),
+        ] {
+            assert_eq!(
+                write,
+                Err(RepositoryError::Storage(
+                    "audit log id space exhausted".into()
+                ))
+            );
+        }
+        assert_eq!(accounts.find_all().unwrap(), vec![last_account]);
+        assert_eq!(
+            open_audit_log_repository(&target)
+                .unwrap()
+                .list_all()
+                .unwrap(),
+            history
+        );
+        // The runtime guard does not migrate or add to the persistent schema.
+        let stored_guard_count: i64 = accounts.connection.query_row(
+            "SELECT COUNT(*) FROM main.sqlite_schema WHERE name = 'guard_audit_log_id_exhaustion'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored_guard_count, 0);
+    }
+
+    #[test]
+    fn existing_exhausted_audit_ids_block_writes_and_legacy_restore() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target = temp_dir.path().join("already-exhausted.db");
+        // Simulate a ledger written by an earlier binary or external SQLite tool.
+        drop(open_complete_repositories(&target).unwrap());
+        let external_connection = Connection::open(&target).unwrap();
+        external_connection
+            .execute(
+                "INSERT INTO audit_log (id, entity_type, entity_id, operation, before_state)
+             VALUES (?1, 'account', 1, 'delete', '{\"id\":1}')",
+                params![i64::MAX],
+            )
+            .unwrap();
+        drop(external_connection);
+        let original_history = open_audit_log_repository(&target)
+            .unwrap()
+            .list_all()
+            .unwrap();
+        let (mut accounts, _, _, _) = open_complete_repositories(&target).unwrap();
+        assert_eq!(
+            accounts.create(NewAccount::new("Must not create".into(), Currency::Cny).unwrap()),
+            Err(RepositoryError::Storage(
+                "audit log id space exhausted".into()
+            ))
+        );
+        for version in [1, 2] {
+            let backup = validate_json_backup(
+                &serde_json::json!({
+                    "format_version": version,
+                    "accounts": [{"id": 20, "name": "Must not restore", "currency": "CNY"}],
+                    "transactions": [], "transfers": [], "budgets": []
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert_eq!(
+                restore_backup(&target, &backup),
+                Err(RepositoryError::Storage(
+                    "audit log id space exhausted".into()
+                ))
+            );
+            assert!(accounts.find_all().unwrap().is_empty());
+            assert_eq!(
+                open_audit_log_repository(&target)
+                    .unwrap()
+                    .list_all()
+                    .unwrap(),
+                original_history
+            );
+        }
     }
 
     #[test]
