@@ -1,3 +1,4 @@
+use crate::application::audit_log::{AuditEntity, AuditLogEntry, AuditOperation};
 use crate::application::repository::{
     AccountRepository, BudgetRepository, RepositoryError, TransactionRepository, TransferRepository,
 };
@@ -10,7 +11,7 @@ use jiff::Zoned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const BACKUP_FORMAT_VERSION: u32 = 2;
+pub const BACKUP_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BackupError {
@@ -59,6 +60,7 @@ pub struct ValidatedBackup {
     transactions: Vec<Transaction>,
     transfers: Vec<Transfer>,
     budgets: Vec<Budget>,
+    audit_log: Option<Vec<AuditLogEntry>>,
 }
 
 impl ValidatedBackup {
@@ -77,6 +79,11 @@ impl ValidatedBackup {
     pub fn budgets(&self) -> &[Budget] {
         &self.budgets
     }
+
+    /// Original audit history, or `None` for a legacy business-only backup.
+    pub fn audit_log(&self) -> Option<&[AuditLogEntry]> {
+        self.audit_log.as_deref()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -86,6 +93,19 @@ struct BackupDocument {
     transactions: Vec<BackupTransaction>,
     transfers: Vec<BackupTransfer>,
     budgets: Vec<BackupBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audit_log: Option<Vec<BackupAuditLogEntry>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BackupAuditLogEntry {
+    id: u64,
+    changed_at: String,
+    entity_type: String,
+    entity_id: u64,
+    operation: String,
+    before_state: Option<serde_json::Value>,
+    after_state: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -225,11 +245,25 @@ fn invalid_entity(entity: &'static str, id: u64, message: impl Into<String>) -> 
     }
 }
 
+/// Serialize business repositories in legacy format 2, without audit history.
+///
+/// Use [`crate::infrastructure::sqlite::create_backup`] to capture a complete,
+/// consistent SQLite backup including its original audit trail.
 pub fn create_json_backup(
     accounts: &impl AccountRepository,
     transactions: &impl TransactionRepository,
     transfers: &impl TransferRepository,
     budgets: &impl BudgetRepository,
+) -> Result<String, BackupError> {
+    create_json_backup_with_audit(accounts, transactions, transfers, budgets, None)
+}
+
+pub(crate) fn create_json_backup_with_audit(
+    accounts: &impl AccountRepository,
+    transactions: &impl TransactionRepository,
+    transfers: &impl TransferRepository,
+    budgets: &impl BudgetRepository,
+    audit_log: Option<&[AuditLogEntry]>,
 ) -> Result<String, BackupError> {
     let mut all_accounts = accounts.find_all()?;
     all_accounts.sort_by_key(|account| account.id().value());
@@ -251,7 +285,11 @@ pub fn create_json_backup(
     all_budgets.sort_by_key(|budget| budget.id().value());
 
     let document = BackupDocument {
-        format_version: BACKUP_FORMAT_VERSION,
+        format_version: if audit_log.is_some() {
+            BACKUP_FORMAT_VERSION
+        } else {
+            2
+        },
         accounts: all_accounts
             .iter()
             .map(|account| BackupAccount {
@@ -301,6 +339,20 @@ pub fn create_json_backup(
                 currency: currency_code(budget.limit().currency()).to_string(),
             })
             .collect(),
+        audit_log: audit_log.map(|entries| {
+            entries
+                .iter()
+                .map(|entry| BackupAuditLogEntry {
+                    id: entry.id(),
+                    changed_at: entry.changed_at().to_string(),
+                    entity_type: entry.entity().as_str().to_string(),
+                    entity_id: entry.entity_id(),
+                    operation: entry.operation().as_str().to_string(),
+                    before_state: entry.before_state().cloned(),
+                    after_state: entry.after_state().cloned(),
+                })
+                .collect()
+        }),
     };
     serde_json::to_string_pretty(&document)
         .map_err(|error| BackupError::Serialization(error.to_string()))
@@ -309,8 +361,18 @@ pub fn create_json_backup(
 pub fn validate_json_backup(input: &str) -> Result<ValidatedBackup, BackupError> {
     let document: BackupDocument =
         serde_json::from_str(input).map_err(|error| BackupError::InvalidJson(error.to_string()))?;
-    if document.format_version != 1 && document.format_version != BACKUP_FORMAT_VERSION {
+    if !(1..=BACKUP_FORMAT_VERSION).contains(&document.format_version) {
         return Err(BackupError::UnknownVersion(document.format_version));
+    }
+    if document.format_version == BACKUP_FORMAT_VERSION && document.audit_log.is_none() {
+        return Err(BackupError::InvalidJson(
+            "format 3 requires an audit_log array".to_string(),
+        ));
+    }
+    if document.format_version < BACKUP_FORMAT_VERSION && document.audit_log.is_some() {
+        return Err(BackupError::InvalidJson(
+            "audit history requires backup format 3".to_string(),
+        ));
     }
 
     let mut account_ids = HashSet::new();
@@ -488,11 +550,81 @@ pub fn validate_json_backup(input: &str) -> Result<ValidatedBackup, BackupError>
         );
     }
 
+    let audit_log = document
+        .audit_log
+        .map(|entries| {
+            let mut ids = HashSet::new();
+            entries
+                .into_iter()
+                .map(|entry| {
+                    checked_id("audit log", entry.id)?;
+                    checked_id("audit entity", entry.entity_id)?;
+                    if !ids.insert(entry.id) {
+                        return Err(BackupError::DuplicateId {
+                            entity: "audit log",
+                            id: entry.id,
+                        });
+                    }
+                    let invalid = |message| invalid_entity("audit log", entry.id, message);
+                    let changed_at = entry
+                        .changed_at
+                        .parse()
+                        .map_err(|_| invalid("invalid changed_at timestamp"))?;
+                    let entity = match entry.entity_type.as_str() {
+                        "account" => AuditEntity::Account,
+                        "transaction" => AuditEntity::Transaction,
+                        "transfer" => AuditEntity::Transfer,
+                        "budget" => AuditEntity::Budget,
+                        _ => return Err(invalid("unsupported entity type")),
+                    };
+                    let operation = match entry.operation.as_str() {
+                        "create" => AuditOperation::Create,
+                        "update" => AuditOperation::Update,
+                        "delete" => AuditOperation::Delete,
+                        _ => return Err(invalid("unsupported operation")),
+                    };
+                    let valid_presence = match operation {
+                        AuditOperation::Create => {
+                            entry.before_state.is_none() && entry.after_state.is_some()
+                        }
+                        AuditOperation::Update => {
+                            entry.before_state.is_some() && entry.after_state.is_some()
+                        }
+                        AuditOperation::Delete => {
+                            entry.before_state.is_some() && entry.after_state.is_none()
+                        }
+                    };
+                    if !valid_presence {
+                        return Err(invalid("snapshots do not match the audit operation"));
+                    }
+                    if entry
+                        .before_state
+                        .iter()
+                        .chain(entry.after_state.iter())
+                        .any(|state| !state.is_object())
+                    {
+                        return Err(invalid("audit snapshots must be JSON objects"));
+                    }
+                    Ok(AuditLogEntry::from_stored(
+                        entry.id,
+                        changed_at,
+                        entity,
+                        entry.entity_id,
+                        operation,
+                        entry.before_state,
+                        entry.after_state,
+                    ))
+                })
+                .collect::<Result<Vec<_>, BackupError>>()
+        })
+        .transpose()?;
+
     Ok(ValidatedBackup {
         accounts,
         transactions,
         transfers,
         budgets,
+        audit_log,
     })
 }
 
@@ -513,6 +645,127 @@ mod tests {
 
     fn occurred_at() -> Zoned {
         "2026-08-20T10:00:00+08:00[Asia/Shanghai]".parse().unwrap()
+    }
+
+    fn audit_backup_document() -> serde_json::Value {
+        serde_json::json!({
+            "format_version": 3,
+            "accounts": [], "transactions": [], "transfers": [], "budgets": [],
+            "audit_log": [{
+                "id": 7, "changed_at": "2026-08-20T02:00:00.123456789Z",
+                "entity_type": "account", "entity_id": 42, "operation": "create",
+                "before_state": null,
+                "after_state": {"id": 42, "name": "Historical account", "currency": "CNY"}
+            }]
+        })
+    }
+
+    #[test]
+    fn distinguishes_original_history_from_legacy_business_only_backups() {
+        let mut document = audit_backup_document();
+        for version in [1, 2] {
+            document["format_version"] = version.into();
+            document.as_object_mut().unwrap().remove("audit_log");
+            assert!(
+                validate_json_backup(&document.to_string())
+                    .unwrap()
+                    .audit_log()
+                    .is_none()
+            );
+        }
+        document["format_version"] = 3.into();
+        assert!(matches!(
+            validate_json_backup(&document.to_string()),
+            Err(BackupError::InvalidJson(_))
+        ));
+        document["audit_log"] = serde_json::Value::Null;
+        assert!(matches!(
+            validate_json_backup(&document.to_string()),
+            Err(BackupError::InvalidJson(_))
+        ));
+        document["audit_log"] = serde_json::json!([]);
+        assert_eq!(
+            validate_json_backup(&document.to_string())
+                .unwrap()
+                .audit_log(),
+            Some([].as_slice())
+        );
+        // Never silently discard a history array placed in a legacy format.
+        document["format_version"] = 2.into();
+        assert!(matches!(
+            validate_json_backup(&document.to_string()),
+            Err(BackupError::InvalidJson(_))
+        ));
+    }
+
+    #[test]
+    fn validates_audit_ids_timestamps_enums_and_snapshot_shapes() {
+        for (field, value) in [
+            ("id", serde_json::json!(0)),
+            ("id", serde_json::json!(u64::MAX)),
+            ("entity_id", serde_json::json!(0)),
+            ("entity_id", serde_json::json!(u64::MAX)),
+            ("changed_at", serde_json::json!("not a timestamp")),
+            ("entity_type", serde_json::json!("unsupported")),
+            ("operation", serde_json::json!("unsupported")),
+            ("operation", serde_json::json!("update")),
+            ("operation", serde_json::json!("delete")),
+            ("before_state", serde_json::json!({"id": 42})),
+            ("after_state", serde_json::Value::Null),
+            ("after_state", serde_json::json!([{"id": 42}])),
+            ("after_state", serde_json::json!("not an object")),
+        ] {
+            let mut document = audit_backup_document();
+            document["audit_log"][0][field] = value;
+            assert!(
+                validate_json_backup(&document.to_string()).is_err(),
+                "accepted malformed audit field {field}: {document}"
+            );
+        }
+        let mut document = audit_backup_document();
+        let duplicate = document["audit_log"][0].clone();
+        document["audit_log"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert_eq!(
+            validate_json_backup(&document.to_string()),
+            Err(BackupError::DuplicateId {
+                entity: "audit log",
+                id: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn preserves_historical_snapshots_without_requiring_live_entities() {
+        let mut document = audit_backup_document();
+        let original = document["audit_log"][0]["after_state"].clone();
+        document["audit_log"].as_array_mut().unwrap().extend([
+            serde_json::json!({
+                "id": 12, "changed_at": "2026-08-20T02:01:00Z",
+                "entity_type": "account", "entity_id": 42, "operation": "update",
+                "before_state": original, "after_state": {"name": "Historical rename"}
+            }),
+            serde_json::json!({
+                "id": 21, "changed_at": "2026-08-20T02:02:00Z",
+                "entity_type": "account", "entity_id": 42, "operation": "delete",
+                "before_state": {"name": "Historical rename"}, "after_state": null
+            }),
+        ]);
+        let backup = validate_json_backup(&document.to_string()).unwrap();
+        assert!(backup.accounts().is_empty());
+        let entries = backup.audit_log().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].id(), 7);
+        assert_eq!(entries[0].entity_id(), 42);
+        assert_eq!(
+            entries[0].changed_at().to_string(),
+            "2026-08-20T02:00:00.123456789Z"
+        );
+        assert_eq!(entries[0].after_state(), Some(&original));
+        assert_eq!(entries[1].operation(), AuditOperation::Update);
+        assert_eq!(entries[2].operation(), AuditOperation::Delete);
     }
 
     fn backup_with_adjustment_kinds(kinds: &[&str]) -> String {
@@ -629,6 +882,9 @@ mod tests {
             .unwrap();
 
         let json = create_json_backup(&accounts, &transactions, &transfers, &budgets).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(document["format_version"], 2);
+        assert!(document.get("audit_log").is_none());
         let restored = validate_json_backup(&json).unwrap();
 
         assert_eq!(restored.accounts().len(), 2);
