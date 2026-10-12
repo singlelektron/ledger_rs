@@ -191,6 +191,8 @@ select { padding-right: 28px; }
 textarea { min-height: 192px; resize: vertical; font: 14px/1.6 var(--mono); }
 input:hover, select:hover, textarea:hover { border-color: var(--muted); }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+input[aria-invalid="true"] { border-color: var(--negative); scroll-margin-top: var(--anchor-offset); }
+.field-error { color: var(--negative); font-weight: 400; overflow-wrap: anywhere; }
 button, .button {
   display: inline-flex;
   min-height: 44px;
