@@ -173,6 +173,7 @@ stored data unchanged. A newer-than-supported schema is rejected.
 | 3 | Budgets unique by account, category, and month |
 | 4 | Append-only audit history and business-table write triggers |
 | 5 | Dated account adjustments, included in account audit snapshots |
+| 6 | Update audit entries only when an entity snapshot changes |
 
 Existing accounts migrated to version 5 have empty adjustment histories and a
 zero baseline; transactions are preserved. Normal creation uses
@@ -181,8 +182,11 @@ storage support.
 
 The published v0.3.0 release uses schema version 5 and backup format 2; it rejects
 format 3 backups. Audit-preserving backups require a build with format 3 support.
-The database schema remains version 5, so this change does not migrate storage.
-Keep a backup readable by the intended older binary before reverting versions.
+Current development builds use schema version 6, replacing update audit triggers
+without rewriting business rows or earlier history. A binary supporting only
+schema version 5 rejects the upgraded database. Keep a pre-upgrade backup readable
+by the intended older binary before reverting versions; restore it into a separate
+empty database and retain the upgraded ledger while checking recovery.
 v0.2.0 rejects schema 5 and backup format 2. To return to v0.2.0, use that binary
 to restore a **pre-upgrade** backup into a separate empty
 database; later changes are not in that backup. Retain the upgraded ledger while
@@ -199,9 +203,11 @@ The CLI accepts limits from 1 to 200 (default 50), returning newest entries firs
 Rows contain UTC write time, entity type and ID, operation, and JSON before/after
 snapshots. SQLite triggers capture account, transaction, transfer, and budget
 writes, including imports and adjustments. Legacy restores generate create
-events; version `3` restores preserve the supplied history instead. Capture
-shares the original write's transaction, so rolled-back writes leave no audit
-entries.
+events; version `3` restores preserve the supplied history instead. Updates with
+unchanged snapshots do not add entries; changes to any captured field, including
+account adjustments, still do. Existing no-op entries are retained after upgrading.
+Capture shares the original write's transaction, so rolled-back writes leave no
+audit entries.
 
 The log is append-only and has no foreign keys to mutable entities: deleting a
 business entity retains its history. Stored JSON is validated before the
